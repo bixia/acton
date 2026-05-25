@@ -1936,9 +1936,9 @@ fn validate_manifest_target_content_matches_summary(
     target: &SmokeTargetRunSummary,
     gate_failures: &mut Vec<String>,
 ) {
-    if let Some(corpus) =
-        read_single_target_json_artifact::<StateFlowCorpus>(manifest_path, artifacts, "corpus")
-    {
+    let corpus =
+        read_single_target_json_artifact::<StateFlowCorpus>(manifest_path, artifacts, "corpus");
+    if let Some(corpus) = &corpus {
         validate_target_text_field(
             "corpus network",
             &corpus.network,
@@ -1982,6 +1982,13 @@ fn validate_manifest_target_content_matches_summary(
             gate_failures,
         );
     }
+    validate_manifest_transaction_membership(
+        manifest_path,
+        artifacts,
+        corpus.as_ref(),
+        gate_failures,
+    );
+    validate_manifest_replay_membership(manifest_path, artifacts, corpus.as_ref(), gate_failures);
 
     if let Some(schema) = read_single_target_json_artifact::<StateFlowSchemaReport>(
         manifest_path,
@@ -2012,6 +2019,61 @@ fn validate_manifest_target_content_matches_summary(
     }
 }
 
+fn validate_manifest_transaction_membership(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    corpus: Option<&StateFlowCorpus>,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(corpus) = corpus else {
+        return;
+    };
+    let corpus_hashes = corpus_transaction_hashes(corpus);
+    if let Some(flow) =
+        read_single_target_json_artifact::<StateFlowTx>(manifest_path, artifacts, "transaction")
+    {
+        if !corpus_hashes.iter().any(|hash| hash == &flow.query_hash) {
+            gate_failures.push(format!(
+                "transaction query hash {} is not present in corpus transactions",
+                flow.query_hash
+            ));
+        }
+    }
+}
+
+fn validate_manifest_replay_membership(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    corpus: Option<&StateFlowCorpus>,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(corpus) = corpus else {
+        return;
+    };
+    let corpus_hashes = corpus_transaction_hashes(corpus);
+    for replay in
+        read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay")
+    {
+        if !corpus_hashes
+            .iter()
+            .any(|hash| hash == &replay.source_query_hash)
+        {
+            gate_failures.push(format!(
+                "replay source query hash {} is not present in corpus transactions",
+                replay.source_query_hash
+            ));
+        }
+    }
+}
+
+fn corpus_transaction_hashes(corpus: &StateFlowCorpus) -> Vec<&str> {
+    corpus
+        .transactions
+        .iter()
+        .map(|transaction| transaction.query_hash.as_str())
+        .collect()
+}
+
 fn read_single_target_json_artifact<T>(
     manifest_path: &Path,
     artifacts: &[&SmokeArtifactManifestEntry],
@@ -2031,6 +2093,25 @@ where
     let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
     let json = fs::read_to_string(path).ok()?;
     serde_json::from_str(&json).ok()
+}
+
+fn read_target_json_artifacts<T>(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    kind: &str,
+) -> Vec<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == kind)
+        .filter_map(|artifact| {
+            let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
+            let json = fs::read_to_string(path).ok()?;
+            serde_json::from_str(&json).ok()
+        })
+        .collect()
 }
 
 fn validate_target_text_field(
@@ -2748,6 +2829,56 @@ mod tests {
                 )
             }),
             "expected schema content mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_outside_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "foreign-tx",
+                "mutation": {"type": "none"},
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": sample_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": false,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": false
+                }
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay source query hash foreign-tx is not present in corpus transactions",
+                )
+            }),
+            "expected replay corpus membership failure, got {:?}",
             validation.gate_failures
         );
     }
