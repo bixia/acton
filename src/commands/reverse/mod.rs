@@ -12,6 +12,7 @@ use ton_stateflow::{
 };
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
+const VALIDATION_ARTIFACT_PATH: &str = "validation.json";
 
 #[derive(Subcommand, Clone)]
 pub enum ReverseCommand {
@@ -915,13 +916,34 @@ fn write_smoke_summary_and_gate(
         "State-flow smoke summary JSON",
     )?;
     let manifest = SmokeArtifactManifest::from_summary(&portable_summary, out_dir);
+    let manifest_path = out_dir.join("artifacts.json");
     write_json(
         &manifest,
-        Some(out_dir.join("artifacts.json")),
+        Some(manifest_path.clone()),
         pretty,
         "State-flow artifact manifest JSON",
     )?;
-    summary.ensure_passes_gate()
+    let validation_path = out_dir.join(VALIDATION_ARTIFACT_PATH);
+    let pending_validation = pending_artifact_manifest_validation(&manifest, &manifest_path);
+    write_json_to_path(&pending_validation, &validation_path, pretty)?;
+
+    let validation = validate_artifact_manifest_bundle(&manifest, &manifest_path, None)?;
+    write_json(
+        &validation,
+        Some(validation_path),
+        pretty,
+        "State-flow artifact validation JSON",
+    )?;
+
+    let quality_result = summary.ensure_passes_gate();
+    if quality_result.is_ok() {
+        anyhow::ensure!(
+            validation.passed,
+            "artifact manifest validation failed: {}",
+            validation.gate_failures.join("; ")
+        );
+    }
+    quality_result
 }
 
 fn write_state_flow(
@@ -957,28 +979,36 @@ fn write_json<T: Serialize>(
     pretty: bool,
     label: &str,
 ) -> anyhow::Result<()> {
-    let json = if pretty {
-        serde_json::to_string_pretty(value)?
-    } else {
-        serde_json::to_string(value)?
-    };
-
     if let Some(output) = output {
-        if let Some(parent) = output
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        fs::write(&output, json)
-            .with_context(|| format!("failed to write {}", output.display()))?;
+        write_json_to_path(value, &output, pretty)?;
         println!("{label} written to {}", output.display());
     } else {
+        let json = serialize_json(value, pretty)?;
         println!("{json}");
     }
 
     Ok(())
+}
+
+fn write_json_to_path<T: Serialize>(value: &T, output: &Path, pretty: bool) -> anyhow::Result<()> {
+    let json = serialize_json(value, pretty)?;
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(output, json).with_context(|| format!("failed to write {}", output.display()))?;
+    Ok(())
+}
+
+fn serialize_json<T: Serialize>(value: &T, pretty: bool) -> anyhow::Result<String> {
+    if pretty {
+        Ok(serde_json::to_string_pretty(value)?)
+    } else {
+        Ok(serde_json::to_string(value)?)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1325,6 +1355,12 @@ impl SmokeArtifactManifest {
                 Some(target.id.clone()),
             ));
         }
+        let validation_path = artifact_dir.join(VALIDATION_ARTIFACT_PATH);
+        artifacts.push(SmokeArtifactManifestEntry::new(
+            "validation",
+            manifest_relative_path(&validation_path, artifact_dir),
+            None,
+        ));
 
         let summary_artifact_path = manifest_relative_path(&summary_path, artifact_dir);
         let absolute_path_count =
@@ -1425,7 +1461,7 @@ fn infer_corpus_from_manifest(
     required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ArtifactManifestValidation {
     schema_version: u32,
@@ -1439,7 +1475,7 @@ struct ArtifactManifestValidation {
     targets: Vec<ArtifactManifestTargetValidation>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ArtifactManifestTargetValidation {
     id: String,
@@ -1522,6 +1558,26 @@ fn validate_artifact_manifest_bundle(
     })
 }
 
+fn pending_artifact_manifest_validation(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+) -> ArtifactManifestValidation {
+    ArtifactManifestValidation {
+        schema_version: 1,
+        kind: "stateFlowArtifactManifestValidation".to_owned(),
+        manifest: manifest_path.display().to_string(),
+        target_count: manifest_target_ids(manifest).len(),
+        absolute_path_count: manifest.absolute_path_count,
+        expected_absolute_path_count: smoke_manifest_absolute_path_count(
+            &manifest.summary,
+            &manifest.artifacts,
+        ),
+        passed: false,
+        gate_failures: vec!["artifact manifest validation pending".to_owned()],
+        targets: Vec::new(),
+    }
+}
+
 fn validate_manifest_artifact_content(
     path: &Path,
     artifact: &SmokeArtifactManifestEntry,
@@ -1533,6 +1589,9 @@ fn validate_manifest_artifact_content(
         "schema" => validate_json_artifact::<StateFlowSchemaReport>(path, artifact, gate_failures),
         "transaction" => validate_json_artifact::<StateFlowTx>(path, artifact, gate_failures),
         "replay" => validate_json_artifact::<StateFlowReplayDiff>(path, artifact, gate_failures),
+        "validation" => {
+            validate_json_artifact::<ArtifactManifestValidation>(path, artifact, gate_failures)
+        }
         "report" => validate_report_artifact(path, artifact, gate_failures),
         _ => {}
     }
@@ -1980,6 +2039,7 @@ mod tests {
         let mut summary = sample_smoke_summary();
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         rewrite_sample_summary_paths(&mut summary, temp_dir.path());
+        write_sample_validation_artifacts(temp_dir.path());
 
         super::write_smoke_summary_and_gate(&summary, temp_dir.path(), true)
             .expect("portable summary should pass gate");
@@ -2002,6 +2062,16 @@ mod tests {
         );
         assert_eq!(json["targets"][0]["report"], "target-a/report.md");
         assert_eq!(json["absolutePathCount"], 0);
+
+        let validation = fs::read_to_string(temp_dir.path().join("validation.json"))
+            .expect("validation artifact should be written");
+        let validation_json: serde_json::Value =
+            serde_json::from_str(&validation).expect("validation should be valid JSON");
+        assert_eq!(
+            validation_json["kind"],
+            "stateFlowArtifactManifestValidation"
+        );
+        assert_eq!(validation_json["passed"], true);
     }
 
     #[test]
@@ -2021,7 +2091,7 @@ mod tests {
         assert_eq!(json["summary"], "summary.json");
         assert_eq!(json["targetCount"], 1);
         assert_eq!(json["absolutePathCount"], 0);
-        assert_eq!(json["artifacts"].as_array().unwrap().len(), 7);
+        assert_eq!(json["artifacts"].as_array().unwrap().len(), 8);
         assert_eq!(
             json["artifacts"],
             serde_json::json!([
@@ -2031,7 +2101,8 @@ mod tests {
                 {"kind": "transaction", "path": "target-a/transaction-0.json", "targetId": "target-a"},
                 {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
                 {"kind": "replay", "path": "target-a/replay-query-id.json", "targetId": "target-a"},
-                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
+                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"},
+                {"kind": "validation", "path": "validation.json", "targetId": null}
             ])
         );
     }
@@ -2064,7 +2135,9 @@ mod tests {
         assert_eq!(json["kind"], "stateFlowArtifactManifest");
         assert_eq!(json["summary"], "summary.json");
         assert_eq!(json["artifacts"][1]["path"], "target-a/corpus.json");
-        assert_eq!(json["artifacts"].as_array().unwrap().len(), 5);
+        assert_eq!(json["artifacts"].as_array().unwrap().len(), 6);
+        assert_eq!(json["artifacts"][5]["kind"], "validation");
+        assert_eq!(json["artifacts"][5]["path"], "validation.json");
         assert!(
             json["artifacts"]
                 .as_array()
@@ -2429,6 +2502,11 @@ mod tests {
                 "opcodeCandidates": []
             })
             .to_string(),
+        );
+        write_sample_validation_artifact(
+            out_dir,
+            "target-a/transaction-0.json",
+            &sample_state_flow_json("tx-a").to_string(),
         );
         write_sample_validation_artifact(
             out_dir,
