@@ -3931,44 +3931,39 @@ fn validate_report_replay_diff_values(
         row.get(4),
         gate_failures,
     );
-    let (exit_index, outbound_index, action_index) = if row.len() >= 12 {
-        validate_report_replay_diff_cell(
-            "code changed",
-            report_optional_bool(replay.diff.code_hash_changed),
-            replay,
-            row.get(5),
-            gate_failures,
-        );
-        validate_report_replay_diff_cell(
-            "data changed",
-            report_optional_bool(replay.diff.data_hash_changed),
-            replay,
-            row.get(6),
-            gate_failures,
-        );
-        validate_report_replay_diff_cell(
-            "balance delta",
-            report_optional_i128(replay.diff.balance_delta_diff),
-            replay,
-            row.get(7),
-            gate_failures,
-        );
-        validate_report_replay_diff_cell(
-            "c5 changed",
-            report_optional_bool(replay.diff.c5_changed),
-            replay,
-            row.get(11),
-            gate_failures,
-        );
-        (8, 9, 10)
-    } else {
-        (5, 6, 7)
-    };
+    validate_report_replay_diff_cell(
+        "code changed",
+        report_optional_bool(replay.diff.code_hash_changed),
+        replay,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "data changed",
+        report_optional_bool(replay.diff.data_hash_changed),
+        replay,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "balance delta",
+        report_optional_i128(replay.diff.balance_delta_diff),
+        replay,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "c5 changed",
+        report_optional_bool(replay.diff.c5_changed),
+        replay,
+        row.get(11),
+        gate_failures,
+    );
     validate_report_replay_diff_cell(
         "exit changed",
         report_optional_bool(replay.diff.exit_code_changed),
         replay,
-        row.get(exit_index),
+        row.get(8),
         gate_failures,
     );
     validate_report_replay_diff_cell(
@@ -3978,7 +3973,7 @@ fn validate_report_replay_diff_values(
             .outbound_count_delta
             .map_or("n/a".to_owned(), |value| value.to_string()),
         replay,
-        row.get(outbound_index),
+        row.get(9),
         gate_failures,
     );
     validate_report_replay_diff_cell(
@@ -3988,7 +3983,7 @@ fn validate_report_replay_diff_values(
             .action_count_delta
             .map_or("n/a".to_owned(), |value| value.to_string()),
         replay,
-        row.get(action_index),
+        row.get(10),
         gate_failures,
     );
 }
@@ -8337,6 +8332,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_replay_legacy_columns() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_legacy_replay_diff_columns("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report replay c5 changed true for tx tx-a is missing")
+            }),
+            "expected report replay c5 failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_missing_schema_deliverables() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10010,6 +10033,19 @@ mod tests {
         sample_report_markdown(address).replace(
             "| `tx-a` | flip body bit 0 | true | true | false | false | false | 0 | false | 0 | 0 | true |",
             "| `tx-a` | flip body bit 0 | true | true | false | false | false | 0 | false | 0 | 0 | false |",
+        )
+    }
+
+    fn sample_report_markdown_with_legacy_replay_diff_columns(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Replay Diffs\n\
+             | Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |\n\
+             | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |\n\
+             | `tx-a` | flip body bit 0 | true | true | false | false | false | 0 | false | 0 | 0 | true |",
+            "## Replay Diffs\n\
+             | Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |\n\
+             | --- | --- | --- | --- | --- | --- | ---: | ---: |\n\
+             | `tx-a` | flip body bit 0 | true | true | false | false | 0 | 0 |",
         )
     }
 
