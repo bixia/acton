@@ -5296,7 +5296,16 @@ fn validate_replay_mutation_matches_observations(
                 ));
             }
         }
-        ReplayMutation::ReplaceBody { .. } => {}
+        ReplayMutation::ReplaceBody { body_boc64 } => {
+            validate_evidence_text_field(
+                "replay replaceBody",
+                &replay.replay.inbound.body.boc64,
+                "mutation body",
+                body_boc64,
+                tx_hash,
+                gate_failures,
+            );
+        }
     }
 }
 
@@ -9175,6 +9184,45 @@ mod tests {
                 )
             }),
             "expected replay setBodyUint bounds failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_replace_body_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"] = serde_json::json!({
+            "type": "replaceBody",
+            "bodyBoc64": "expected-body"
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay replaceBody mutated-body for tx-a does not match mutation body expected-body",
+                )
+            }),
+            "expected replay replaceBody mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
