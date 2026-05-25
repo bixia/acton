@@ -2488,6 +2488,16 @@ fn validate_report_schema_deliverables(
         }
     }
 
+    if let Some(section) = markdown_section(markdown, "## Unknown Fields") {
+        for candidate in &schema.opcode_candidates {
+            for field in &candidate.unknown_fields {
+                if !section.contains(field) {
+                    gate_failures.push(format!("report unknown field {field} is missing"));
+                }
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## Outbound Effects") {
         for candidate in &schema.opcode_candidates {
             for effect in &candidate.outbound_effects {
@@ -3815,6 +3825,15 @@ mod tests {
                 failure.contains("target-a: report storage field data_word_0 is missing")
             }),
             "expected report storage field failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report unknown field message body field names require TL-B recovery is missing",
+                )
+            }),
+            "expected report unknown field failure, got {:?}",
             validation.gate_failures
         );
         assert!(
