@@ -186,8 +186,8 @@ assert(
   "expected schema summary to include state machine edge count",
 )
 assert(
-  schemaSummary.sections.some(section => section.title === "Audit Signals"),
-  "expected schema summary to include audit signals",
+  schemaSummary.sections.some(section => section.title === "Risk Points"),
+  "expected schema summary to include risk points",
 )
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")

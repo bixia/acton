@@ -13,7 +13,8 @@
     "fmt": "prettier --write -l --cache .",
     "fmt:check": "prettier --check --cache .",
     "lint": "eslint --max-warnings 0 . --cache",
-    "lint:fix": "eslint --fix . --cache"
+    "lint:fix": "eslint --fix . --cache",
+    "test": "node --experimental-strip-types src/components/StateFlowView/stateFlowArtifacts.runtime.test.ts"
   },
   "dependencies": {
     "@ton/core": "0.62.0",

@@ -366,8 +366,8 @@ function summarizeCorpus(corpus: StateFlowCorpus): ArtifactSummary {
 }
 
 function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
-  const stateEdges = schema.stateMachine?.edges ?? []
-  const auditSignals = schema.auditSignals ?? []
+  const stateEdges = stateMachineEdges(schema)
+  const auditSignals = schemaAuditSignals(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -397,9 +397,9 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "State Machine",
               rows: stateEdges.map(edge => ({
-                label: `${edge.fromStatus} -> ${edge.toStatus}`,
-                value: `${edge.opcode ?? "<none>"} (${edge.count})`,
-                detail: edge.examples.map(hash => shortHash(hash)).join(", "),
+                label: edge.opcode ?? "<none>",
+                value: `${edge.fromStatus} -> ${edge.toStatus}`,
+                detail: `${edge.count} ${plural(edge.count, "observed transition")}`,
               })),
             },
           ]
@@ -407,7 +407,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       ...(auditSignals.length > 0
         ? [
             {
-              title: "Audit Signals",
+              title: "Risk Points",
               rows: auditSignals.map(signal => ({
                 label: `${signal.severity} ${signal.kind}`,
                 value: signal.description,
@@ -441,6 +441,10 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
           {label: "c5", value: optionalChangedLabel(replay.diff.c5Changed)},
         ],
       },
+      {
+        title: "Risk Points",
+        rows: replayRiskRows(replay),
+      },
     ],
   }
 }
@@ -466,6 +470,130 @@ function storageLabel(storage: StorageShapeCandidate | null | undefined): string
       ? storage.balanceDeltaMin.toString()
       : `${storage.balanceDeltaMin}..${storage.balanceDeltaMax}`
   return `balance ${balance}, data ${storage.dataHashChangedCount}, code ${storage.codeHashChangedCount}`
+}
+
+function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachineEdge[] {
+  const structuredEdges = schema.stateMachine?.edges ?? []
+  if (structuredEdges.length > 0) {
+    return structuredEdges
+  }
+
+  return schema.opcodeCandidates.flatMap(candidate =>
+    candidate.stateTransitions.map(transition => ({
+      fromStatus: transition.fromStatus,
+      toStatus: transition.toStatus,
+      opcode: candidate.opcode,
+      count: transition.count,
+      examples: candidate.examples,
+    })),
+  )
+}
+
+function schemaAuditSignals(schema: StateFlowSchemaReport): readonly AuditSignal[] {
+  const structuredSignals = schema.auditSignals ?? []
+  if (structuredSignals.length > 0) {
+    return structuredSignals
+  }
+
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const opcode = candidate.opcode ?? "<none>"
+    const signals: AuditSignal[] = []
+
+    if (candidate.confidence === "low") {
+      signals.push({
+        kind: "low-confidence-schema",
+        severity: "medium",
+        description: `Low confidence schema candidate for opcode ${opcode}; body shape varied or evidence is sparse.`,
+        evidence: candidate.examples,
+      })
+    }
+    if (candidate.unknownFields.length > 0) {
+      signals.push({
+        kind: "unknown-fields",
+        severity: "medium",
+        description: `Unknown fields remain for opcode ${opcode}: ${candidate.unknownFields.join("; ")}.`,
+        evidence: candidate.examples,
+      })
+    }
+    if (candidate.storage && candidate.storage.dataHashChangedCount > 0) {
+      signals.push({
+        kind: "storage-data-hash-change",
+        severity: "medium",
+        description: `Opcode ${opcode} changed storage data hash in ${candidate.storage.dataHashChangedCount} observed transaction(s).`,
+        evidence: candidate.examples,
+      })
+    }
+    if (candidate.storage && candidate.storage.codeHashChangedCount > 0) {
+      signals.push({
+        kind: "storage-code-hash-change",
+        severity: "high",
+        description: `Opcode ${opcode} changed code hash in ${candidate.storage.codeHashChangedCount} observed transaction(s).`,
+        evidence: candidate.examples,
+      })
+    }
+    if (candidate.outboundEffects.length > 0 || candidate.outActions.length > 0) {
+      signals.push({
+        kind: "outbound-or-action-effects",
+        severity: "medium",
+        description: `Opcode ${opcode} produced outbound effects or c5 actions; payload fields still require TL-B recovery.`,
+        evidence: candidate.examples,
+      })
+    }
+
+    return signals
+  })
+}
+
+function replayRiskRows(replay: StateFlowReplayDiff): readonly SummaryRow[] {
+  const mutation = mutationLabel(replay.mutation)
+  const rows: SummaryRow[] = []
+
+  if (replay.diff.inputChanged && replay.diff.replayAccepted) {
+    if (replay.diff.stateChanged === true) {
+      rows.push({
+        label: mutation,
+        value: "Mutation changed state",
+        detail: shortHash(replay.sourceQueryHash),
+      })
+    }
+    if (
+      replay.diff.outboundCountDelta !== undefined &&
+      replay.diff.outboundCountDelta !== null &&
+      replay.diff.outboundCountDelta !== 0
+    ) {
+      rows.push({
+        label: mutation,
+        value: "Mutation changed outbound/action counts",
+        detail: `outbound delta ${replay.diff.outboundCountDelta}`,
+      })
+    }
+    if (
+      replay.diff.actionCountDelta !== undefined &&
+      replay.diff.actionCountDelta !== null &&
+      replay.diff.actionCountDelta !== 0
+    ) {
+      rows.push({
+        label: mutation,
+        value: "Mutation changed outbound/action counts",
+        detail: `action delta ${replay.diff.actionCountDelta}`,
+      })
+    }
+    if (replay.diff.dataHashChanged === true || replay.diff.codeHashChanged === true) {
+      rows.push({
+        label: mutation,
+        value: "Mutation changed storage hashes",
+        detail: `data ${optionalChangedLabel(replay.diff.dataHashChanged)}, code ${optionalChangedLabel(replay.diff.codeHashChanged)}`,
+      })
+    }
+  } else if (replay.diff.inputChanged && !replay.diff.replayAccepted) {
+    rows.push({
+      label: mutation,
+      value: "Mutation was rejected",
+      detail: shortHash(replay.sourceQueryHash),
+    })
+  }
+
+  return rows
 }
 
 function formatNullable(value: number | string | null | undefined): string {
