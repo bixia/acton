@@ -2470,6 +2470,236 @@ fn validate_schema_opcode_candidate_matches_corpus(
         &opcode,
         gate_failures,
     );
+
+    for effect in &candidate.outbound_effects {
+        let expected = corpus_outbound_effect_aggregate(effect, &matching_transactions);
+        validate_schema_effect_matches_corpus("outbound", effect, expected, gate_failures);
+    }
+    for effect in &candidate.out_actions {
+        let expected = corpus_action_effect_aggregate(effect, &matching_transactions);
+        validate_schema_effect_matches_corpus("action", effect, expected, gate_failures);
+    }
+}
+
+#[derive(Default)]
+struct CorpusEffectAggregate {
+    count: usize,
+    tx_hashes: Vec<String>,
+    modes: Vec<String>,
+    destinations: Vec<String>,
+    value_nanotons_min: Option<String>,
+    value_nanotons_max: Option<String>,
+    body_shape: Option<ton_stateflow::CellShapeRange>,
+    code_shape: Option<ton_stateflow::CellShapeRange>,
+    library_hashes: Vec<String>,
+}
+
+fn corpus_outbound_effect_aggregate(
+    effect: &ton_stateflow::EffectCandidate,
+    transactions: &[&StateFlowTx],
+) -> CorpusEffectAggregate {
+    let mut aggregate = CorpusEffectAggregate::default();
+    let mut tx_hashes = HashSet::new();
+    let mut destinations = HashSet::new();
+    let mut values = Vec::new();
+    let mut body_shapes = Vec::new();
+
+    for tx in transactions {
+        for message in &tx.outbound {
+            if message.kind != effect.kind {
+                continue;
+            }
+            aggregate.count += 1;
+            tx_hashes.insert(tx.query_hash.clone());
+            if let Some(value) = message
+                .value_nanotons
+                .as_deref()
+                .and_then(|value| value.parse::<u128>().ok())
+            {
+                values.push(value);
+            }
+            if let Some(destination) = &message.dst {
+                destinations.insert(destination.clone());
+            }
+            body_shapes.push((message.body.bits, message.body.refs));
+        }
+    }
+
+    aggregate.tx_hashes = sorted_limited_values(tx_hashes);
+    aggregate.destinations = sorted_limited_values(destinations);
+    set_effect_value_range(&mut aggregate, values);
+    aggregate.body_shape = effect_shape_range(&body_shapes);
+    aggregate
+}
+
+fn corpus_action_effect_aggregate(
+    effect: &ton_stateflow::EffectCandidate,
+    transactions: &[&StateFlowTx],
+) -> CorpusEffectAggregate {
+    let mut aggregate = CorpusEffectAggregate::default();
+    let mut tx_hashes = HashSet::new();
+    let mut modes = HashSet::new();
+    let mut destinations = HashSet::new();
+    let mut values = Vec::new();
+    let mut body_shapes = Vec::new();
+    let mut code_shapes = Vec::new();
+    let mut library_hashes = HashSet::new();
+
+    for tx in transactions {
+        for action in &tx.out_actions {
+            if action.kind != effect.kind {
+                continue;
+            }
+            aggregate.count += 1;
+            tx_hashes.insert(tx.query_hash.clone());
+            if let Some(mode) = &action.mode {
+                modes.insert(mode.clone());
+            }
+            if let Some(value) = action
+                .value_nanotons
+                .as_deref()
+                .and_then(|value| value.parse::<u128>().ok())
+            {
+                values.push(value);
+            }
+            if let Some(destination) = &action.destination {
+                destinations.insert(destination.clone());
+            }
+            if let Some(body) = &action.body {
+                body_shapes.push((body.bits, body.refs));
+            }
+            if let Some(code) = &action.code {
+                code_shapes.push((code.bits, code.refs));
+            }
+            if let Some(library) = &action.library {
+                if let Some(hash) = &library.hash {
+                    library_hashes.insert(hash.clone());
+                }
+                if let Some(cell) = &library.cell {
+                    library_hashes.insert(cell.hash.clone());
+                }
+            }
+        }
+    }
+
+    aggregate.tx_hashes = sorted_limited_values(tx_hashes);
+    aggregate.modes = sorted_limited_values(modes);
+    aggregate.destinations = sorted_limited_values(destinations);
+    set_effect_value_range(&mut aggregate, values);
+    aggregate.body_shape = effect_shape_range(&body_shapes);
+    aggregate.code_shape = effect_shape_range(&code_shapes);
+    aggregate.library_hashes = sorted_limited_values(library_hashes);
+    aggregate
+}
+
+fn validate_schema_effect_matches_corpus(
+    source: &str,
+    effect: &ton_stateflow::EffectCandidate,
+    expected: CorpusEffectAggregate,
+    gate_failures: &mut Vec<String>,
+) {
+    let effect_label = format!("{source} {}", effect.kind);
+    validate_evidence_value_field(
+        &format!("schema {source} effect count"),
+        effect.count,
+        &format!("corpus {source} effect count"),
+        expected.count,
+        &effect_label,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("schema {source} effect tx hashes"),
+        &report_kind_list(&effect.tx_hashes),
+        &format!("corpus {source} effect tx hashes"),
+        &report_kind_list(&expected.tx_hashes),
+        &effect_label,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("schema {source} effect modes"),
+        &report_kind_list(&effect.modes),
+        &format!("corpus {source} effect modes"),
+        &report_kind_list(&expected.modes),
+        &effect_label,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("schema {source} effect destinations"),
+        &report_kind_list(&effect.destinations),
+        &format!("corpus {source} effect destinations"),
+        &report_kind_list(&expected.destinations),
+        &effect_label,
+        gate_failures,
+    );
+    let actual_value = report_effect_value(effect);
+    let expected_value =
+        report_effect_value_range(&expected.value_nanotons_min, &expected.value_nanotons_max);
+    validate_evidence_text_field(
+        &format!("schema {source} effect value"),
+        &actual_value,
+        &format!("corpus {source} effect value"),
+        &expected_value,
+        &effect_label,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("schema {source} effect body shape"),
+        &report_optional_shape(&effect.body_shape),
+        &format!("corpus {source} effect body shape"),
+        &report_optional_shape(&expected.body_shape),
+        &effect_label,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("schema {source} effect code shape"),
+        &report_optional_shape(&effect.code_shape),
+        &format!("corpus {source} effect code shape"),
+        &report_optional_shape(&expected.code_shape),
+        &effect_label,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("schema {source} effect libraries"),
+        &report_kind_list(&effect.library_hashes),
+        &format!("corpus {source} effect libraries"),
+        &report_kind_list(&expected.library_hashes),
+        &effect_label,
+        gate_failures,
+    );
+}
+
+fn set_effect_value_range(aggregate: &mut CorpusEffectAggregate, values: Vec<u128>) {
+    aggregate.value_nanotons_min = values.iter().min().map(ToString::to_string);
+    aggregate.value_nanotons_max = values.iter().max().map(ToString::to_string);
+}
+
+fn effect_shape_range(shapes: &[(u16, u8)]) -> Option<ton_stateflow::CellShapeRange> {
+    let (first_bits, first_refs) = shapes.first().copied()?;
+    let mut min_bits = first_bits;
+    let mut max_bits = first_bits;
+    let mut min_refs = first_refs;
+    let mut max_refs = first_refs;
+
+    for (bits, refs) in &shapes[1..] {
+        min_bits = min_bits.min(*bits);
+        max_bits = max_bits.max(*bits);
+        min_refs = min_refs.min(*refs);
+        max_refs = max_refs.max(*refs);
+    }
+
+    Some(ton_stateflow::CellShapeRange {
+        min_bits,
+        max_bits,
+        min_refs,
+        max_refs,
+    })
+}
+
+fn sorted_limited_values(values: HashSet<String>) -> Vec<String> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort();
+    values.truncate(5);
+    values
 }
 
 fn validate_schema_audit_signal_evidence_membership(
@@ -3896,7 +4126,11 @@ fn validate_report_effect_cell(
 }
 
 fn report_effect_value(effect: &ton_stateflow::EffectCandidate) -> String {
-    match (&effect.value_nanotons_min, &effect.value_nanotons_max) {
+    report_effect_value_range(&effect.value_nanotons_min, &effect.value_nanotons_max)
+}
+
+fn report_effect_value_range(min: &Option<String>, max: &Option<String>) -> String {
+    match (min, max) {
         (Some(min), Some(max)) if min == max => min.clone(),
         (Some(min), Some(max)) => format!("{min}..{max}"),
         _ => "n/a".to_owned(),
@@ -6250,6 +6484,118 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_outbound_effect_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["outboundEffects"] = serde_json::json!([{
+            "kind": "internal",
+            "count": 1,
+            "txHashes": ["tx-a"],
+            "modes": [],
+            "destinations": ["dst"],
+            "valueNanotonsMin": "11",
+            "valueNanotonsMax": "11",
+            "bodyShape": {
+                "minBits": 40,
+                "maxBits": 40,
+                "minRefs": 1,
+                "maxRefs": 1
+            },
+            "codeShape": null,
+            "libraryHashes": []
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_schema_outbound_effect("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema outbound effect count 1 for outbound internal does not match corpus outbound effect count 0",
+                )
+            }),
+            "expected outbound effect count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_out_action_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["outActions"] = serde_json::json!([{
+            "kind": "send-message",
+            "count": 1,
+            "txHashes": ["tx-a"],
+            "modes": ["64"],
+            "destinations": ["dst"],
+            "valueNanotonsMin": "7",
+            "valueNanotonsMax": "7",
+            "bodyShape": {
+                "minBits": 32,
+                "maxBits": 32,
+                "minRefs": 0,
+                "maxRefs": 0
+            },
+            "codeShape": null,
+            "libraryHashes": []
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_schema_out_action("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema action effect count 1 for action send-message does not match corpus action effect count 0",
+                )
+            }),
+            "expected out-action count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_unknown_field_opcode_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -7952,6 +8298,20 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Outbound Effects\n- No outbound effect candidates were inferred.",
             "## Outbound Effects\n| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |\n| `0x00000001` | outbound | internal | 9 | 99 | none | other | n/a | n/a | none | `tx-b` |",
+        )
+    }
+
+    fn sample_report_markdown_with_schema_outbound_effect(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Outbound Effects\n- No outbound effect candidates were inferred.",
+            "## Outbound Effects\n| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |\n| `0x00000001` | outbound | internal | 1 | 11 | none | dst | 40/1 | n/a | none | tx-a |",
+        )
+    }
+
+    fn sample_report_markdown_with_schema_out_action(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Outbound Effects\n- No outbound effect candidates were inferred.",
+            "## Outbound Effects\n| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |\n| `0x00000001` | action | send-message | 1 | 7 | 64 | dst | 32/0 | n/a | none | tx-a |",
         )
     }
 
