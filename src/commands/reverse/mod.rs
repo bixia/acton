@@ -5254,6 +5254,7 @@ fn validate_manifest_replay_membership(
                 replay.source_query_hash
             ));
         }
+        validate_replay_mutation_matches_observations(&replay, gate_failures);
         validate_replay_diff_matches_observations(&replay, gate_failures);
         let corpus_flow = corpus
             .transactions
@@ -5267,6 +5268,25 @@ fn validate_manifest_replay_membership(
         } else if let Some(corpus_flow) = corpus_flow {
             validate_replay_baseline_matches_corpus(&replay, corpus_flow, gate_failures);
         }
+    }
+}
+
+fn validate_replay_mutation_matches_observations(
+    replay: &StateFlowReplayDiff,
+    gate_failures: &mut Vec<String>,
+) {
+    let tx_hash = &replay.source_query_hash;
+    let baseline_body_bits = replay.baseline.inbound.body.bits;
+    match &replay.mutation {
+        ReplayMutation::None => {}
+        ReplayMutation::FlipBodyBit { bit } => {
+            if *bit >= baseline_body_bits {
+                gate_failures.push(format!(
+                    "replay flipBodyBit {bit} for {tx_hash} is outside baseline body bits {baseline_body_bits}"
+                ));
+            }
+        }
+        ReplayMutation::ReplaceBody { .. } | ReplayMutation::SetBodyUint { .. } => {}
     }
 }
 
@@ -9068,6 +9088,42 @@ mod tests {
                 failure.contains("target-a: mutated replay tx-a must report inputChanged true")
             }),
             "expected mutated replay input diff failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_flip_body_bit_outside_baseline_body() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"] = serde_json::json!({"type": "flipBodyBit", "bit": 32});
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay flipBodyBit 32 for tx-a is outside baseline body bits 32",
+                )
+            }),
+            "expected replay flipBodyBit bounds failure, got {:?}",
             validation.gate_failures
         );
     }
