@@ -1520,6 +1520,7 @@ fn validate_artifact_manifest_bundle(
             target_ids.len()
         ));
     }
+    validate_manifest_run_summary_entry(manifest, manifest_path, &mut gate_failures);
 
     let summary = validate_manifest_summary_artifact(manifest, manifest_path, &mut gate_failures);
     if let Some(summary) = &summary {
@@ -1558,6 +1559,32 @@ fn validate_artifact_manifest_bundle(
         gate_failures,
         targets,
     })
+}
+
+fn validate_manifest_run_summary_entry(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    gate_failures: &mut Vec<String>,
+) {
+    let run_summaries = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "runSummary")
+        .collect::<Vec<_>>();
+    match run_summaries.as_slice() {
+        [run_summary] => {
+            if resolve_manifest_artifact_path(manifest_path, &run_summary.path)
+                != resolve_manifest_artifact_path(manifest_path, &manifest.summary)
+            {
+                gate_failures.push(format!(
+                    "runSummary artifact path {} does not match manifest summary {}",
+                    run_summary.path, manifest.summary
+                ));
+            }
+        }
+        [] => gate_failures.push("missing runSummary artifact entry".to_owned()),
+        _ => gate_failures.push("multiple runSummary artifact entries".to_owned()),
+    }
 }
 
 fn validate_manifest_summary_artifact(
@@ -2583,6 +2610,37 @@ mod tests {
                 )
             }),
             "expected summary path mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_run_summary_entry_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        fs::copy(
+            temp_dir.path().join("summary.json"),
+            temp_dir.path().join("alternate-summary.json"),
+        )
+        .expect("alternate summary should be written");
+        let mut manifest = sample_validation_manifest();
+        manifest.summary = "alternate-summary.json".to_owned();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "runSummary artifact path summary.json does not match manifest summary alternate-summary.json",
+                )
+            }),
+            "expected run summary entry mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
