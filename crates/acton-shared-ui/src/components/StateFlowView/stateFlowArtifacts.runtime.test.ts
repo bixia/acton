@@ -188,6 +188,7 @@ const runSummary = {
   schemaVersion: 1,
   targetCount: 2,
   passed: false,
+  absolutePathCount: 0,
   gateFailures: ["target-b: replays 0"],
   targets: [
     {
@@ -244,6 +245,7 @@ const artifactManifest = {
   kind: "stateFlowArtifactManifest",
   summary: "out/summary.json",
   targetCount: 2,
+  absolutePathCount: 0,
   artifacts: [
     {kind: "runSummary", path: "out/summary.json", targetId: undefined},
     {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
@@ -365,6 +367,10 @@ assert(
   runSummaryView.metrics.some(metric => metric.label === "Targets" && metric.value === "2"),
   "expected target count metric",
 )
+assert(
+  runSummaryView.metrics.some(metric => metric.label === "Absolute Paths" && metric.value === "0"),
+  "expected run summary absolute path count metric",
+)
 const targetRows = sectionRows(runSummaryView, "Targets")
 assert(targetRows[0]?.label === "target-a", "expected first target row")
 assert(targetRows[0]?.value === "passed", "expected passed target value")
@@ -385,6 +391,10 @@ assert(manifestSummary.title === "State Flow Artifact Manifest", "expected manif
 assert(
   manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "10"),
   "expected manifest artifact count metric",
+)
+assert(
+  manifestSummary.metrics.some(metric => metric.label === "Absolute Paths" && metric.value === "0"),
+  "expected manifest absolute path count metric",
 )
 const manifestTargetRows = sectionRows(manifestSummary, "Targets")
 assert(manifestTargetRows[0]?.label === "target-a", "expected first manifest target row")

@@ -117,6 +117,7 @@ export interface StateFlowRunSummary {
   readonly schemaVersion: number
   readonly targetCount: number
   readonly passed: boolean
+  readonly absolutePathCount?: number
   readonly gateFailures: readonly string[]
   readonly targets: readonly StateFlowRunTargetSummary[]
 }
@@ -150,6 +151,7 @@ export interface StateFlowArtifactManifest {
   readonly kind: "stateFlowArtifactManifest"
   readonly summary: string
   readonly targetCount: number
+  readonly absolutePathCount?: number
   readonly artifacts: readonly StateFlowArtifactManifestEntry[]
 }
 
@@ -659,6 +661,7 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
     metrics: [
       {label: "Passed", value: yesNo(summary.passed)},
       {label: "Targets", value: summary.targetCount.toString()},
+      {label: "Absolute Paths", value: formatNullable(summary.absolutePathCount)},
       {label: "Gate Failures", value: summary.gateFailures.length.toString()},
       {
         label: "Replays",
@@ -703,6 +706,7 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
     metrics: [
       {label: "Targets", value: manifest.targetCount.toString()},
       {label: "Artifacts", value: manifest.artifacts.length.toString()},
+      {label: "Absolute Paths", value: formatNullable(manifest.absolutePathCount)},
     ],
     sections: [
       ...(targetRows.length > 0

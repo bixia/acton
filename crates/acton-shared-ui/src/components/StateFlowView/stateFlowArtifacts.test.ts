@@ -170,6 +170,7 @@ const runSummary = {
   schemaVersion: 1,
   targetCount: 1,
   passed: true,
+  absolutePathCount: 0,
   gateFailures: [],
   targets: [
     {
@@ -203,6 +204,7 @@ const artifactManifest = {
   kind: "stateFlowArtifactManifest",
   summary: "out/summary.json",
   targetCount: 1,
+  absolutePathCount: 0,
   artifacts: [
     {kind: "runSummary", path: "out/summary.json", targetId: undefined},
     {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
@@ -278,6 +280,10 @@ const manifestView = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(artifactManifest)),
 )
 assert(manifestView.title === "State Flow Artifact Manifest", "expected artifact manifest title")
+assert(
+  manifestView.metrics.some(metric => metric.label === "Absolute Paths" && metric.value === "0"),
+  "expected artifact manifest absolute path count",
+)
 assert(
   manifestView.sections
     .find(section => section.title === "Targets")

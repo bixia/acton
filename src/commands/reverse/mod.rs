@@ -1084,6 +1084,7 @@ struct SmokeRunSummary {
     schema_version: u32,
     target_count: usize,
     passed: bool,
+    absolute_path_count: usize,
     gate_failures: Vec<String>,
     targets: Vec<SmokeTargetRunSummary>,
 }
@@ -1094,6 +1095,7 @@ impl SmokeRunSummary {
             schema_version: 1,
             target_count: targets.len(),
             passed: false,
+            absolute_path_count: 0,
             gate_failures: Vec::new(),
             targets,
         };
@@ -1106,11 +1108,17 @@ impl SmokeRunSummary {
         for target in &mut summary.targets {
             target.rewrite_paths_relative_to(artifact_dir);
         }
+        summary.refresh_gate_status();
         summary
     }
 
     fn refresh_gate_status(&mut self) {
         self.target_count = self.targets.len();
+        self.absolute_path_count = self
+            .targets
+            .iter()
+            .map(smoke_target_absolute_path_count)
+            .sum();
         for target in &mut self.targets {
             target.refresh_gate_status();
         }
@@ -1185,6 +1193,8 @@ struct SmokeArtifactManifest {
     kind: String,
     summary: String,
     target_count: usize,
+    #[serde(default)]
+    absolute_path_count: usize,
     artifacts: Vec<SmokeArtifactManifestEntry>,
 }
 
@@ -1229,14 +1239,50 @@ impl SmokeArtifactManifest {
             ));
         }
 
+        let summary_artifact_path = manifest_relative_path(&summary_path, artifact_dir);
+        let absolute_path_count =
+            smoke_manifest_absolute_path_count(&summary_artifact_path, &artifacts);
+
         Self {
             schema_version: 1,
             kind: "stateFlowArtifactManifest".to_owned(),
-            summary: manifest_relative_path(&summary_path, artifact_dir),
+            summary: summary_artifact_path,
             target_count: summary.target_count,
+            absolute_path_count,
             artifacts,
         }
     }
+}
+
+fn smoke_target_absolute_path_count(target: &SmokeTargetRunSummary) -> usize {
+    [
+        Some(target.output_dir.as_str()),
+        Some(target.corpus.as_str()),
+        Some(target.schema.as_str()),
+        target.transaction.as_deref(),
+        target.replay.as_deref(),
+        Some(target.report.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|path| Path::new(path).is_absolute())
+    .count()
+        + target
+            .replays
+            .iter()
+            .filter(|path| Path::new(path).is_absolute())
+            .count()
+}
+
+fn smoke_manifest_absolute_path_count(
+    summary: &str,
+    artifacts: &[SmokeArtifactManifestEntry],
+) -> usize {
+    usize::from(Path::new(summary).is_absolute())
+        + artifacts
+            .iter()
+            .filter(|artifact| Path::new(&artifact.path).is_absolute())
+            .count()
 }
 
 fn manifest_relative_path(path: &Path, artifact_dir: &Path) -> String {
@@ -1583,6 +1629,7 @@ mod tests {
         let json = serde_json::to_value(&summary).expect("summary should serialize");
 
         assert_eq!(json["passed"], true);
+        assert_eq!(json["absolutePathCount"], 0);
         assert_eq!(json["gateFailures"], serde_json::json!([]));
         assert_eq!(json["targets"][0]["passed"], true);
         assert_eq!(json["targets"][0]["gateFailures"], serde_json::json!([]));
@@ -1678,6 +1725,7 @@ mod tests {
             serde_json::json!(["target-a/replay.json"])
         );
         assert_eq!(json["targets"][0]["report"], "target-a/report.md");
+        assert_eq!(json["absolutePathCount"], 0);
     }
 
     #[test]
@@ -1696,6 +1744,7 @@ mod tests {
         assert_eq!(json["kind"], "stateFlowArtifactManifest");
         assert_eq!(json["summary"], "summary.json");
         assert_eq!(json["targetCount"], 1);
+        assert_eq!(json["absolutePathCount"], 0);
         assert_eq!(json["artifacts"].as_array().unwrap().len(), 7);
         assert_eq!(
             json["artifacts"],
@@ -1937,6 +1986,7 @@ mod tests {
         summary.targets[0].replay = Some(target_dir.join("replay.json").display().to_string());
         summary.targets[0].replays = vec![target_dir.join("replay.json").display().to_string()];
         summary.targets[0].report = target_dir.join("report.md").display().to_string();
+        summary.refresh_gate_status();
     }
 
     fn sample_replay_corpus_json() -> String {
