@@ -2650,11 +2650,15 @@ fn validate_report_schema_deliverables(
     if let Some(section) = markdown_section(markdown, "## Opcode Candidates") {
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
-            if !section.contains(&opcode) || !section.contains(&candidate.confidence) {
+            let candidate_row = report_opcode_candidate_row(section, &opcode);
+            if candidate_row.is_none() {
                 gate_failures.push(format!(
                     "report opcode candidate {opcode} with confidence {} is missing",
                     candidate.confidence
                 ));
+            }
+            if let Some(row) = candidate_row {
+                validate_report_opcode_candidate_values(candidate, &opcode, &row, gate_failures);
             }
         }
     }
@@ -2753,6 +2757,90 @@ fn validate_report_effect_row(
 
 fn report_opcode_label(opcode: Option<&str>) -> String {
     opcode.unwrap_or("<none>").to_owned()
+}
+
+fn report_opcode_candidate_row(section: &str, opcode: &str) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        cells
+            .get(0)
+            .is_some_and(|cell| cell == opcode)
+            .then_some(cells)
+    })
+}
+
+fn validate_report_opcode_candidate_values(
+    candidate: &ton_stateflow::OpcodeSchemaCandidate,
+    opcode: &str,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_opcode_candidate_cell(
+        "count",
+        candidate.count.to_string(),
+        opcode,
+        row.get(1),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "confidence",
+        candidate.confidence.clone(),
+        opcode,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "body bits",
+        report_range(
+            candidate.inbound_body.min_bits,
+            candidate.inbound_body.max_bits,
+        ),
+        opcode,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "body refs",
+        report_range(
+            candidate.inbound_body.min_refs,
+            candidate.inbound_body.max_refs,
+        ),
+        opcode,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "evidence",
+        candidate.examples.join(", "),
+        opcode,
+        row.get(9),
+        gate_failures,
+    );
+}
+
+fn validate_report_opcode_candidate_cell(
+    label: &str,
+    expected: String,
+    opcode: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report opcode candidate {label} {expected} for {opcode} is missing"
+        ));
+    }
+}
+
+fn report_range<T>(min: T, max: T) -> String
+where
+    T: Eq + std::fmt::Display,
+{
+    if min == max {
+        min.to_string()
+    } else {
+        format!("{min}-{max}")
+    }
 }
 
 fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
@@ -3807,6 +3895,86 @@ mod tests {
                 failure.contains("target-a: report target line \"- Address: `addr`\" is missing")
             }),
             "expected report target mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_opcode_candidate_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_opcode_candidate("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("target-a: report opcode candidate count 2 for 0x00000001 is missing")
+            }),
+            "expected report opcode count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report opcode candidate body bits 32 for 0x00000001 is missing",
+                )
+            }),
+            "expected report opcode body bits failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report opcode candidate evidence tx-a, tx-b for 0x00000001 is missing")
+            }),
+            "expected report opcode evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_accepts_report_opcode_candidate_range_format() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["maxBits"] = serde_json::json!(40);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_opcode_candidate_range("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(
+            validation.passed,
+            "expected renderer range format to pass, got {:?}",
             validation.gate_failures
         );
     }
@@ -5044,6 +5212,20 @@ mod tests {
 
     fn sample_report_markdown_without_schema_evidence(address: &str) -> String {
         sample_report_markdown_inner(address, false, "flip body bit 0", true, true)
+    }
+
+    fn sample_report_markdown_with_wrong_opcode_candidate(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 9 | medium | 16 | 1 | balance 0 | none | none | none | foreign-tx |",
+        )
+    }
+
+    fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32-40 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+        )
     }
 
     fn sample_report_markdown_with_wrong_schema_evidence(address: &str) -> String {
