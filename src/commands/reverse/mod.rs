@@ -4547,12 +4547,89 @@ fn validate_report_opcode_candidate_values(
         gate_failures,
     );
     validate_report_opcode_candidate_cell(
+        "storage",
+        report_opcode_candidate_storage(&candidate.storage),
+        opcode,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "state transitions",
+        report_state_transition_list(&candidate.state_transitions),
+        opcode,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "outbound effects",
+        report_effect_summary_list(&candidate.outbound_effects),
+        opcode,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
+        "out actions",
+        report_effect_summary_list(&candidate.out_actions),
+        opcode,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_opcode_candidate_cell(
         "evidence",
         candidate.examples.join(", "),
         opcode,
         row.get(9),
         gate_failures,
     );
+}
+
+fn report_opcode_candidate_storage(storage: &ton_stateflow::StorageShapeCandidate) -> String {
+    let balance = if storage.balance_delta_min == storage.balance_delta_max {
+        storage.balance_delta_min.to_string()
+    } else {
+        format!(
+            "{}..{}",
+            storage.balance_delta_min, storage.balance_delta_max
+        )
+    };
+    let mut parts = vec![format!(
+        "balance {balance}; data hash changes {}; code hash changes {}",
+        storage.data_hash_changed_count, storage.code_hash_changed_count
+    )];
+    if let Some(shape) = &storage.post_data_shape {
+        parts.push(format!("data shape {}", report_cell_shape_range(shape)));
+    }
+    if let Some(shape) = &storage.post_code_shape {
+        parts.push(format!("code shape {}", report_cell_shape_range(shape)));
+    }
+    parts.join("; ")
+}
+
+fn report_state_transition_list(transitions: &[ton_stateflow::StateTransitionCandidate]) -> String {
+    if transitions.is_empty() {
+        return "none".to_owned();
+    }
+    transitions
+        .iter()
+        .map(|transition| {
+            format!(
+                "{} -> {} ({})",
+                transition.from_status, transition.to_status, transition.count
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn report_effect_summary_list(effects: &[ton_stateflow::EffectCandidate]) -> String {
+    if effects.is_empty() {
+        return "none".to_owned();
+    }
+    effects
+        .iter()
+        .map(|effect| format!("{} ({})", effect.kind, effect.count))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn validate_report_opcode_candidate_cell(
@@ -6879,8 +6956,8 @@ mod tests {
             temp_dir.path(),
             "target-a/report.md",
             &report.replace(
-                "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
-                "| `0x00000001` | 1 | medium | 32-64 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a |",
+                "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
+                "| `0x00000001` | 1 | medium | 32-64 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a |",
             ),
         );
         let manifest = sample_validation_manifest();
@@ -7367,6 +7444,34 @@ mod tests {
                 failure.contains("target-a: report opcode candidate evidence tx-a, tx-b for 0x00000001 is missing")
             }),
             "expected report opcode evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_opcode_candidate_storage_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_opcode_candidate_storage("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "target-a: report opcode candidate storage balance -3; data hash changes 0; code hash changes 0 for 0x00000001 is missing"
+            )),
+            "expected report opcode storage failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -10148,8 +10253,15 @@ mod tests {
 
     fn sample_report_markdown_with_wrong_opcode_candidate(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
             "| `0x00000001` | 9 | medium | 16 | 1 | balance 0 | none | none | none | foreign-tx |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_opcode_candidate_storage(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0 | none | none | none | tx-a, tx-b |",
         )
     }
 
@@ -10166,8 +10278,8 @@ mod tests {
 
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
-            "| `0x00000001` | 2 | medium | 32-40 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32-40 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
         )
     }
 
@@ -10355,7 +10467,7 @@ mod tests {
         include_risk_point: bool,
     ) -> String {
         let opcode_candidate_row = if include_schema_summary_rows {
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |\n"
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |\n"
         } else {
             ""
         };
