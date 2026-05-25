@@ -3881,6 +3881,32 @@ fn validate_evidence_value_field<T>(
     }
 }
 
+fn validate_evidence_optional_field<T>(
+    actual_label: &str,
+    actual: Option<T>,
+    expected_label: &str,
+    expected: Option<T>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) where
+    T: PartialEq + std::fmt::Display,
+{
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {} for {tx_hash} does not match {expected_label} {}",
+            option_value_label(actual),
+            option_value_label(expected)
+        ));
+    }
+}
+
+fn option_value_label<T>(value: Option<T>) -> String
+where
+    T: std::fmt::Display,
+{
+    value.map_or_else(|| "<none>".to_owned(), |value| value.to_string())
+}
+
 fn option_text_label(value: Option<&str>) -> String {
     value.unwrap_or("<none>").to_owned()
 }
@@ -3917,6 +3943,7 @@ fn validate_manifest_replay_membership(
                 replay.source_query_hash
             ));
         }
+        validate_replay_diff_matches_observations(&replay, gate_failures);
         let corpus_flow = corpus
             .transactions
             .iter()
@@ -3930,6 +3957,140 @@ fn validate_manifest_replay_membership(
             validate_replay_baseline_matches_corpus(&replay, corpus_flow, gate_failures);
         }
     }
+}
+
+fn validate_replay_diff_matches_observations(
+    replay: &StateFlowReplayDiff,
+    gate_failures: &mut Vec<String>,
+) {
+    let tx_hash = &replay.source_query_hash;
+    validate_evidence_value_field(
+        "replay diff replay accepted",
+        replay.diff.replay_accepted,
+        "observed replay accepted",
+        replay.replay.accepted,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "replay diff input changed",
+        replay.diff.input_changed,
+        "observed input changed",
+        replay.baseline.inbound.body.hash != replay.replay.inbound.body.hash
+            || replay.baseline.inbound.message_boc64 != replay.replay.inbound.message_boc64,
+        tx_hash,
+        gate_failures,
+    );
+
+    let baseline_state = replay.baseline.state.as_ref();
+    let replay_state = replay.replay.state.as_ref();
+    validate_evidence_optional_field(
+        "replay diff state changed",
+        replay.diff.state_changed,
+        "observed state changed",
+        baseline_state
+            .zip(replay_state)
+            .map(|(lhs, rhs)| lhs.shard_account_boc64 != rhs.shard_account_boc64),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "replay diff code hash changed",
+        replay.diff.code_hash_changed,
+        "observed code hash changed",
+        baseline_state
+            .zip(replay_state)
+            .map(|(lhs, rhs)| lhs.code_hash != rhs.code_hash),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "replay diff data hash changed",
+        replay.diff.data_hash_changed,
+        "observed data hash changed",
+        baseline_state
+            .zip(replay_state)
+            .map(|(lhs, rhs)| lhs.data_hash != rhs.data_hash),
+        tx_hash,
+        gate_failures,
+    );
+
+    let baseline_balance = replay
+        .baseline
+        .money
+        .as_ref()
+        .map(|money| money.balance_after as i128 - money.balance_before as i128);
+    let replay_balance = replay
+        .replay
+        .money
+        .as_ref()
+        .map(|money| money.balance_after as i128 - money.balance_before as i128);
+    validate_evidence_optional_field(
+        "replay diff balance delta",
+        replay.diff.balance_delta_diff,
+        "observed balance delta",
+        baseline_balance
+            .zip(replay_balance)
+            .map(|(baseline, replay)| replay - baseline),
+        tx_hash,
+        gate_failures,
+    );
+
+    let baseline_exit = replay
+        .baseline
+        .compute
+        .as_ref()
+        .and_then(|compute| compute.exit_code);
+    let replay_exit = replay
+        .replay
+        .compute
+        .as_ref()
+        .and_then(|compute| compute.exit_code);
+    validate_evidence_optional_field(
+        "replay diff exit changed",
+        replay.diff.exit_code_changed,
+        "observed exit changed",
+        replay
+            .baseline
+            .compute
+            .as_ref()
+            .zip(replay.replay.compute.as_ref())
+            .map(|_| baseline_exit != replay_exit),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "replay diff outbound count delta",
+        replay.diff.outbound_count_delta,
+        "observed outbound count delta",
+        replay
+            .replay
+            .accepted
+            .then_some(replay.replay.outbound.len() as i64 - replay.baseline.outbound.len() as i64),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "replay diff action count delta",
+        replay.diff.action_count_delta,
+        "observed action count delta",
+        replay.replay.accepted.then_some(
+            replay.replay.out_actions.len() as i64 - replay.baseline.out_actions.len() as i64,
+        ),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "replay diff c5 changed",
+        replay.diff.c5_changed,
+        "observed c5 changed",
+        replay.replay.accepted.then_some(
+            replay.baseline.c5.as_ref().map(|c5| &c5.hash)
+                != replay.replay.c5.as_ref().map(|c5| &c5.hash),
+        ),
+        tx_hash,
+        gate_failures,
+    );
 }
 
 fn validate_replay_baseline_matches_corpus(
@@ -6593,6 +6754,52 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_replay_diff_mismatch_with_observations() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["diff"]["outboundCountDelta"] = serde_json::json!(7);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let report_path = temp_dir.path().join("target-a/report.md");
+        let report = fs::read_to_string(&report_path).expect("report artifact should be readable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &report.replace(
+                "| `tx-a` | flip body bit 0 | true | true | false | false | false | 0 | false | 0 | 0 | true |",
+                "| `tx-a` | flip body bit 0 | true | true | false | false | false | 0 | false | 7 | 0 | true |",
+            ),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay diff outbound count delta 7 for tx-a does not match observed outbound count delta 0",
+                )
+            }),
+            "expected replay diff outbound count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_unmutated_replay_bundle() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6653,7 +6860,7 @@ mod tests {
                 "mutation": {"type": "flipBodyBit", "bit": 0},
                 "ignoreChksig": false,
                 "baseline": sample_replay_observation_json(true),
-                "replay": sample_replay_observation_json(true),
+                "replay": sample_mutated_replay_observation_json(true),
                 "diff": {
                     "replayAccepted": true,
                     "inputChanged": false,
@@ -6701,7 +6908,7 @@ mod tests {
                 "mutation": {"type": "flipBodyBit", "bit": 0},
                 "ignoreChksig": false,
                 "baseline": sample_replay_observation_json(true),
-                "replay": sample_replay_observation_json(true),
+                "replay": sample_mutated_replay_observation_json(true),
                 "diff": {
                     "replayAccepted": true,
                     "inputChanged": true,
@@ -7050,7 +7257,7 @@ mod tests {
                 "mutation": {"type": "flipBodyBit", "bit": 0},
                 "ignoreChksig": false,
                 "baseline": sample_replay_observation_json(true),
-                "replay": sample_replay_observation_json(true),
+                "replay": sample_mutated_replay_observation_json(true),
                 "diff": {
                     "replayAccepted": true,
                     "inputChanged": true,
@@ -7313,6 +7520,15 @@ mod tests {
             "executorTrace": flow["executorTrace"].clone(),
             "error": null
         })
+    }
+
+    fn sample_mutated_replay_observation_json(accepted: bool) -> serde_json::Value {
+        let mut observation = sample_replay_observation_json(accepted);
+        observation["inbound"]["messageBoc64"] = serde_json::json!("mutated-msg");
+        observation["inbound"]["body"] = serde_json::json!({"boc64": "mutated-body", "hash": "mutated-hash", "bits": 32, "refs": 0});
+        observation["c5"] =
+            serde_json::json!({"boc64": "c5", "hash": "c5-hash", "bits": 0, "refs": 0});
+        observation
     }
 
     fn sample_state_flow_json(query_hash: &str) -> serde_json::Value {
