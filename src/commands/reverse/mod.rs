@@ -2420,22 +2420,111 @@ fn validate_manifest_report_content_matches_summary(
     for replay in
         read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay")
     {
-        if !replay_diff_section.is_some_and(|section| section.contains(&replay.source_query_hash)) {
+        let replay_row =
+            replay_diff_section.and_then(|section| report_replay_diff_row(section, &replay));
+        if replay_row.is_none() {
             gate_failures.push(format!(
                 "report replay tx hash {} is missing",
                 replay.source_query_hash
             ));
         }
         let mutation_label = report_replay_mutation_label(&replay.mutation);
-        if !replay_diff_section.is_some_and(|section| {
-            section.contains(&replay.source_query_hash) && section.contains(&mutation_label)
-        }) {
+        if replay_row.is_none() {
             gate_failures.push(format!(
                 "report replay mutation {mutation_label:?} for tx {} is missing",
                 replay.source_query_hash
             ));
         }
+        if let Some(row) = replay_row {
+            validate_report_replay_diff_values(&replay, &row, gate_failures);
+        }
     }
+}
+
+fn report_replay_diff_row(section: &str, replay: &StateFlowReplayDiff) -> Option<Vec<String>> {
+    let mutation_label = report_replay_mutation_label(&replay.mutation);
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells
+            .get(0)
+            .is_some_and(|cell| cell == &replay.source_query_hash)
+            && cells.get(1).is_some_and(|cell| cell == &mutation_label))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_replay_diff_values(
+    replay: &StateFlowReplayDiff,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_replay_diff_cell(
+        "accepted",
+        replay.diff.replay_accepted.to_string(),
+        replay,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "input changed",
+        replay.diff.input_changed.to_string(),
+        replay,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "state changed",
+        report_optional_bool(replay.diff.state_changed),
+        replay,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "exit changed",
+        report_optional_bool(replay.diff.exit_code_changed),
+        replay,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "outbound delta",
+        replay
+            .diff
+            .outbound_count_delta
+            .map_or("n/a".to_owned(), |value| value.to_string()),
+        replay,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_replay_diff_cell(
+        "action delta",
+        replay
+            .diff
+            .action_count_delta
+            .map_or("n/a".to_owned(), |value| value.to_string()),
+        replay,
+        row.get(7),
+        gate_failures,
+    );
+}
+
+fn validate_report_replay_diff_cell(
+    label: &str,
+    expected: String,
+    replay: &StateFlowReplayDiff,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report replay {label} {expected} for tx {} is missing",
+            replay.source_query_hash
+        ));
+    }
+}
+
+fn report_optional_bool(value: Option<bool>) -> String {
+    value.map_or("n/a".to_owned(), |value| value.to_string())
 }
 
 fn validate_report_schema_deliverables(
@@ -2549,6 +2638,22 @@ fn validate_report_effect_row(
 
 fn report_opcode_label(opcode: Option<&str>) -> String {
     opcode.unwrap_or("<none>").to_owned()
+}
+
+fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
+    let line = line.trim();
+    if !line.starts_with('|') || !line.ends_with('|') {
+        return None;
+    }
+    let cells = line
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().trim_matches('`').to_owned())
+        .collect::<Vec<_>>();
+    (!cells
+        .iter()
+        .all(|cell| cell.chars().all(|ch| ch == '-' || ch == ':')))
+    .then_some(cells)
 }
 
 fn markdown_line_exists(markdown: &str, expected: &str) -> bool {
@@ -3659,6 +3764,35 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_replay_diff_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_diff("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("target-a: report replay input changed true for tx tx-a is missing")
+            }),
+            "expected report replay input-changed failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_missing_schema_deliverables() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -4722,6 +4856,13 @@ mod tests {
         sample_report_markdown_inner(address, true, "none", true, true)
     }
 
+    fn sample_report_markdown_with_wrong_replay_diff(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `tx-a` | flip body bit 0 | true | true | false | false | 0 | 0 |",
+            "| `tx-a` | flip body bit 0 | true | false | false | true | 99 | 99 |",
+        )
+    }
+
     fn sample_report_markdown_without_schema_deliverables(address: &str) -> String {
         sample_report_markdown_inner(address, true, "flip body bit 0", false, false)
     }
@@ -4797,7 +4938,7 @@ mod tests {
              ## Replay Diffs\n\
              | Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |\n\
              | --- | --- | --- | --- | --- | --- | ---: | ---: |\n\
-             | `tx-a` | {replay_mutation} | true | true | true | false | 0 | 0 |\n\
+             | `tx-a` | {replay_mutation} | true | true | false | false | 0 | 0 |\n\
              \n\
              ## Risk Points\n\
              {risk_point}"
