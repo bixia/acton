@@ -814,6 +814,24 @@ assert(
   "expected report risk point text",
 )
 
+const reportWithEscapedPipe = `# TON State Flow Reverse Report
+
+## Opcode Candidates
+| Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| \`0x00000001\` | 1 | low | 32 | 0 | data shape 16/1 | active -> active | internal send\\|notify | send_msg | \`tx-a\` |
+`
+const escapedPipeReport = summarizeStateFlowArtifact(parseStateFlowArtifact(reportWithEscapedPipe))
+const escapedPipeOpcodeRows = sectionRows(escapedPipeReport, "Opcode Candidates")
+assert(
+  escapedPipeOpcodeRows[0]?.detail?.includes("outbound internal send|notify") === true,
+  "expected escaped table pipe to stay inside the outbound cell",
+)
+assert(
+  escapedPipeOpcodeRows[0]?.detail?.includes("actions send_msg") === true,
+  "expected columns after escaped pipe to remain aligned",
+)
+
 function sectionRows(
   summary: ReturnType<typeof summarizeStateFlowArtifact>,
   title: string,

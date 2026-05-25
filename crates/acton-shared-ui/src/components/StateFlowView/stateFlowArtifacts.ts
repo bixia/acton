@@ -1303,10 +1303,36 @@ function reportTableRows(
 }
 
 function parseMarkdownTableRow(line: string): readonly string[] {
-  return line
-    .slice(1, -1)
-    .split("|")
-    .map(cell => stripMarkdownInline(cell))
+  const cells: string[] = []
+  let cell = ""
+  let escaped = false
+
+  for (const char of line.slice(1, -1)) {
+    if (escaped) {
+      cell += char === "|" ? "|" : `\\${char}`
+      escaped = false
+      continue
+    }
+
+    if (char === "\\") {
+      escaped = true
+      continue
+    }
+
+    if (char === "|") {
+      cells.push(stripMarkdownInline(cell))
+      cell = ""
+      continue
+    }
+
+    cell += char
+  }
+
+  if (escaped) {
+    cell += "\\"
+  }
+  cells.push(stripMarkdownInline(cell))
+  return cells
 }
 
 function isMarkdownTableDataRow(values: readonly string[]): boolean {
