@@ -4317,6 +4317,9 @@ fn validate_report_schema_deliverables(
     }
 
     if let Some(section) = markdown_section(markdown, "## State Machine Evidence") {
+        if !schema.state_machine.edges.is_empty() {
+            validate_report_state_machine_evidence_header(section, gate_failures);
+        }
         for edge in &schema.state_machine.edges {
             let edge_row = report_state_machine_evidence_row(section, edge);
             if edge_row.is_none() {
@@ -4342,6 +4345,26 @@ fn validate_report_schema_deliverables(
             }
         }
     }
+}
+
+fn validate_report_state_machine_evidence_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = state_machine_evidence_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report state machine evidence header {expected:?} is missing"
+        ));
+    }
+}
+
+fn state_machine_evidence_report_header() -> Vec<String> {
+    ["From", "To", "Opcode", "Count", "Confidence", "Evidence"]
+        .iter()
+        .map(|header| header.to_string())
+        .collect()
 }
 
 fn validate_report_outbound_effects_header(section: &str, gate_failures: &mut Vec<String>) {
@@ -4402,23 +4425,18 @@ fn validate_report_state_machine_evidence_values(
         row.get(3),
         gate_failures,
     );
-    let evidence_index = if row.len() >= 6 {
-        validate_report_state_machine_evidence_cell(
-            "confidence",
-            report_state_machine_edge_confidence(edge.count).to_owned(),
-            edge,
-            row.get(4),
-            gate_failures,
-        );
-        5
-    } else {
-        4
-    };
+    validate_report_state_machine_evidence_cell(
+        "confidence",
+        report_state_machine_edge_confidence(edge.count).to_owned(),
+        edge,
+        row.get(4),
+        gate_failures,
+    );
     validate_report_state_machine_evidence_cell(
         "evidence",
         report_sample_list(&edge.examples),
         edge,
-        row.get(evidence_index),
+        row.get(5),
         gate_failures,
     );
 }
@@ -8149,6 +8167,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_state_machine_evidence_legacy_columns() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_legacy_state_machine_evidence_columns("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "target-a: report state machine evidence header [\"From\", \"To\", \"Opcode\", \"Count\", \"Confidence\", \"Evidence\"] is missing"
+            )),
+            "expected report state machine evidence header failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_state_machine_edge_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10229,6 +10275,19 @@ mod tests {
         sample_report_markdown(address).replace(
             "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
             "| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |",
+        )
+    }
+
+    fn sample_report_markdown_with_legacy_state_machine_evidence_columns(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## State Machine Evidence\n\
+             | From | To | Opcode | Count | Confidence | Evidence |\n\
+             | --- | --- | --- | ---: | --- | --- |\n\
+             | none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
+            "## State Machine Evidence\n\
+             | From | To | Opcode | Count | Evidence |\n\
+             | --- | --- | --- | ---: | --- |\n\
+             | none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |",
         )
     }
 
