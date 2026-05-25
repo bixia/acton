@@ -2753,8 +2753,12 @@ fn validate_report_schema_deliverables(
 
     if let Some(section) = markdown_section(markdown, "## Risk Points") {
         for signal in &schema.audit_signals {
-            if !section.contains(&signal.description) {
+            let risk_line = report_risk_line(section, signal);
+            if risk_line.is_none() {
                 gate_failures.push(format!("report risk {:?} is missing", signal.description));
+            }
+            if let Some(line) = risk_line {
+                validate_report_risk_values(signal, line, gate_failures);
             }
         }
     }
@@ -3093,6 +3097,38 @@ fn report_unknown_field_opcode_header(line: &str) -> Option<String> {
 fn report_unknown_field_line(line: &str) -> Option<&str> {
     let line = line.strip_prefix("  - ")?;
     Some(line.trim())
+}
+
+fn report_risk_line<'a>(section: &'a str, signal: &ton_stateflow::AuditSignal) -> Option<&'a str> {
+    section
+        .lines()
+        .find(|line| line.trim_start_matches("- ").contains(&signal.description))
+}
+
+fn validate_report_risk_values(
+    signal: &ton_stateflow::AuditSignal,
+    line: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    for evidence in &signal.evidence {
+        if !report_risk_evidence_exists(line, evidence) {
+            gate_failures.push(format!(
+                "report risk evidence {evidence} for {:?} is missing",
+                signal.description
+            ));
+        }
+    }
+}
+
+fn report_risk_evidence_exists(line: &str, evidence: &str) -> bool {
+    line.split("Evidence:")
+        .nth(1)
+        .is_some_and(|evidence_section| {
+            evidence_section
+                .trim_end_matches('.')
+                .split(',')
+                .any(|item| item.trim().trim_matches('`') == evidence)
+        })
 }
 
 fn report_effect_row(
@@ -4721,6 +4757,36 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_risk_evidence_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_risk_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report risk evidence tx-a for \"Unknown fields remain.\" is missing",
+                )
+            }),
+            "expected report risk evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn markdown_table_cells_preserve_escaped_pipes_inside_cells() {
         let cells = super::markdown_table_cells(
             "| action | `SendMsgFlags(IGNORE_ERROR \\| WITH_REMAINING_BALANCE)` | tx-a |",
@@ -6018,6 +6084,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Unknown Fields\n- `0x00000001`:",
             "## Unknown Fields\n- `0x00000001`:\n- `0x00000002`:\n  - payload tail requires TL-B recovery",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_risk_evidence(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "- Unknown fields remain. Evidence: `tx-a`.",
+            "- Unknown fields remain. Evidence: `tx-b`.",
         )
     }
 
