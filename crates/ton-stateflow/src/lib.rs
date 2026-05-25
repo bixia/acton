@@ -1,6 +1,7 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
 use ton_retrace::{
     AccountTxRef, ComputeInfo, Network, ReplayTransactionArgs, ReplayTransactionResult,
     ReplayTransactionSuccess, TraceResult,
@@ -407,6 +408,191 @@ pub fn replay_state_flow_tx(
         replay,
         diff,
     })
+}
+
+pub fn render_state_flow_report(
+    corpus: &StateFlowCorpus,
+    schema: &StateFlowSchemaReport,
+    replays: &[StateFlowReplayDiff],
+) -> String {
+    let mut report = String::new();
+    writeln!(report, "# TON State Flow Reverse Report").ok();
+    writeln!(report).ok();
+    writeln!(report, "## Target").ok();
+    writeln!(report, "- Network: `{}`", corpus.network).ok();
+    writeln!(report, "- Address: `{}`", corpus.address).ok();
+    writeln!(report, "- Source transactions: {}", corpus.source_tx_count).ok();
+    writeln!(report, "- Retraced transactions: {}", corpus.retraced_count).ok();
+    writeln!(
+        report,
+        "- Replay failures while collecting: {}",
+        corpus.failure_count
+    )
+    .ok();
+    writeln!(report).ok();
+
+    writeln!(report, "## Opcode Candidates").ok();
+    writeln!(
+        report,
+        "| Opcode | Count | Confidence | Body bits | Body refs | State transitions | Outbound effects | Out actions | Evidence |"
+    )
+    .ok();
+    writeln!(
+        report,
+        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |"
+    )
+    .ok();
+    for candidate in &schema.opcode_candidates {
+        writeln!(
+            report,
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            markdown_code_opt(candidate.opcode.as_deref()),
+            candidate.count,
+            candidate.confidence,
+            format_range(
+                candidate.inbound_body.min_bits,
+                candidate.inbound_body.max_bits
+            ),
+            format_range(
+                candidate.inbound_body.min_refs,
+                candidate.inbound_body.max_refs
+            ),
+            markdown_escape(&format_state_transitions(&candidate.state_transitions)),
+            markdown_escape(&format_effects(&candidate.outbound_effects)),
+            markdown_escape(&format_effects(&candidate.out_actions)),
+            markdown_escape(&candidate.examples.join(", ")),
+        )
+        .ok();
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Unknown Fields").ok();
+    if schema.opcode_candidates.is_empty() {
+        writeln!(report, "- No opcode candidates were inferred.").ok();
+    }
+    for candidate in &schema.opcode_candidates {
+        writeln!(
+            report,
+            "- {}:",
+            markdown_code_opt(candidate.opcode.as_deref())
+        )
+        .ok();
+        for field in &candidate.unknown_fields {
+            writeln!(report, "  - {}", field).ok();
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Replay Diffs").ok();
+    if replays.is_empty() {
+        writeln!(report, "- No replay diff artifacts were provided.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |"
+        )
+        .ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | --- | --- | --- | ---: | ---: |"
+        )
+        .ok();
+        for replay in replays {
+            writeln!(
+                report,
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} |",
+                replay.source_query_hash,
+                markdown_escape(&mutation_label(&replay.mutation)),
+                replay.diff.replay_accepted,
+                replay.diff.input_changed,
+                format_optional_bool(replay.diff.state_changed),
+                format_optional_bool(replay.diff.exit_code_changed),
+                replay
+                    .diff
+                    .outbound_count_delta
+                    .map_or("n/a".to_owned(), |value| value.to_string()),
+                replay
+                    .diff
+                    .action_count_delta
+                    .map_or("n/a".to_owned(), |value| value.to_string()),
+            )
+            .ok();
+        }
+    }
+    writeln!(report).ok();
+
+    if !corpus.failures.is_empty() {
+        writeln!(report, "## Collection Failures").ok();
+        for failure in &corpus.failures {
+            writeln!(
+                report,
+                "- `{}` at lt {}: {}",
+                failure.hash, failure.lt, failure.error
+            )
+            .ok();
+        }
+        writeln!(report).ok();
+    }
+
+    report
+}
+
+fn format_range<T>(min: T, max: T) -> String
+where
+    T: Copy + Eq + std::fmt::Display,
+{
+    if min == max {
+        min.to_string()
+    } else {
+        format!("{min}-{max}")
+    }
+}
+
+fn format_state_transitions(transitions: &[StateTransitionCandidate]) -> String {
+    if transitions.is_empty() {
+        return "none".to_owned();
+    }
+    transitions
+        .iter()
+        .map(|transition| {
+            format!(
+                "{} -> {} ({})",
+                transition.from_status, transition.to_status, transition.count
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_effects(effects: &[EffectCandidate]) -> String {
+    if effects.is_empty() {
+        return "none".to_owned();
+    }
+    effects
+        .iter()
+        .map(|effect| format!("{} ({})", effect.kind, effect.count))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn mutation_label(mutation: &ReplayMutation) -> String {
+    match mutation {
+        ReplayMutation::None => "none".to_owned(),
+        ReplayMutation::FlipBodyBit { bit } => format!("flip body bit {bit}"),
+        ReplayMutation::ReplaceBody { .. } => "replace body".to_owned(),
+    }
+}
+
+fn format_optional_bool(value: Option<bool>) -> String {
+    value.map_or("n/a".to_owned(), |value| value.to_string())
+}
+
+fn markdown_code_opt(value: Option<&str>) -> String {
+    value.map_or_else(|| "`<none>`".to_owned(), |value| format!("`{value}`"))
+}
+
+fn markdown_escape(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
 }
 
 impl StateFlowTx {
@@ -1202,6 +1388,32 @@ mod tests {
         let mut mutated_body = mutated_message.body;
 
         assert_eq!(mutated_body.load_u32().unwrap(), 0x8000_0000);
+    }
+
+    #[test]
+    fn report_renderer_includes_evidence_confidence_and_unknowns() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow("tx-a", Some("0x00000001"))],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains("# TON State Flow Reverse Report"));
+        assert!(report.contains("## Opcode Candidates"));
+        assert!(report.contains("medium"));
+        assert!(report.contains("tx-a"));
+        assert!(report.contains("## Unknown Fields"));
+        assert!(report.contains("TL-B"));
     }
 
     fn sample_flow(query_hash: &str, opcode: Option<&str>) -> StateFlowTx {

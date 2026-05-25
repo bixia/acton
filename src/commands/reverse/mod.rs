@@ -6,7 +6,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use ton_retrace::Network;
-use ton_stateflow::{ReplayMutation, StateFlowCorpus, StateFlowTx};
+use ton_stateflow::{
+    ReplayMutation, StateFlowCorpus, StateFlowReplayDiff, StateFlowSchemaReport, StateFlowTx,
+};
 
 #[derive(Subcommand, Clone)]
 pub enum ReverseCommand {
@@ -97,6 +99,27 @@ pub enum ReverseCommand {
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
     },
+    #[command(about = "Generate a state-flow reverse-engineering report")]
+    Report {
+        #[arg(help = "State-flow corpus JSON produced by `acton reverse collect`")]
+        corpus: PathBuf,
+        #[arg(long, help = "Schema candidate JSON produced by `acton reverse infer`")]
+        schema: PathBuf,
+        #[arg(
+            long,
+            value_name = "REPLAY",
+            help = "Replay diff JSON produced by `acton reverse replay`"
+        )]
+        replay: Vec<PathBuf>,
+        #[arg(
+            short,
+            long,
+            alias = "out",
+            visible_alias = "out",
+            help = "Write Markdown report to a file"
+        )]
+        output: Option<PathBuf>,
+    },
 }
 
 pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
@@ -134,6 +157,12 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             output,
             pretty,
         ),
+        ReverseCommand::Report {
+            corpus,
+            schema,
+            replay,
+            output,
+        } => reverse_report_cmd(corpus, schema, replay, output),
     }
 }
 
@@ -224,12 +253,58 @@ fn reverse_replay_cmd(
     write_json(&diff, output, pretty, "State-flow replay diff JSON")
 }
 
+fn reverse_report_cmd(
+    corpus: PathBuf,
+    schema: PathBuf,
+    replay: Vec<PathBuf>,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let corpus_json = fs::read_to_string(&corpus)
+        .with_context(|| format!("failed to read {}", corpus.display()))?;
+    let corpus: StateFlowCorpus = serde_json::from_str(&corpus_json)
+        .with_context(|| format!("failed to parse {}", corpus.display()))?;
+    let schema_json = fs::read_to_string(&schema)
+        .with_context(|| format!("failed to read {}", schema.display()))?;
+    let schema: StateFlowSchemaReport = serde_json::from_str(&schema_json)
+        .with_context(|| format!("failed to parse {}", schema.display()))?;
+    let replays = replay
+        .iter()
+        .map(|path| {
+            let json = fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            serde_json::from_str::<StateFlowReplayDiff>(&json)
+                .with_context(|| format!("failed to parse {}", path.display()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
+    write_text(&report, output, "State-flow report")
+}
+
 fn write_state_flow(
     flow: &StateFlowTx,
     output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
     write_json(flow, output, pretty, "State-flow JSON")
+}
+
+fn write_text(text: &str, output: Option<PathBuf>, label: &str) -> anyhow::Result<()> {
+    if let Some(output) = output {
+        if let Some(parent) = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(&output, text)
+            .with_context(|| format!("failed to write {}", output.display()))?;
+        println!("{label} written to {}", output.display());
+    } else {
+        println!("{text}");
+    }
+
+    Ok(())
 }
 
 fn write_json<T: Serialize>(

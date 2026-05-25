@@ -420,6 +420,38 @@ fn test_acton_reverse_replay_help() {
 }
 
 #[test]
+fn test_acton_reverse_report_help() {
+    let output = snapbox::cmd::Command::acton_ui()
+        .arg("reverse")
+        .arg("report")
+        .arg("--help")
+        .output()
+        .expect("failed to run acton reverse report --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse report --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Generate a state-flow reverse-engineering report",
+        "Usage: acton reverse report",
+        "--schema <SCHEMA>",
+        "--replay <REPLAY>",
+        "--output <OUTPUT>",
+        "[aliases: --out]",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse report --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_help_retrace() {
     snapbox::cmd::Command::acton_ui()
         .arg("help")
