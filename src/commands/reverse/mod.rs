@@ -2272,6 +2272,7 @@ fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut
     );
     validate_corpus_opcode_summary(corpus, gate_failures);
     validate_corpus_transaction_networks(corpus, gate_failures);
+    validate_corpus_transaction_hashes(corpus, gate_failures);
 }
 
 fn validate_corpus_transaction_networks(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
@@ -2284,6 +2285,18 @@ fn validate_corpus_transaction_networks(corpus: &StateFlowCorpus, gate_failures:
             &tx.query_hash,
             gate_failures,
         );
+    }
+}
+
+fn validate_corpus_transaction_hashes(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
+    let mut seen = HashSet::<&str>::new();
+    for tx in &corpus.transactions {
+        if !seen.insert(tx.query_hash.as_str()) {
+            gate_failures.push(format!(
+                "corpus transaction query hash {} is duplicated",
+                tx.query_hash
+            ));
+        }
     }
 }
 
@@ -8660,6 +8673,37 @@ mod tests {
                 )
             }),
             "expected corpus transaction network mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_duplicate_transaction_hash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][1]["queryHash"] = serde_json::json!("tx-a");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: corpus transaction query hash tx-a is duplicated")
+            }),
+            "expected corpus duplicate transaction hash failure, got {:?}",
             validation.gate_failures
         );
     }
