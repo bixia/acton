@@ -3835,7 +3835,13 @@ fn validate_manifest_report_content_matches_summary(
     ) {
         validate_report_schema_deliverables(&markdown, &schema, gate_failures);
         let schema_evidence_section = markdown_section(&markdown, "## Schema Evidence");
-        for evidence in schema_evidence_rows(&schema) {
+        let evidence_rows = schema_evidence_rows(&schema);
+        if !evidence_rows.is_empty() {
+            if let Some(section) = schema_evidence_section {
+                validate_report_schema_evidence_header(section, gate_failures);
+            }
+        }
+        for evidence in evidence_rows {
             let evidence_row = schema_evidence_section
                 .and_then(|section| report_schema_evidence_row(section, evidence));
             if evidence_row.is_none() {
@@ -4154,6 +4160,36 @@ fn report_kind_list(kinds: &[String]) -> String {
         return "none".to_owned();
     }
     kinds.join(", ")
+}
+
+fn validate_report_schema_evidence_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = schema_evidence_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report schema evidence header {expected:?} is missing"
+        ));
+    }
+}
+
+fn schema_evidence_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Tx",
+        "Body hash",
+        "Body bits/refs",
+        "State",
+        "Data hash",
+        "Code hash",
+        "Outbound",
+        "Actions",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
 }
 
 fn validate_report_schema_deliverables(
@@ -8233,6 +8269,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_schema_evidence_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_schema_evidence_header("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "target-a: report schema evidence header [\"Opcode\", \"Tx\", \"Body hash\", \"Body bits/refs\", \"State\", \"Data hash\", \"Code hash\", \"Outbound\", \"Actions\"] is missing"
+            )),
+            "expected report schema evidence header failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_schema_evidence_data_code_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10079,6 +10143,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
             "| `0x00000001` | `tx-a` | `wrong-body` | 16/1 | active -> none | n/a | n/a | outbound | action |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_schema_evidence_header(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |",
+            "| Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Action stale |",
         )
     }
 
