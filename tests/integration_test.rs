@@ -374,6 +374,8 @@ fn test_acton_reverse_infer_help() {
     for expected in [
         "Infer opcode and effect schema candidates from a state-flow corpus",
         "Usage: acton reverse infer",
+        "--artifact-manifest <ARTIFACTS>",
+        "--target-id <TARGET_ID>",
         "--output <OUTPUT>",
         "[aliases: --out]",
         "--pretty",

@@ -58,8 +58,24 @@ pub enum ReverseCommand {
     },
     #[command(about = "Infer opcode and effect schema candidates from a state-flow corpus")]
     Infer {
-        #[arg(help = "State-flow corpus JSON produced by `acton reverse collect`")]
-        corpus: PathBuf,
+        #[arg(
+            required_unless_present = "artifact_manifest",
+            conflicts_with = "artifact_manifest",
+            help = "State-flow corpus JSON produced by `acton reverse collect`"
+        )]
+        corpus: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "ARTIFACTS",
+            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+        )]
+        artifact_manifest: Option<PathBuf>,
+        #[arg(
+            long,
+            requires = "artifact_manifest",
+            help = "Target id to select from an artifact manifest"
+        )]
+        target_id: Option<String>,
         #[arg(
             short,
             long,
@@ -273,9 +289,11 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
         } => reverse_collect_cmd(&address, &net, limit, output, pretty),
         ReverseCommand::Infer {
             corpus,
+            artifact_manifest,
+            target_id,
             output,
             pretty,
-        } => reverse_infer_cmd(corpus, output, pretty),
+        } => reverse_infer_cmd(corpus, artifact_manifest, target_id, output, pretty),
         ReverseCommand::Replay {
             state_flow,
             artifact_manifest,
@@ -399,13 +417,33 @@ fn reverse_collect_cmd(
     write_json(&corpus, output, pretty, "State-flow corpus JSON")
 }
 
-fn reverse_infer_cmd(corpus: PathBuf, output: Option<PathBuf>, pretty: bool) -> anyhow::Result<()> {
+fn reverse_infer_cmd(
+    corpus: Option<PathBuf>,
+    artifact_manifest: Option<PathBuf>,
+    target_id: Option<String>,
+    output: Option<PathBuf>,
+    pretty: bool,
+) -> anyhow::Result<()> {
+    let corpus = infer_corpus_input_path(corpus, artifact_manifest, target_id.as_deref())?;
     let json = fs::read_to_string(&corpus)
         .with_context(|| format!("failed to read {}", corpus.display()))?;
     let corpus: StateFlowCorpus = serde_json::from_str(&json)
         .with_context(|| format!("failed to parse {}", corpus.display()))?;
     let report = ton_stateflow::infer_schema_candidates(&corpus);
     write_json(&report, output, pretty, "State-flow schema report JSON")
+}
+
+fn infer_corpus_input_path(
+    corpus: Option<PathBuf>,
+    artifact_manifest: Option<PathBuf>,
+    target_id: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(manifest_path) = artifact_manifest {
+        let manifest = load_artifact_manifest(&manifest_path)?;
+        return infer_corpus_from_manifest(&manifest, &manifest_path, target_id);
+    }
+
+    corpus.context("state-flow corpus JSON is required")
 }
 
 fn reverse_replay_cmd(
@@ -1325,6 +1363,14 @@ fn replay_state_flow_from_manifest(
     manifest_path: &Path,
     target_id: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
+    infer_corpus_from_manifest(manifest, manifest_path, target_id)
+}
+
+fn infer_corpus_from_manifest(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     ensure_supported_artifact_manifest(manifest, manifest_path)?;
     let selected_target_id = select_manifest_target_id(manifest, manifest_path, target_id)?;
     required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")
@@ -1863,6 +1909,33 @@ mod tests {
         .expect("target replay input should resolve");
 
         assert_eq!(state_flow, PathBuf::from("out/target-b/corpus.json"));
+    }
+
+    #[test]
+    fn infer_corpus_from_manifest_selects_target_corpus() {
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "out/summary.json",
+            "targetCount": 2,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "corpus", "path": "target-b/corpus.json", "targetId": "target-b"},
+                {"kind": "schema", "path": "target-b/schema.json", "targetId": "target-b"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let corpus = super::infer_corpus_from_manifest(
+            &manifest,
+            Path::new("out/artifacts.json"),
+            Some("target-b"),
+        )
+        .expect("target infer input should resolve");
+
+        assert_eq!(corpus, PathBuf::from("out/target-b/corpus.json"));
     }
 
     #[test]
