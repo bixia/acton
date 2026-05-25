@@ -341,6 +341,12 @@ assert(
   "expected schema summary to include storage evidence",
 )
 assert(
+  schemaSummary.sections
+    .find(section => section.title === "Schema Evidence")
+    ?.rows[0]?.detail?.includes("body body-hash 32/0") === true,
+  "expected schema summary to include raw evidence body hash and shape",
+)
+assert(
   schemaSummary.metrics.some(metric => metric.label === "State Edges" && metric.value === "1"),
   "expected schema summary to include state machine edge count",
 )

@@ -588,6 +588,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
   const effectRows = schemaEffectRows(schema)
+  const evidenceRows = schemaEvidenceRows(schema)
   const replayProbeRows = schemaReplayProbeRows(schema)
   return {
     title: "State Flow Schema",
@@ -643,6 +644,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Outbound Effects",
               rows: effectRows,
+            },
+          ]
+        : []),
+      ...(evidenceRows.length > 0
+        ? [
+            {
+              title: "Schema Evidence",
+              rows: evidenceRows,
             },
           ]
         : []),
@@ -1049,6 +1058,25 @@ function schemaEffectRows(schema: StateFlowSchemaReport): readonly SummaryRow[] 
     ...candidate.outboundEffects.map(effect => effectRow(candidate.opcode, "outbound", effect)),
     ...candidate.outActions.map(effect => effectRow(candidate.opcode, "action", effect)),
   ])
+}
+
+function schemaEvidenceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const opcode = candidate.opcode ?? "<none>"
+    return (candidate.evidence ?? []).map(evidence => ({
+      label: `${opcode} ${shortHash(evidence.txHash)}`,
+      value: `${evidence.fromStatus} -> ${evidence.toStatus}`,
+      detail: [
+        `body ${shortHash(evidence.inboundBodyHash)} ${evidence.inboundBodyBits}/${evidence.inboundBodyRefs}`,
+        `data ${formatHash(evidence.preDataHash)} -> ${formatHash(evidence.postDataHash)}`,
+        `code ${formatHash(evidence.preCodeHash)} -> ${formatHash(evidence.postCodeHash)}`,
+        listLabel("out", evidence.outboundKinds),
+        listLabel("actions", evidence.outActionKinds),
+      ]
+        .filter((value): value is string => value !== undefined)
+        .join(" · "),
+    }))
+  })
 }
 
 function schemaReplayProbeRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

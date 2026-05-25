@@ -485,6 +485,21 @@ assert(effectRows[0]?.detail?.includes("out-dst") === true, "expected outbound d
 assert(effectRows[1]?.label === "0x00000001 action", "expected action effect row")
 assert(effectRows[1]?.value === "send-message x1", "expected action effect kind")
 assert(effectRows[1]?.detail?.includes("64") === true, "expected action mode")
+const schemaEvidenceRows = sectionRows(schemaSummary, "Schema Evidence")
+assert(schemaEvidenceRows[0]?.label === "0x00000001 tx-a", "expected schema evidence row")
+assert(schemaEvidenceRows[0]?.value === "active -> frozen", "expected schema evidence transition")
+assert(
+  schemaEvidenceRows[0]?.detail?.includes("body body-a 32/0") === true,
+  "expected schema evidence body hash and shape",
+)
+assert(
+  schemaEvidenceRows[0]?.detail?.includes("data data-a -> data-b") === true,
+  "expected schema evidence data hash transition",
+)
+assert(
+  schemaEvidenceRows[0]?.detail?.includes("out internal") === true,
+  "expected schema evidence outbound kind",
+)
 const replayProbeRows = sectionRows(schemaSummary, "Replay Probes")
 assert(replayProbeRows[0]?.label === "0x00000001 query_id", "expected replay probe row")
 assert(
