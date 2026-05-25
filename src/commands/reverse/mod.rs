@@ -2017,6 +2017,166 @@ fn validate_state_flow_schema_evidence_keys(
             ));
         }
     }
+
+    let Some(candidates) = value
+        .get("opcodeCandidates")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        validate_schema_opcode_candidate_evidence_keys(
+            candidate,
+            artifact,
+            candidate_index,
+            gate_failures,
+        );
+    }
+}
+
+fn validate_schema_opcode_candidate_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    index: usize,
+    gate_failures: &mut Vec<String>,
+) {
+    let prefix = format!(
+        "schema artifact {} opcodeCandidates[{index}]",
+        artifact.path
+    );
+    for (label, path) in [
+        ("opcode", &["opcode"][..]),
+        ("count", &["count"][..]),
+        ("examples", &["examples"][..]),
+        ("evidence", &["evidence"][..]),
+        ("inbound body", &["inboundBody"][..]),
+        ("replay probes", &["replayProbes"][..]),
+        ("storage", &["storage"][..]),
+        ("state transitions", &["stateTransitions"][..]),
+        ("outbound effects", &["outboundEffects"][..]),
+        ("out actions", &["outActions"][..]),
+        ("confidence", &["confidence"][..]),
+        ("unknown fields", &["unknownFields"][..]),
+    ] {
+        if !json_path_exists(value, path) {
+            gate_failures.push(format!("{prefix} missing {label} evidence key"));
+        }
+    }
+    validate_schema_inbound_body_evidence_keys(value, &prefix, gate_failures);
+    validate_schema_storage_evidence_keys(value, &prefix, gate_failures);
+    validate_schema_replay_probe_evidence_keys(value, &prefix, gate_failures);
+    validate_schema_effect_evidence_keys(value, &prefix, "outboundEffects", gate_failures);
+    validate_schema_effect_evidence_keys(value, &prefix, "outActions", gate_failures);
+}
+
+fn validate_schema_inbound_body_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(inbound_body) = value.get("inboundBody") else {
+        return;
+    };
+    for (label, path) in [
+        ("inbound body min bits", &["minBits"][..]),
+        ("inbound body max bits", &["maxBits"][..]),
+        ("inbound body min refs", &["minRefs"][..]),
+        ("inbound body max refs", &["maxRefs"][..]),
+        ("inbound body hashes", &["bodyHashes"][..]),
+        ("inbound body field candidates", &["fieldCandidates"][..]),
+    ] {
+        if !json_path_exists(inbound_body, path) {
+            gate_failures.push(format!("{prefix} missing {label} evidence key"));
+        }
+    }
+}
+
+fn validate_schema_storage_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(storage) = value.get("storage") else {
+        return;
+    };
+    for (label, path) in [
+        ("storage balance delta min", &["balanceDeltaMin"][..]),
+        ("storage balance delta max", &["balanceDeltaMax"][..]),
+        (
+            "storage data hash changed count",
+            &["dataHashChangedCount"][..],
+        ),
+        (
+            "storage code hash changed count",
+            &["codeHashChangedCount"][..],
+        ),
+        ("storage post data shape", &["postDataShape"][..]),
+        ("storage post code shape", &["postCodeShape"][..]),
+        ("storage fields", &["fields"][..]),
+        ("storage post data hashes", &["postDataHashes"][..]),
+        ("storage post code hashes", &["postCodeHashes"][..]),
+    ] {
+        if !json_path_exists(storage, path) {
+            gate_failures.push(format!("{prefix} missing {label} evidence key"));
+        }
+    }
+}
+
+fn validate_schema_replay_probe_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(probes) = value.get("replayProbes").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, probe) in probes.iter().enumerate() {
+        let probe_prefix = format!("{prefix} replayProbes[{index}]");
+        for (label, path) in [
+            ("field name", &["fieldName"][..]),
+            ("bit offset", &["bitOffset"][..]),
+            ("bits", &["bits"][..]),
+            ("value", &["value"][..]),
+            ("mutation", &["mutation"][..]),
+            ("CLI arg", &["cliArg"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(probe, path) {
+                gate_failures.push(format!("{probe_prefix} missing {label} evidence key"));
+            }
+        }
+    }
+}
+
+fn validate_schema_effect_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    effect_key: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(effects) = value.get(effect_key).and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, effect) in effects.iter().enumerate() {
+        let effect_prefix = format!("{prefix} {effect_key}[{index}]");
+        for (label, path) in [
+            ("kind", &["kind"][..]),
+            ("count", &["count"][..]),
+            ("tx hashes", &["txHashes"][..]),
+            ("modes", &["modes"][..]),
+            ("destinations", &["destinations"][..]),
+            ("value nanotons min", &["valueNanotonsMin"][..]),
+            ("value nanotons max", &["valueNanotonsMax"][..]),
+            ("body shape", &["bodyShape"][..]),
+            ("code shape", &["codeShape"][..]),
+            ("library hashes", &["libraryHashes"][..]),
+        ] {
+            if !json_path_exists(effect, path) {
+                gate_failures.push(format!("{effect_prefix} missing {label} evidence key"));
+            }
+        }
+    }
 }
 
 fn validate_state_flow_corpus_evidence_keys(
@@ -7333,6 +7493,45 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_candidate_missing_replay_probes_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["opcodeCandidates"][0]
+            .as_object_mut()
+            .expect("schema candidate should be an object")
+            .remove("replayProbes");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] missing replay probes evidence key",
+                )
+            }),
+            "expected missing schema replay probes key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_evidence_outside_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -7367,13 +7566,17 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": ["hash"]
+                        "bodyHashes": ["hash"],
+                        "fieldCandidates": []
                     },
+                    "replayProbes": [],
                     "storage": {
                         "balanceDeltaMin": -3,
                         "balanceDeltaMax": -3,
                         "dataHashChangedCount": 0,
                         "codeHashChangedCount": 0,
+                        "postDataShape": null,
+                        "postCodeShape": null,
                         "fields": [],
                         "postDataHashes": [],
                         "postCodeHashes": []
@@ -11074,13 +11277,17 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": ["hash"]
+                        "bodyHashes": ["hash"],
+                        "fieldCandidates": []
                     },
+                    "replayProbes": [],
                     "storage": {
                         "balanceDeltaMin": -3,
                         "balanceDeltaMax": -3,
                         "dataHashChangedCount": 0,
                         "codeHashChangedCount": 0,
+                        "postDataShape": null,
+                        "postCodeShape": null,
                         "fields": [],
                         "postDataHashes": [],
                         "postCodeHashes": []
