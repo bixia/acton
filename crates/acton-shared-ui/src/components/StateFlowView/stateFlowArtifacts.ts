@@ -43,6 +43,7 @@ export interface StateFlowTx {
     readonly randSeedHex: string
     readonly replayedPrevTxCount: number
     readonly blockConfigBoc64: string
+    readonly libsBoc64?: string | null
   }
   readonly state: {
     readonly pre: ShardAccountSnapshot
@@ -177,11 +178,21 @@ export interface OpcodeSchemaCandidate {
     readonly maxRefs: number
     readonly bodyHashes: readonly string[]
   }
+  readonly storage?: StorageShapeCandidate | null
   readonly stateTransitions: readonly StateTransitionCandidate[]
   readonly outboundEffects: readonly EffectCandidate[]
   readonly outActions: readonly EffectCandidate[]
   readonly confidence: string
   readonly unknownFields: readonly string[]
+}
+
+export interface StorageShapeCandidate {
+  readonly balanceDeltaMin: number
+  readonly balanceDeltaMax: number
+  readonly dataHashChangedCount: number
+  readonly codeHashChangedCount: number
+  readonly postDataHashes: readonly string[]
+  readonly postCodeHashes: readonly string[]
 }
 
 export interface StateTransitionCandidate {
@@ -351,6 +362,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
           detail: [
             `${candidate.count} ${plural(candidate.count, "transaction")}`,
             `body ${formatRange(candidate.inboundBody.minBits, candidate.inboundBody.maxBits)} bits`,
+            `storage ${storageLabel(candidate.storage)}`,
             `${candidate.unknownFields.length} unknowns`,
           ].join(" · "),
         })),
@@ -394,6 +406,17 @@ function shortHash(value: string): string {
 
 function formatRange(min: number, max: number): string {
   return min === max ? min.toString() : `${min}-${max}`
+}
+
+function storageLabel(storage: StorageShapeCandidate | null | undefined): string {
+  if (!storage) {
+    return "n/a"
+  }
+  const balance =
+    storage.balanceDeltaMin === storage.balanceDeltaMax
+      ? storage.balanceDeltaMin.toString()
+      : `${storage.balanceDeltaMin}..${storage.balanceDeltaMax}`
+  return `balance ${balance}, data ${storage.dataHashChangedCount}, code ${storage.codeHashChangedCount}`
 }
 
 function formatNullable(value: number | string | null | undefined): string {

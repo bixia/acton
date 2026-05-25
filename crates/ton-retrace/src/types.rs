@@ -284,6 +284,8 @@ pub struct TraceReplayArtifacts {
     pub c5_boc64: Option<String>,
     /// Block config cell passed to the executor.
     pub block_config_boc64: String,
+    /// Optional base64 BoC library dictionary passed to the executor.
+    pub libs_boc64: Option<String>,
     /// Masterchain sequence number that supplied config and random seed.
     pub mc_seqno: u32,
     /// Master-block random seed passed to the executor.

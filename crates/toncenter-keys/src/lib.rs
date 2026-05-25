@@ -8,6 +8,9 @@ pub const TONCENTER_MAINNET_API_KEY_ENV: &str = "TONCENTER_MAINNET_API_KEY";
 /// Environment variable for the testnet `TonCenter` API key.
 pub const TONCENTER_TESTNET_API_KEY_ENV: &str = "TONCENTER_TESTNET_API_KEY";
 
+/// Shared TonCenter API key env var accepted for local `.env` files.
+pub const TONCENTER_SHARED_API_KEY_ENV: &str = "TON_CENTER_API_KEY";
+
 /// Returns the `TonCenter` API key env var name for the selected network.
 #[must_use]
 pub fn env_var_name(network: &Network) -> Option<String> {
@@ -19,20 +22,45 @@ pub fn env_var_name(network: &Network) -> Option<String> {
     }
 }
 
-/// Resolves the `TonCenter` API key for the selected network from the process environment.
+/// Resolves the `TonCenter` API key for the selected network from process env or local `.env`.
 #[must_use]
 pub fn api_key(network: &Network) -> Option<String> {
-    api_key_with(network, |name| std::env::var(name).ok())
+    api_key_with(network, |name| std::env::var(name).ok(), dotenv_key)
 }
 
-fn api_key_with<F>(network: &Network, lookup: F) -> Option<String>
+fn api_key_with<P, D>(network: &Network, process_lookup: P, dotenv_lookup: D) -> Option<String>
 where
-    F: FnOnce(&str) -> Option<String>,
+    P: FnMut(&str) -> Option<String>,
+    D: FnMut(&str) -> Option<String>,
 {
-    let env_name = env_var_name(network)?;
-    lookup(&env_name)
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+    let names = api_key_env_names(network)?;
+    lookup_first(&names, process_lookup).or_else(|| lookup_first(&names, dotenv_lookup))
+}
+
+fn api_key_env_names(network: &Network) -> Option<Vec<String>> {
+    let mut names = vec![env_var_name(network)?];
+    if matches!(network, Network::Mainnet | Network::Testnet) {
+        names.push(TONCENTER_SHARED_API_KEY_ENV.to_string());
+    }
+    Some(names)
+}
+
+fn lookup_first<F>(names: &[String], mut lookup: F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    names.iter().find_map(|name| {
+        lookup(name)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn dotenv_key(name: &str) -> Option<String> {
+    dotenvy::from_filename_iter(".env").ok()?.find_map(|entry| {
+        let (key, value) = entry.ok()?;
+        (key == name).then_some(value)
+    })
 }
 
 /// Returns the TonCenter-compatible API key env var name for a custom network.
@@ -73,10 +101,10 @@ mod tests {
         };
 
         assert_eq!(
-            api_key_with(&Network::Mainnet, lookup),
+            api_key_with(&Network::Mainnet, lookup, |_| None),
             Some("mainnet-key".to_string())
         );
-        assert_eq!(api_key_with(&Network::Testnet, |_| None), None);
+        assert_eq!(api_key_with(&Network::Testnet, |_| None, |_| None), None);
     }
 
     #[test]
@@ -87,10 +115,40 @@ mod tests {
         };
 
         assert_eq!(
-            api_key_with(&Network::Testnet, lookup),
+            api_key_with(&Network::Testnet, lookup, |_| None),
             Some("testnet-key".to_string())
         );
-        assert_eq!(api_key_with(&Network::Mainnet, |_| None), None);
+        assert_eq!(api_key_with(&Network::Mainnet, |_| None, |_| None), None);
+    }
+
+    #[test]
+    fn falls_back_to_shared_key_from_dotenv() {
+        let dotenv_lookup = |name: &str| match name {
+            TONCENTER_SHARED_API_KEY_ENV => Some(" shared-key ".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            api_key_with(&Network::Mainnet, |_| None, dotenv_lookup),
+            Some("shared-key".to_string())
+        );
+    }
+
+    #[test]
+    fn prefers_network_specific_process_env_over_dotenv_alias() {
+        let process_lookup = |name: &str| match name {
+            TONCENTER_MAINNET_API_KEY_ENV => Some(" mainnet-key ".to_string()),
+            _ => None,
+        };
+        let dotenv_lookup = |name: &str| match name {
+            TONCENTER_SHARED_API_KEY_ENV => Some(" shared-key ".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            api_key_with(&Network::Mainnet, process_lookup, dotenv_lookup),
+            Some("mainnet-key".to_string())
+        );
     }
 
     #[test]
@@ -106,7 +164,7 @@ mod tests {
         };
 
         assert_eq!(
-            api_key_with(&Network::Custom("sandbox".into()), lookup),
+            api_key_with(&Network::Custom("sandbox".into()), lookup, |_| None),
             Some("custom-key".to_string())
         );
     }
@@ -127,7 +185,7 @@ mod tests {
     #[test]
     fn ignores_empty_values_after_trimming() {
         assert_eq!(
-            api_key_with(&Network::Mainnet, |_| Some("   ".into())),
+            api_key_with(&Network::Mainnet, |_| Some("   ".into()), |_| None),
             None
         );
     }

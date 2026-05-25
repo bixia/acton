@@ -140,11 +140,24 @@ pub struct OpcodeSchemaCandidate {
     pub count: usize,
     pub examples: Vec<String>,
     pub inbound_body: BodyShapeCandidate,
+    #[serde(default)]
+    pub storage: StorageShapeCandidate,
     pub state_transitions: Vec<StateTransitionCandidate>,
     pub outbound_effects: Vec<EffectCandidate>,
     pub out_actions: Vec<EffectCandidate>,
     pub confidence: String,
     pub unknown_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageShapeCandidate {
+    pub balance_delta_min: i128,
+    pub balance_delta_max: i128,
+    pub data_hash_changed_count: usize,
+    pub code_hash_changed_count: usize,
+    pub post_data_hashes: Vec<String>,
+    pub post_code_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +202,8 @@ pub struct ReplaySummary {
     pub rand_seed_hex: String,
     pub replayed_prev_tx_count: usize,
     pub block_config_boc64: String,
+    #[serde(default)]
+    pub libs_boc64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,16 +378,11 @@ pub fn replay_state_flow_tx(
 ) -> anyhow::Result<StateFlowReplayDiff> {
     let message_boc64 = apply_replay_mutation(&flow.inbound.message_boc64, &mutation)?;
     let replay_inbound = inbound_artifact_from_boc64(&message_boc64)?;
-    let result = ton_retrace::replay_transaction(ReplayTransactionArgs {
-        message_boc64: message_boc64.clone(),
-        shard_account_boc64: flow.state.pre.shard_account_boc64.clone(),
-        block_config_boc64: flow.replay.block_config_boc64.clone(),
-        rand_seed_hex: flow.replay.rand_seed_hex.clone(),
-        now: flow.transaction.utime.try_into().unwrap_or(u32::MAX),
-        lt: flow.transaction.lt,
-        libs_boc64: None,
+    let result = ton_retrace::replay_transaction(replay_args_from_flow(
+        flow,
+        message_boc64.clone(),
         ignore_chksig,
-    })?;
+    ))?;
 
     let baseline = ReplayObservation::from_flow(flow);
     let replay = match result {
@@ -410,6 +420,23 @@ pub fn replay_state_flow_tx(
     })
 }
 
+fn replay_args_from_flow(
+    flow: &StateFlowTx,
+    message_boc64: String,
+    ignore_chksig: bool,
+) -> ReplayTransactionArgs {
+    ReplayTransactionArgs {
+        message_boc64,
+        shard_account_boc64: flow.state.pre.shard_account_boc64.clone(),
+        block_config_boc64: flow.replay.block_config_boc64.clone(),
+        rand_seed_hex: flow.replay.rand_seed_hex.clone(),
+        now: flow.transaction.utime.try_into().unwrap_or(u32::MAX),
+        lt: flow.transaction.lt,
+        libs_boc64: flow.replay.libs_boc64.clone(),
+        ignore_chksig,
+    }
+}
+
 pub fn render_state_flow_report(
     corpus: &StateFlowCorpus,
     schema: &StateFlowSchemaReport,
@@ -434,18 +461,18 @@ pub fn render_state_flow_report(
     writeln!(report, "## Opcode Candidates").ok();
     writeln!(
         report,
-        "| Opcode | Count | Confidence | Body bits | Body refs | State transitions | Outbound effects | Out actions | Evidence |"
+        "| Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |"
     )
     .ok();
     writeln!(
         report,
-        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |"
+        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |"
     )
     .ok();
     for candidate in &schema.opcode_candidates {
         writeln!(
             report,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             markdown_code_opt(candidate.opcode.as_deref()),
             candidate.count,
             candidate.confidence,
@@ -457,6 +484,7 @@ pub fn render_state_flow_report(
                 candidate.inbound_body.min_refs,
                 candidate.inbound_body.max_refs
             ),
+            markdown_escape(&format_storage(&candidate.storage)),
             markdown_escape(&format_state_transitions(&candidate.state_transitions)),
             markdown_escape(&format_effects(&candidate.outbound_effects)),
             markdown_escape(&format_effects(&candidate.out_actions)),
@@ -575,6 +603,21 @@ fn format_effects(effects: &[EffectCandidate]) -> String {
         .join("; ")
 }
 
+fn format_storage(storage: &StorageShapeCandidate) -> String {
+    let balance = if storage.balance_delta_min == storage.balance_delta_max {
+        storage.balance_delta_min.to_string()
+    } else {
+        format!(
+            "{}..{}",
+            storage.balance_delta_min, storage.balance_delta_max
+        )
+    };
+    format!(
+        "balance {balance}; data hash changes {}; code hash changes {}",
+        storage.data_hash_changed_count, storage.code_hash_changed_count
+    )
+}
+
 fn mutation_label(mutation: &ReplayMutation) -> String {
     match mutation {
         ReplayMutation::None => "none".to_owned(),
@@ -626,6 +669,7 @@ impl StateFlowTx {
                 rand_seed_hex: result.replay.rand_seed_hex.clone(),
                 replayed_prev_tx_count: result.replay.replayed_prev_tx_count,
                 block_config_boc64: result.replay.block_config_boc64.clone(),
+                libs_boc64: result.replay.libs_boc64.clone(),
             },
             state: StateTransition {
                 pre: shard_account_snapshot(&result.replay.shard_account_before_boc64)?,
@@ -780,6 +824,7 @@ fn opcode_candidate(
     transactions: &[&StateFlowTx],
 ) -> OpcodeSchemaCandidate {
     let inbound_body = inbound_body_shape(transactions);
+    let storage = storage_shape(transactions);
     let state_transitions = summarize_pairs(
         transactions
             .iter()
@@ -823,11 +868,56 @@ fn opcode_candidate(
             .map(|tx| tx.query_hash.clone())
             .collect(),
         inbound_body,
+        storage,
         state_transitions,
         outbound_effects,
         out_actions,
         confidence,
         unknown_fields,
+    }
+}
+
+fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
+    let mut balance_delta_min = i128::MAX;
+    let mut balance_delta_max = i128::MIN;
+    let mut data_hash_changed_count = 0;
+    let mut code_hash_changed_count = 0;
+    let mut post_data_hashes = BTreeSet::new();
+    let mut post_code_hashes = BTreeSet::new();
+
+    for tx in transactions {
+        let balance_delta = tx.money.balance_after as i128 - tx.money.balance_before as i128;
+        balance_delta_min = balance_delta_min.min(balance_delta);
+        balance_delta_max = balance_delta_max.max(balance_delta);
+        if tx.state.pre.data_hash != tx.state.post.data_hash {
+            data_hash_changed_count += 1;
+        }
+        if tx.state.pre.code_hash != tx.state.post.code_hash {
+            code_hash_changed_count += 1;
+        }
+        if let Some(hash) = &tx.state.post.data_hash {
+            post_data_hashes.insert(hash.clone());
+        }
+        if let Some(hash) = &tx.state.post.code_hash {
+            post_code_hashes.insert(hash.clone());
+        }
+    }
+
+    StorageShapeCandidate {
+        balance_delta_min: if balance_delta_min == i128::MAX {
+            0
+        } else {
+            balance_delta_min
+        },
+        balance_delta_max: if balance_delta_max == i128::MIN {
+            0
+        } else {
+            balance_delta_max
+        },
+        data_hash_changed_count,
+        code_hash_changed_count,
+        post_data_hashes: post_data_hashes.into_iter().collect(),
+        post_code_hashes: post_code_hashes.into_iter().collect(),
     }
 }
 
@@ -1302,6 +1392,7 @@ mod tests {
         assert_eq!(json["schemaVersion"], 1);
         assert_eq!(json["transaction"]["stateUpdateHashOk"], true);
         assert_eq!(json["inbound"]["direction"], "inbound");
+        assert_eq!(json["replay"]["libsBoc64"], "libs");
     }
 
     #[test]
@@ -1353,6 +1444,10 @@ mod tests {
         assert_eq!(candidate.count, 2);
         assert_eq!(candidate.inbound_body.min_bits, 32);
         assert_eq!(candidate.inbound_body.max_bits, 32);
+        assert_eq!(candidate.storage.balance_delta_min, -3);
+        assert_eq!(candidate.storage.balance_delta_max, -3);
+        assert_eq!(candidate.storage.data_hash_changed_count, 2);
+        assert_eq!(candidate.storage.code_hash_changed_count, 2);
         assert_eq!(candidate.state_transitions[0].from_status, "none");
         assert_eq!(candidate.state_transitions[0].to_status, "active");
         assert_eq!(candidate.confidence, "medium");
@@ -1391,6 +1486,17 @@ mod tests {
     }
 
     #[test]
+    fn replay_args_include_captured_libraries() {
+        let flow = sample_flow("tx-a", Some("0x00000001"));
+
+        let args = super::replay_args_from_flow(&flow, "message".to_owned(), true);
+
+        assert_eq!(args.libs_boc64.as_deref(), Some("libs"));
+        assert_eq!(args.message_boc64, "message");
+        assert!(args.ignore_chksig);
+    }
+
+    #[test]
     fn report_renderer_includes_evidence_confidence_and_unknowns() {
         let corpus = StateFlowCorpus {
             schema_version: 1,
@@ -1410,10 +1516,47 @@ mod tests {
 
         assert!(report.contains("# TON State Flow Reverse Report"));
         assert!(report.contains("## Opcode Candidates"));
+        assert!(report.contains("Storage"));
+        assert!(report.contains("balance -3"));
         assert!(report.contains("medium"));
         assert!(report.contains("tx-a"));
         assert!(report.contains("## Unknown Fields"));
         assert!(report.contains("TL-B"));
+    }
+
+    #[test]
+    fn schema_report_deserializes_without_storage_for_old_artifacts() {
+        let json = r#"{
+            "schemaVersion": 1,
+            "network": "mainnet",
+            "address": "addr",
+            "transactionCount": 1,
+            "opcodeCandidates": [{
+                "opcode": "0x00000001",
+                "count": 1,
+                "examples": ["tx-a"],
+                "inboundBody": {
+                    "minBits": 32,
+                    "maxBits": 32,
+                    "minRefs": 0,
+                    "maxRefs": 0,
+                    "bodyHashes": ["hash"]
+                },
+                "stateTransitions": [],
+                "outboundEffects": [],
+                "outActions": [],
+                "confidence": "medium",
+                "unknownFields": []
+            }]
+        }"#;
+
+        let report: super::StateFlowSchemaReport = serde_json::from_str(json).unwrap();
+
+        assert_eq!(report.opcode_candidates[0].storage.balance_delta_min, 0);
+        assert_eq!(
+            report.opcode_candidates[0].storage.post_data_hashes.len(),
+            0
+        );
     }
 
     fn sample_flow(query_hash: &str, opcode: Option<&str>) -> StateFlowTx {
@@ -1433,6 +1576,7 @@ mod tests {
                 rand_seed_hex: "00".to_owned(),
                 replayed_prev_tx_count: 0,
                 block_config_boc64: "config".to_owned(),
+                libs_boc64: Some("libs".to_owned()),
             },
             state: StateTransition {
                 pre: super::ShardAccountSnapshot {

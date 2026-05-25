@@ -5447,6 +5447,7 @@ dependencies = [
 name = "toncenter-keys"
 version = "1.1.0"
 dependencies = [
+ "dotenvy",
  "ton-networks",
 ]
 

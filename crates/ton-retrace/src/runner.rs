@@ -236,6 +236,7 @@ pub async fn retrace_base_tx(
 
     let (libs, loaded_code) =
         collect_used_libraries(net, &shard_account, &tx.tx, &additional_libs).await?;
+    let libs_boc64 = libs.as_ref().map(Boc::encode_base64);
 
     // retrieve code cell if an account in active mode
     let Some(account_before_tx) = shard_account.load_account()? else {
@@ -327,6 +328,7 @@ pub async fn retrace_base_tx(
             transaction_boc64: res.transaction.to_string(),
             c5_boc64: res.actions.as_ref().map(ToString::to_string),
             block_config_boc64: block_config,
+            libs_boc64,
             mc_seqno,
             rand_seed_hex: hex::encode(rand_seed),
             replayed_prev_tx_count,

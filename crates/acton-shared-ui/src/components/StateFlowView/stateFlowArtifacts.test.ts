@@ -92,6 +92,14 @@ const schema = {
       count: 1,
       examples: ["tx-hash"],
       inboundBody: {minBits: 32, maxBits: 32, minRefs: 0, maxRefs: 0, bodyHashes: ["body-hash"]},
+      storage: {
+        balanceDeltaMin: -2,
+        balanceDeltaMax: -2,
+        dataHashChangedCount: 1,
+        codeHashChangedCount: 0,
+        postDataHashes: ["data-hash"],
+        postCodeHashes: ["code-hash"],
+      },
       stateTransitions: [{fromStatus: "active", toStatus: "active", count: 1}],
       outboundEffects: [],
       outActions: [],
@@ -149,6 +157,11 @@ assert(
 )
 assert(summary.sections[0]?.rows[0]?.label === "0x00000001", "expected opcode row label")
 assert(summary.sections[0]?.rows[0]?.value === "1 transaction", "expected opcode row value")
+const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))
+assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("storage balance -2") === true,
+  "expected schema summary to include storage evidence",
+)
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
 
