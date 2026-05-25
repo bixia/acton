@@ -4285,6 +4285,11 @@ fn validate_report_schema_deliverables(
     }
 
     if let Some(section) = markdown_section(markdown, "## Outbound Effects") {
+        if schema.opcode_candidates.iter().any(|candidate| {
+            !candidate.outbound_effects.is_empty() || !candidate.out_actions.is_empty()
+        }) {
+            validate_report_outbound_effects_header(section, gate_failures);
+        }
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
             for effect in &candidate.outbound_effects {
@@ -4337,6 +4342,38 @@ fn validate_report_schema_deliverables(
             }
         }
     }
+}
+
+fn validate_report_outbound_effects_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = outbound_effects_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report outbound effects header {expected:?} is missing"
+        ));
+    }
+}
+
+fn outbound_effects_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Source",
+        "Kind",
+        "Count",
+        "Value",
+        "Modes",
+        "Destinations",
+        "Body",
+        "Code",
+        "Libraries",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
 }
 
 fn report_state_machine_evidence_row(
@@ -7791,6 +7828,55 @@ mod tests {
     }
 
     #[test]
+    fn report_schema_deliverables_rejects_outbound_effect_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["outboundEffects"] = serde_json::json!([{
+            "kind": "internal",
+            "count": 1,
+            "txHashes": ["tx-a"],
+            "modes": [],
+            "destinations": ["dst"],
+            "valueNanotonsMin": "11",
+            "valueNanotonsMax": "11",
+            "bodyShape": {
+                "minBits": 40,
+                "maxBits": 40,
+                "minRefs": 1,
+                "maxRefs": 1
+            },
+            "codeShape": null,
+            "libraryHashes": []
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let schema: super::StateFlowSchemaReport =
+            serde_json::from_value(schema).expect("schema should deserialize");
+        let mut gate_failures = Vec::new();
+
+        super::validate_report_schema_deliverables(
+            &sample_report_markdown_with_wrong_outbound_effect_header("addr"),
+            &schema,
+            &mut gate_failures,
+        );
+
+        assert!(
+            gate_failures.iter().any(|failure| failure.contains(
+                "report outbound effects header [\"Opcode\", \"Source\", \"Kind\", \"Count\", \"Value\", \"Modes\", \"Destinations\", \"Body\", \"Code\", \"Libraries\", \"Evidence\"] is missing"
+            )),
+            "expected outbound effects header failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_outbound_effect_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10092,6 +10178,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Outbound Effects\n- No outbound effect candidates were inferred.",
             "## Outbound Effects\n| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |\n| `0x00000001` | outbound | internal | 1 | 11 | none | dst | 40/1 | n/a | none | tx-a |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_outbound_effect_header(address: &str) -> String {
+        sample_report_markdown_with_schema_outbound_effect(address).replace(
+            "| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |",
+            "| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence stale |",
         )
     }
 
