@@ -3713,17 +3713,175 @@ fn validate_manifest_transaction_membership(
     let Some(corpus) = corpus else {
         return;
     };
-    let corpus_hashes = corpus_transaction_hashes(corpus);
     if let Some(flow) =
         read_single_target_json_artifact::<StateFlowTx>(manifest_path, artifacts, "transaction")
     {
-        if !corpus_hashes.iter().any(|hash| hash == &flow.query_hash) {
+        let corpus_flow = corpus
+            .transactions
+            .iter()
+            .find(|tx| tx.query_hash == flow.query_hash);
+        if corpus_flow.is_none() {
             gate_failures.push(format!(
                 "transaction query hash {} is not present in corpus transactions",
                 flow.query_hash
             ));
+        } else if let Some(corpus_flow) = corpus_flow {
+            validate_transaction_artifact_matches_corpus(&flow, corpus_flow, gate_failures);
         }
     }
+}
+
+fn validate_transaction_artifact_matches_corpus(
+    flow: &StateFlowTx,
+    corpus_flow: &StateFlowTx,
+    gate_failures: &mut Vec<String>,
+) {
+    let tx_hash = &flow.query_hash;
+    validate_transaction_text_field(
+        "transaction network",
+        &flow.network,
+        "corpus network",
+        &corpus_flow.network,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_value_field(
+        "transaction lt",
+        flow.transaction.lt,
+        "corpus lt",
+        corpus_flow.transaction.lt,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_text_field(
+        "transaction account",
+        &flow.transaction.account,
+        "corpus account",
+        &corpus_flow.transaction.account,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_text_field(
+        "transaction pre state status",
+        &flow.state.pre.status,
+        "corpus pre state status",
+        &corpus_flow.state.pre.status,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_text_field(
+        "transaction post state status",
+        &flow.state.post.status,
+        "corpus post state status",
+        &corpus_flow.state.post.status,
+        tx_hash,
+        gate_failures,
+    );
+    let actual_opcode = option_text_label(flow.inbound.opcode.as_deref());
+    let expected_opcode = option_text_label(corpus_flow.inbound.opcode.as_deref());
+    validate_transaction_text_field(
+        "transaction inbound opcode",
+        &actual_opcode,
+        "corpus inbound opcode",
+        &expected_opcode,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_text_field(
+        "transaction inbound body hash",
+        &flow.inbound.body.hash,
+        "corpus inbound body hash",
+        &corpus_flow.inbound.body.hash,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_value_field(
+        "transaction inbound body bits",
+        flow.inbound.body.bits,
+        "corpus inbound body bits",
+        corpus_flow.inbound.body.bits,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_value_field(
+        "transaction inbound body refs",
+        flow.inbound.body.refs,
+        "corpus inbound body refs",
+        corpus_flow.inbound.body.refs,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_value_field(
+        "transaction VM trace line count",
+        flow.vm_trace.line_count,
+        "corpus VM trace line count",
+        corpus_flow.vm_trace.line_count,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_value_field(
+        "transaction executor trace line count",
+        flow.executor_trace.line_count,
+        "corpus executor trace line count",
+        corpus_flow.executor_trace.line_count,
+        tx_hash,
+        gate_failures,
+    );
+    validate_transaction_value_field(
+        "transaction out-action count",
+        flow.out_actions.len(),
+        "corpus out-action count",
+        corpus_flow.out_actions.len(),
+        tx_hash,
+        gate_failures,
+    );
+    let actual_c5_hash = option_text_label(flow.c5.as_ref().map(|cell| cell.hash.as_str()));
+    let expected_c5_hash =
+        option_text_label(corpus_flow.c5.as_ref().map(|cell| cell.hash.as_str()));
+    validate_transaction_text_field(
+        "transaction c5 hash",
+        &actual_c5_hash,
+        "corpus c5 hash",
+        &expected_c5_hash,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_transaction_text_field(
+    actual_label: &str,
+    actual: &str,
+    expected_label: &str,
+    expected: &str,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {actual} for {tx_hash} does not match {expected_label} {expected}"
+        ));
+    }
+}
+
+fn validate_transaction_value_field<T>(
+    actual_label: &str,
+    actual: T,
+    expected_label: &str,
+    expected: T,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) where
+    T: PartialEq + std::fmt::Display,
+{
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {actual} for {tx_hash} does not match {expected_label} {expected}"
+        ));
+    }
+}
+
+fn option_text_label(value: Option<&str>) -> String {
+    value.unwrap_or("<none>").to_owned()
 }
 
 fn validate_manifest_replay_membership(
@@ -4770,6 +4928,48 @@ mod tests {
                 )
             }),
             "expected missing inbound opcode evidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"]["body"]["hash"] = serde_json::json!("wrong-body-hash");
+        tx["state"]["post"]["status"] = serde_json::json!("frozen");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction inbound body hash wrong-body-hash for tx-a does not match corpus inbound body hash hash",
+                )
+            }),
+            "expected transaction body hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction post state status frozen for tx-a does not match corpus post state status active",
+                )
+            }),
+            "expected transaction post state mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
