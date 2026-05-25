@@ -2258,6 +2258,14 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
     if matches!(value.get("c5"), Some(serde_json::Value::Object(_))) {
         validate_cell_artifact_evidence_keys(value, &["c5"], prefix, "c5", gate_failures);
     }
+    validate_log_artifact_evidence_keys(value, &["vmTrace"], prefix, "VM trace", gate_failures);
+    validate_log_artifact_evidence_keys(
+        value,
+        &["executorTrace"],
+        prefix,
+        "executor trace",
+        gate_failures,
+    );
 }
 
 fn validate_message_artifact_evidence_keys(
@@ -2311,6 +2319,25 @@ fn validate_cell_artifact_evidence_keys(
         ("refs", &["refs"][..]),
     ] {
         if !json_path_exists(cell, path) {
+            gate_failures.push(format!(
+                "{prefix} {label_prefix} missing {label} evidence key"
+            ));
+        }
+    }
+}
+
+fn validate_log_artifact_evidence_keys(
+    value: &serde_json::Value,
+    path: &[&str],
+    prefix: &str,
+    label_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(log) = json_path_value(value, path) else {
+        return;
+    };
+    for (label, path) in [("line count", &["lineCount"][..]), ("text", &["text"][..])] {
+        if !json_path_exists(log, path) {
             gate_failures.push(format!(
                 "{prefix} {label_prefix} missing {label} evidence key"
             ));
@@ -8178,6 +8205,41 @@ mod tests {
                 )
             }),
             "expected missing inbound body hash key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_missing_vm_trace_line_count_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["vmTrace"]
+            .as_object_mut()
+            .expect("VM trace should be an object")
+            .remove("lineCount");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json VM trace missing line count evidence key",
+                )
+            }),
+            "expected missing VM trace line count key failure, got {:?}",
             validation.gate_failures
         );
     }
