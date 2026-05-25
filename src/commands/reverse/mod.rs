@@ -794,7 +794,7 @@ fn write_smoke_summary_and_gate(
         pretty,
         "State-flow smoke summary JSON",
     )?;
-    let manifest = SmokeArtifactManifest::from_summary(summary, summary_path.display().to_string());
+    let manifest = SmokeArtifactManifest::from_summary(summary, out_dir);
     write_json(
         &manifest,
         Some(out_dir.join("artifacts.json")),
@@ -1141,42 +1141,42 @@ struct SmokeArtifactManifest {
 }
 
 impl SmokeArtifactManifest {
-    fn from_summary(summary: &SmokeRunSummary, summary_path: impl Into<String>) -> Self {
-        let summary_path = summary_path.into();
+    fn from_summary(summary: &SmokeRunSummary, artifact_dir: &Path) -> Self {
+        let summary_path = artifact_dir.join("summary.json");
         let mut artifacts = vec![SmokeArtifactManifestEntry::new(
             "runSummary",
-            summary_path.clone(),
+            manifest_relative_path(&summary_path, artifact_dir),
             None,
         )];
 
         for target in &summary.targets {
             artifacts.push(SmokeArtifactManifestEntry::new(
                 "corpus",
-                target.corpus.clone(),
+                manifest_relative_path(Path::new(&target.corpus), artifact_dir),
                 Some(target.id.clone()),
             ));
             artifacts.push(SmokeArtifactManifestEntry::new(
                 "schema",
-                target.schema.clone(),
+                manifest_relative_path(Path::new(&target.schema), artifact_dir),
                 Some(target.id.clone()),
             ));
             if let Some(transaction) = &target.transaction {
                 artifacts.push(SmokeArtifactManifestEntry::new(
                     "transaction",
-                    transaction.clone(),
+                    manifest_relative_path(Path::new(transaction), artifact_dir),
                     Some(target.id.clone()),
                 ));
             }
             for replay in replay_artifact_paths(target) {
                 artifacts.push(SmokeArtifactManifestEntry::new(
                     "replay",
-                    replay,
+                    manifest_relative_path(Path::new(&replay), artifact_dir),
                     Some(target.id.clone()),
                 ));
             }
             artifacts.push(SmokeArtifactManifestEntry::new(
                 "report",
-                target.report.clone(),
+                manifest_relative_path(Path::new(&target.report), artifact_dir),
                 Some(target.id.clone()),
             ));
         }
@@ -1184,11 +1184,18 @@ impl SmokeArtifactManifest {
         Self {
             schema_version: 1,
             kind: "stateFlowArtifactManifest".to_owned(),
-            summary: summary_path,
+            summary: manifest_relative_path(&summary_path, artifact_dir),
             target_count: summary.target_count,
             artifacts,
         }
     }
+}
+
+fn manifest_relative_path(path: &Path, artifact_dir: &Path) -> String {
+    pathdiff::diff_paths(path, artifact_dir)
+        .unwrap_or_else(|| path.to_path_buf())
+        .display()
+        .to_string()
 }
 
 fn report_artifacts_from_manifest(
@@ -1230,9 +1237,19 @@ fn report_artifacts_from_manifest(
     );
 
     Ok(ReportArtifactInputs {
-        corpus: required_manifest_artifact_path(manifest, &selected_target_id, "corpus")?,
-        schema: required_manifest_artifact_path(manifest, &selected_target_id, "schema")?,
-        replays: manifest_artifact_paths(manifest, &selected_target_id, "replay"),
+        corpus: required_manifest_artifact_path(
+            manifest,
+            manifest_path,
+            &selected_target_id,
+            "corpus",
+        )?,
+        schema: required_manifest_artifact_path(
+            manifest,
+            manifest_path,
+            &selected_target_id,
+            "schema",
+        )?,
+        replays: manifest_artifact_paths(manifest, manifest_path, &selected_target_id, "replay"),
     })
 }
 
@@ -1251,10 +1268,11 @@ fn manifest_target_ids(manifest: &SmokeArtifactManifest) -> Vec<String> {
 
 fn required_manifest_artifact_path(
     manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
     target_id: &str,
     kind: &str,
 ) -> anyhow::Result<PathBuf> {
-    let paths = manifest_artifact_paths(manifest, target_id, kind);
+    let paths = manifest_artifact_paths(manifest, manifest_path, target_id, kind);
     match paths.as_slice() {
         [path] => Ok(path.clone()),
         [] => anyhow::bail!("artifact manifest target {target_id:?} is missing {kind} artifact"),
@@ -1264,6 +1282,7 @@ fn required_manifest_artifact_path(
 
 fn manifest_artifact_paths(
     manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
     target_id: &str,
     kind: &str,
 ) -> Vec<PathBuf> {
@@ -1273,8 +1292,24 @@ fn manifest_artifact_paths(
         .filter(|artifact| {
             artifact.kind == kind && artifact.target_id.as_deref() == Some(target_id)
         })
-        .map(|artifact| PathBuf::from(&artifact.path))
+        .map(|artifact| resolve_manifest_artifact_path(manifest_path, &artifact.path))
         .collect()
+}
+
+fn resolve_manifest_artifact_path(manifest_path: &Path, artifact_path: &str) -> PathBuf {
+    let path = PathBuf::from(artifact_path);
+    if path.is_absolute() {
+        return path;
+    }
+    let Some(manifest_dir) = manifest_path.parent() else {
+        return path;
+    };
+    let joined = manifest_dir.join(&path);
+    if joined.exists() || !path.exists() {
+        joined
+    } else {
+        path
+    }
 }
 
 fn replay_artifact_paths(target: &SmokeTargetRunSummary) -> Vec<String> {
@@ -1527,24 +1562,24 @@ mod tests {
             "out/target-a/replay-query-id.json".to_owned(),
         ];
 
-        let manifest = super::SmokeArtifactManifest::from_summary(&summary, "out/summary.json");
+        let manifest = super::SmokeArtifactManifest::from_summary(&summary, Path::new("out"));
         let json = serde_json::to_value(&manifest).expect("manifest should serialize");
 
         assert_eq!(json["schemaVersion"], 1);
         assert_eq!(json["kind"], "stateFlowArtifactManifest");
-        assert_eq!(json["summary"], "out/summary.json");
+        assert_eq!(json["summary"], "summary.json");
         assert_eq!(json["targetCount"], 1);
         assert_eq!(json["artifacts"].as_array().unwrap().len(), 7);
         assert_eq!(
             json["artifacts"],
             serde_json::json!([
-                {"kind": "runSummary", "path": "out/summary.json", "targetId": null},
-                {"kind": "corpus", "path": "out/target-a/corpus.json", "targetId": "target-a"},
-                {"kind": "schema", "path": "out/target-a/schema.json", "targetId": "target-a"},
-                {"kind": "transaction", "path": "out/target-a/transaction-0.json", "targetId": "target-a"},
-                {"kind": "replay", "path": "out/target-a/replay.json", "targetId": "target-a"},
-                {"kind": "replay", "path": "out/target-a/replay-query-id.json", "targetId": "target-a"},
-                {"kind": "report", "path": "out/target-a/report.md", "targetId": "target-a"}
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "transaction", "path": "target-a/transaction-0.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "target-a/replay-query-id.json", "targetId": "target-a"},
+                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
             ])
         );
     }
@@ -1557,6 +1592,13 @@ mod tests {
         summary.targets[0].replays = Vec::new();
         summary.refresh_gate_status();
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let target_dir = temp_dir.path().join("target-a");
+        summary.targets[0].output_dir = target_dir.display().to_string();
+        summary.targets[0].corpus = target_dir.join("corpus.json").display().to_string();
+        summary.targets[0].schema = target_dir.join("schema.json").display().to_string();
+        summary.targets[0].transaction =
+            Some(target_dir.join("transaction-0.json").display().to_string());
+        summary.targets[0].report = target_dir.join("report.md").display().to_string();
 
         let err = super::write_smoke_summary_and_gate(&summary, temp_dir.path(), true)
             .unwrap_err()
@@ -1568,6 +1610,8 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&written).expect("artifact manifest should be valid JSON");
         assert_eq!(json["kind"], "stateFlowArtifactManifest");
+        assert_eq!(json["summary"], "summary.json");
+        assert_eq!(json["artifacts"][1]["path"], "target-a/corpus.json");
         assert_eq!(json["artifacts"].as_array().unwrap().len(), 5);
         assert!(
             json["artifacts"]
@@ -1586,16 +1630,16 @@ mod tests {
             "summary": "out/summary.json",
             "targetCount": 2,
             "artifacts": [
-                {"kind": "runSummary", "path": "out/summary.json", "targetId": null},
-                {"kind": "corpus", "path": "out/target-a/corpus.json", "targetId": "target-a"},
-                {"kind": "schema", "path": "out/target-a/schema.json", "targetId": "target-a"},
-                {"kind": "replay", "path": "out/target-a/replay.json", "targetId": "target-a"},
-                {"kind": "report", "path": "out/target-a/report.md", "targetId": "target-a"},
-                {"kind": "corpus", "path": "out/target-b/corpus.json", "targetId": "target-b"},
-                {"kind": "schema", "path": "out/target-b/schema.json", "targetId": "target-b"},
-                {"kind": "replay", "path": "out/target-b/replay.json", "targetId": "target-b"},
-                {"kind": "replay", "path": "out/target-b/replay-probe-query_id-32-64.json", "targetId": "target-b"},
-                {"kind": "report", "path": "out/target-b/report.md", "targetId": "target-b"}
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
+                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"},
+                {"kind": "corpus", "path": "target-b/corpus.json", "targetId": "target-b"},
+                {"kind": "schema", "path": "target-b/schema.json", "targetId": "target-b"},
+                {"kind": "replay", "path": "target-b/replay.json", "targetId": "target-b"},
+                {"kind": "replay", "path": "target-b/replay-probe-query_id-32-64.json", "targetId": "target-b"},
+                {"kind": "report", "path": "target-b/report.md", "targetId": "target-b"}
             ]
         }))
         .expect("artifact manifest should deserialize");
