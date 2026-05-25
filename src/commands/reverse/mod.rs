@@ -2017,6 +2017,7 @@ fn validate_manifest_target_content_matches_summary(
             target.retraced_count,
             gate_failures,
         );
+        validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
     }
 }
 
@@ -2042,6 +2043,88 @@ fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut
         corpus.retraced_count + corpus.failure_count,
         gate_failures,
     );
+}
+
+fn validate_schema_corpus_membership(
+    schema: &StateFlowSchemaReport,
+    corpus: Option<&StateFlowCorpus>,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(corpus) = corpus else {
+        return;
+    };
+    let corpus_hashes = corpus_transaction_hashes(corpus);
+    for edge in &schema.state_machine.edges {
+        for example in &edge.examples {
+            validate_corpus_hash_membership(
+                "schema state-machine example",
+                example,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+    }
+    for candidate in &schema.opcode_candidates {
+        for example in &candidate.examples {
+            validate_corpus_hash_membership(
+                "schema candidate example",
+                example,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+        for evidence in &candidate.evidence {
+            validate_corpus_hash_membership(
+                "schema evidence tx hash",
+                &evidence.tx_hash,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+        for probe in &candidate.replay_probes {
+            for evidence in &probe.evidence {
+                validate_corpus_hash_membership(
+                    "schema replay probe evidence",
+                    evidence,
+                    &corpus_hashes,
+                    gate_failures,
+                );
+            }
+        }
+        for effect in &candidate.outbound_effects {
+            for tx_hash in &effect.tx_hashes {
+                validate_corpus_hash_membership(
+                    "schema outbound effect tx hash",
+                    tx_hash,
+                    &corpus_hashes,
+                    gate_failures,
+                );
+            }
+        }
+        for effect in &candidate.out_actions {
+            for tx_hash in &effect.tx_hashes {
+                validate_corpus_hash_membership(
+                    "schema out-action tx hash",
+                    tx_hash,
+                    &corpus_hashes,
+                    gate_failures,
+                );
+            }
+        }
+    }
+}
+
+fn validate_corpus_hash_membership(
+    label: &str,
+    hash: &str,
+    corpus_hashes: &[&str],
+    gate_failures: &mut Vec<String>,
+) {
+    if !corpus_hashes.iter().any(|known| known == &hash) {
+        gate_failures.push(format!(
+            "{label} {hash} is not present in corpus transactions"
+        ));
+    }
 }
 
 fn validate_manifest_transaction_membership(
@@ -2854,6 +2937,73 @@ mod tests {
                 )
             }),
             "expected schema content mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_evidence_outside_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "transactionCount": 2,
+                "opcodeCandidates": [{
+                    "opcode": "0x00000001",
+                    "count": 2,
+                    "examples": ["tx-a"],
+                    "evidence": [{
+                        "txHash": "foreign-tx",
+                        "inboundBodyHash": "body",
+                        "inboundBodyBits": 32,
+                        "inboundBodyRefs": 0,
+                        "fromStatus": "active",
+                        "toStatus": "active",
+                        "preDataHash": null,
+                        "postDataHash": null,
+                        "preCodeHash": null,
+                        "postCodeHash": null,
+                        "outboundKinds": [],
+                        "outActionKinds": []
+                    }],
+                    "inboundBody": {
+                        "minBits": 32,
+                        "maxBits": 32,
+                        "minRefs": 0,
+                        "maxRefs": 0,
+                        "bodyHashes": []
+                    },
+                    "stateTransitions": [],
+                    "outboundEffects": [],
+                    "outActions": [],
+                    "confidence": "medium",
+                    "unknownFields": []
+                }]
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema evidence tx hash foreign-tx is not present in corpus transactions",
+                )
+            }),
+            "expected schema evidence membership failure, got {:?}",
             validation.gate_failures
         );
     }
