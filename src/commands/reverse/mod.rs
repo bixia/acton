@@ -2292,6 +2292,7 @@ fn validate_schema_corpus_membership(
     }
     validate_schema_audit_signal_evidence_membership(schema, corpus, gate_failures);
     for candidate in &schema.opcode_candidates {
+        validate_schema_opcode_candidate_matches_corpus(candidate, corpus, gate_failures);
         for example in &candidate.examples {
             validate_corpus_hash_membership(
                 "schema candidate example",
@@ -2346,6 +2347,83 @@ fn validate_schema_corpus_membership(
             }
         }
     }
+}
+
+fn validate_schema_opcode_candidate_matches_corpus(
+    candidate: &ton_stateflow::OpcodeSchemaCandidate,
+    corpus: &StateFlowCorpus,
+    gate_failures: &mut Vec<String>,
+) {
+    let opcode = report_opcode_label(candidate.opcode.as_deref());
+    let matching_transactions = corpus
+        .transactions
+        .iter()
+        .filter(|tx| tx.inbound.opcode == candidate.opcode)
+        .collect::<Vec<_>>();
+    validate_evidence_value_field(
+        "schema opcode candidate count",
+        candidate.count,
+        "corpus matching transaction count",
+        matching_transactions.len(),
+        &opcode,
+        gate_failures,
+    );
+    let expected_examples = matching_transactions
+        .iter()
+        .take(5)
+        .map(|tx| tx.query_hash.clone())
+        .collect::<Vec<_>>();
+    validate_evidence_text_field(
+        "schema opcode candidate examples",
+        &report_sample_list(&candidate.examples),
+        "corpus examples",
+        &report_sample_list(&expected_examples),
+        &opcode,
+        gate_failures,
+    );
+
+    let expected_min_bits = matching_transactions
+        .iter()
+        .map(|tx| tx.inbound.body.bits)
+        .min()
+        .unwrap_or_default();
+    let expected_max_bits = matching_transactions
+        .iter()
+        .map(|tx| tx.inbound.body.bits)
+        .max()
+        .unwrap_or_default();
+    validate_evidence_text_field(
+        "schema opcode candidate body bits",
+        &report_range(
+            candidate.inbound_body.min_bits,
+            candidate.inbound_body.max_bits,
+        ),
+        "corpus body bits",
+        &report_range(expected_min_bits, expected_max_bits),
+        &opcode,
+        gate_failures,
+    );
+    let expected_min_refs = matching_transactions
+        .iter()
+        .map(|tx| tx.inbound.body.refs)
+        .min()
+        .unwrap_or_default();
+    let expected_max_refs = matching_transactions
+        .iter()
+        .map(|tx| tx.inbound.body.refs)
+        .max()
+        .unwrap_or_default();
+    validate_evidence_text_field(
+        "schema opcode candidate body refs",
+        &report_range(
+            candidate.inbound_body.min_refs,
+            candidate.inbound_body.max_refs,
+        ),
+        "corpus body refs",
+        &report_range(expected_min_refs, expected_max_refs),
+        &opcode,
+        gate_failures,
+    );
 }
 
 fn validate_schema_audit_signal_evidence_membership(
@@ -5437,6 +5515,62 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_opcode_candidate_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["count"] = serde_json::json!(1);
+        schema["opcodeCandidates"][0]["examples"] = serde_json::json!(["tx-a"]);
+        schema["opcodeCandidates"][0]["inboundBody"]["maxBits"] = serde_json::json!(64);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let report_path = temp_dir.path().join("target-a/report.md");
+        let report = fs::read_to_string(&report_path).expect("report artifact should be readable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &report.replace(
+                "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+                "| `0x00000001` | 1 | medium | 32-64 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a |",
+            ),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema opcode candidate count 1 for 0x00000001 does not match corpus matching transaction count 2",
+                )
+            }),
+            "expected opcode candidate count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema opcode candidate body bits 32-64 for 0x00000001 does not match corpus body bits 32",
+                )
+            }),
+            "expected opcode candidate body range mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_target_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -5697,6 +5831,16 @@ mod tests {
     fn artifact_manifest_validation_accepts_report_opcode_candidate_range_format() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
+        let corpus_path = temp_dir.path().join("target-a/corpus.json");
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&corpus_path).expect("corpus should exist"))
+                .expect("corpus should parse");
+        corpus["transactions"][1]["inbound"]["body"]["bits"] = serde_json::json!(40);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
         let schema_path = temp_dir.path().join("target-a/schema.json");
         let mut schema: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
