@@ -787,14 +787,15 @@ fn write_smoke_summary_and_gate(
     out_dir: &Path,
     pretty: bool,
 ) -> anyhow::Result<()> {
+    let portable_summary = summary.with_paths_relative_to(out_dir);
     let summary_path = out_dir.join("summary.json");
     write_json(
-        summary,
+        &portable_summary,
         Some(summary_path.clone()),
         pretty,
         "State-flow smoke summary JSON",
     )?;
-    let manifest = SmokeArtifactManifest::from_summary(summary, out_dir);
+    let manifest = SmokeArtifactManifest::from_summary(&portable_summary, out_dir);
     write_json(
         &manifest,
         Some(out_dir.join("artifacts.json")),
@@ -1038,7 +1039,7 @@ impl SmokeReplayMutation {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeRunSummary {
     schema_version: u32,
@@ -1058,6 +1059,14 @@ impl SmokeRunSummary {
             targets,
         };
         summary.refresh_gate_status();
+        summary
+    }
+
+    fn with_paths_relative_to(&self, artifact_dir: &Path) -> Self {
+        let mut summary = self.clone();
+        for target in &mut summary.targets {
+            target.rewrite_paths_relative_to(artifact_dir);
+        }
         summary
     }
 
@@ -1104,7 +1113,7 @@ impl SmokeRunSummary {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeTargetRunSummary {
     id: String,
@@ -1192,6 +1201,9 @@ impl SmokeArtifactManifest {
 }
 
 fn manifest_relative_path(path: &Path, artifact_dir: &Path) -> String {
+    if path.is_absolute() != artifact_dir.is_absolute() {
+        return path.display().to_string();
+    }
     pathdiff::diff_paths(path, artifact_dir)
         .unwrap_or_else(|| path.to_path_buf())
         .display()
@@ -1338,6 +1350,26 @@ impl SmokeArtifactManifestEntry {
 }
 
 impl SmokeTargetRunSummary {
+    fn rewrite_paths_relative_to(&mut self, artifact_dir: &Path) {
+        self.output_dir = manifest_relative_path(Path::new(&self.output_dir), artifact_dir);
+        self.corpus = manifest_relative_path(Path::new(&self.corpus), artifact_dir);
+        self.schema = manifest_relative_path(Path::new(&self.schema), artifact_dir);
+        self.transaction = self
+            .transaction
+            .as_deref()
+            .map(|path| manifest_relative_path(Path::new(path), artifact_dir));
+        self.replay = self
+            .replay
+            .as_deref()
+            .map(|path| manifest_relative_path(Path::new(path), artifact_dir));
+        self.replays = self
+            .replays
+            .iter()
+            .map(|path| manifest_relative_path(Path::new(path), artifact_dir))
+            .collect();
+        self.report = manifest_relative_path(Path::new(&self.report), artifact_dir);
+    }
+
     fn refresh_gate_status(&mut self) {
         self.gate_failures = self.quality_gate_failures();
         self.passed = self.gate_failures.is_empty();
@@ -1551,6 +1583,34 @@ mod tests {
             json["gateFailures"],
             serde_json::json!(["target-a: collection failures 1"])
         );
+    }
+
+    #[test]
+    fn smoke_summary_paths_are_written_relative_to_artifact_dir() {
+        let mut summary = sample_smoke_summary();
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        rewrite_sample_summary_paths(&mut summary, temp_dir.path());
+
+        super::write_smoke_summary_and_gate(&summary, temp_dir.path(), true)
+            .expect("portable summary should pass gate");
+
+        let written = fs::read_to_string(temp_dir.path().join("summary.json"))
+            .expect("summary should be written");
+        let json: serde_json::Value =
+            serde_json::from_str(&written).expect("summary should be valid JSON");
+        assert_eq!(json["targets"][0]["outputDir"], "target-a");
+        assert_eq!(json["targets"][0]["corpus"], "target-a/corpus.json");
+        assert_eq!(json["targets"][0]["schema"], "target-a/schema.json");
+        assert_eq!(
+            json["targets"][0]["transaction"],
+            "target-a/transaction-0.json"
+        );
+        assert_eq!(json["targets"][0]["replay"], "target-a/replay.json");
+        assert_eq!(
+            json["targets"][0]["replays"],
+            serde_json::json!(["target-a/replay.json"])
+        );
+        assert_eq!(json["targets"][0]["report"], "target-a/report.md");
     }
 
     #[test]
@@ -1771,6 +1831,18 @@ mod tests {
             replays: vec!["out/target-a/replay.json".to_owned()],
             report: "out/target-a/report.md".to_owned(),
         }])
+    }
+
+    fn rewrite_sample_summary_paths(summary: &mut super::SmokeRunSummary, out_dir: &Path) {
+        let target_dir = out_dir.join("target-a");
+        summary.targets[0].output_dir = target_dir.display().to_string();
+        summary.targets[0].corpus = target_dir.join("corpus.json").display().to_string();
+        summary.targets[0].schema = target_dir.join("schema.json").display().to_string();
+        summary.targets[0].transaction =
+            Some(target_dir.join("transaction-0.json").display().to_string());
+        summary.targets[0].replay = Some(target_dir.join("replay.json").display().to_string());
+        summary.targets[0].replays = vec![target_dir.join("replay.json").display().to_string()];
+        summary.targets[0].report = target_dir.join("report.md").display().to_string();
     }
 
     fn sample_replay_corpus_json() -> String {
