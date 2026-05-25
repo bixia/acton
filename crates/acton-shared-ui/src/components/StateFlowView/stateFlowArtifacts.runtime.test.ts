@@ -596,6 +596,24 @@ assert(
   "expected target detail to include replay artifact count",
 )
 assert(targetRows[1]?.value === "failed", "expected failed target value")
+const runArtifactRows = sectionRows(runSummaryView, "Target Artifacts")
+assert(runArtifactRows[0]?.label === "target-a corpus", "expected target corpus artifact row")
+assert(runArtifactRows[0]?.value === "out/target-a/corpus.json", "expected corpus artifact path")
+assert(runArtifactRows[1]?.label === "target-a schema", "expected target schema artifact row")
+assert(
+  runArtifactRows.some(
+    row =>
+      row.label === "target-a replay 1" &&
+      row.value === "out/target-a/replay-probe-query-id-32-64.json",
+  ),
+  "expected all replay artifact paths",
+)
+assert(
+  runArtifactRows.some(
+    row => row.label === "target-b report" && row.value === "out/target-b/report.md",
+  ),
+  "expected failed target report artifact path",
+)
 const gateRows = sectionRows(runSummaryView, "Gate Failures")
 assert(gateRows[0]?.label === "target-b", "expected target id on gate failure row")
 assert(gateRows[0]?.value === "replays 0", "expected gate failure reason")

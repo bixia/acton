@@ -389,6 +389,16 @@ assert(
   runSummaryView.sections[0]?.rows[0]?.detail?.includes("opcodes 1") === true,
   "expected run summary target detail",
 )
+assert(
+  runSummaryView.sections
+    .find(section => section.title === "Target Artifacts")
+    ?.rows.some(
+      row =>
+        row.label === "target-a replay 1" &&
+        row.value === "out/target-a/replay-probe-query-id-32-64.json",
+    ) === true,
+  "expected run summary to include replay artifact paths",
+)
 const manifestView = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(artifactManifest)),
 )

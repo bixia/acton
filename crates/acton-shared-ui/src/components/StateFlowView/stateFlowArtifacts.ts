@@ -723,6 +723,7 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
 }
 
 function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
+  const artifactRows = runSummaryArtifactRows(summary)
   return {
     title: "State Flow Run Summary",
     metrics: [
@@ -753,6 +754,14 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
           ].join(" · "),
         })),
       },
+      ...(artifactRows.length > 0
+        ? [
+            {
+              title: "Target Artifacts",
+              rows: artifactRows,
+            },
+          ]
+        : []),
       ...(summary.gateFailures.length > 0
         ? [
             {
@@ -936,6 +945,33 @@ function formatGateFailureRow(failure: string): SummaryRow {
     label: failure.slice(0, separator),
     value: failure.slice(separator + 2),
   }
+}
+
+function runSummaryArtifactRows(summary: StateFlowRunSummary): readonly SummaryRow[] {
+  return summary.targets.flatMap(target => targetArtifactRows(target))
+}
+
+function targetArtifactRows(target: StateFlowRunTargetSummary): readonly SummaryRow[] {
+  const detail = `${target.network} ${target.address}`
+  const replayPaths =
+    target.replays && target.replays.length > 0 ? target.replays : replayPath(target)
+  return [
+    {label: `${target.id} corpus`, value: target.corpus, detail},
+    {label: `${target.id} schema`, value: target.schema, detail},
+    ...(target.transaction
+      ? [{label: `${target.id} transaction`, value: target.transaction, detail}]
+      : []),
+    ...replayPaths.map((path, index) => ({
+      label: `${target.id} replay ${index}`,
+      value: path,
+      detail,
+    })),
+    {label: `${target.id} report`, value: target.report, detail},
+  ]
+}
+
+function replayPath(target: StateFlowRunTargetSummary): readonly string[] {
+  return target.replay ? [target.replay] : []
 }
 
 function targetReplayArtifactCount(target: StateFlowRunTargetSummary): number {
