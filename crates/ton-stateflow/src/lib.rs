@@ -119,8 +119,19 @@ pub struct StateFlowReplayDiff {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ReplayMutation {
     None,
-    FlipBodyBit { bit: u16 },
-    ReplaceBody { body_boc64: String },
+    FlipBodyBit {
+        bit: u16,
+    },
+    ReplaceBody {
+        #[serde(rename = "bodyBoc64")]
+        body_boc64: String,
+    },
+    SetBodyUint {
+        #[serde(rename = "bitOffset")]
+        bit_offset: u16,
+        bits: u16,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1250,6 +1261,11 @@ fn mutation_label(mutation: &ReplayMutation) -> String {
         ReplayMutation::None => "none".to_owned(),
         ReplayMutation::FlipBodyBit { bit } => format!("flip body bit {bit}"),
         ReplayMutation::ReplaceBody { .. } => "replace body".to_owned(),
+        ReplayMutation::SetBodyUint {
+            bit_offset,
+            bits,
+            value,
+        } => format!("set body uint {value} at {bit_offset}:{bits}"),
     }
 }
 
@@ -2044,6 +2060,17 @@ fn apply_replay_mutation(message_boc64: &str, mutation: &ReplayMutation) -> anyh
             let body = Boc::decode_base64(body_boc64)?;
             message_with_body_boc64(&message, body)
         }
+        ReplayMutation::SetBodyUint {
+            bit_offset,
+            bits,
+            value,
+        } => {
+            let message_cell = Boc::decode_base64(message_boc64)?;
+            let message = message_cell.parse::<tycho_types::models::Message<'_>>()?;
+            let body = cell_from_slice(&message.body)?;
+            let mutated_body = set_cell_uint(&body, *bit_offset, *bits, value)?;
+            message_with_body_boc64(&message, mutated_body)
+        }
     }
 }
 
@@ -2078,6 +2105,55 @@ fn flip_cell_bit(cell: &Cell, bit: u16) -> anyhow::Result<Cell> {
         builder.store_reference(slice.get_reference_cloned(index)?)?;
     }
     Ok(builder.build()?)
+}
+
+fn set_cell_uint(cell: &Cell, bit_offset: u16, bits: u16, value: &str) -> anyhow::Result<Cell> {
+    if bits == 0 || bits > 64 {
+        anyhow::bail!("setBodyUint supports 1..=64 bits, got {bits}");
+    }
+    let value = parse_uint_value(value)?;
+    if bits < 64 && value >= (1u64 << bits) {
+        anyhow::bail!("value {value} does not fit in {bits} bit(s)");
+    }
+
+    let slice = cell.as_slice_allow_exotic();
+    let end = bit_offset
+        .checked_add(bits)
+        .context("setBodyUint bit range overflows u16")?;
+    if end > slice.size_bits() {
+        anyhow::bail!(
+            "cannot set body uint {bit_offset}:{bits}; body has {} bits",
+            slice.size_bits()
+        );
+    }
+
+    let mut builder = CellBuilder::new();
+    for index in 0..slice.size_bits() {
+        let bit = if (bit_offset..end).contains(&index) {
+            let shift = u32::from(end - index - 1);
+            ((value >> shift) & 1) == 1
+        } else {
+            slice.get_bit(index)?
+        };
+        builder.store_bit(bit)?;
+    }
+    for index in 0..slice.size_refs() {
+        builder.store_reference(slice.get_reference_cloned(index)?)?;
+    }
+    Ok(builder.build()?)
+}
+
+fn parse_uint_value(value: &str) -> anyhow::Result<u64> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).with_context(|| format!("invalid hex uint value {value:?}"))
+    } else {
+        value
+            .parse::<u64>()
+            .with_context(|| format!("invalid uint value {value:?}"))
+    }
 }
 
 fn inbound_artifact_from_boc64(message_boc64: &str) -> anyhow::Result<MessageArtifact> {
@@ -2828,6 +2904,68 @@ mod tests {
         let mut mutated_body = mutated_message.body;
 
         assert_eq!(mutated_body.load_u32().unwrap(), 0x8000_0000);
+    }
+
+    #[test]
+    fn replay_mutation_sets_message_body_uint_field() {
+        let mut body = CellBuilder::new();
+        body.store_u32(0x0000_0001).unwrap();
+        body.store_u64(7).unwrap();
+        body.store_raw(&[0xaa], 8).unwrap();
+        let message = OwnedMessage {
+            info: MsgInfo::Int(IntMsgInfo::default()),
+            init: None,
+            body: body.build().unwrap().into(),
+            layout: None,
+        };
+        let message_boc64 = Boc::encode_base64(super::to_cell(&message).unwrap());
+
+        let mutated = super::apply_replay_mutation(
+            &message_boc64,
+            &ReplayMutation::SetBodyUint {
+                bit_offset: 32,
+                bits: 64,
+                value: "42".to_owned(),
+            },
+        )
+        .unwrap();
+        let mutated_cell = Boc::decode_base64(mutated).unwrap();
+        let mutated_message = mutated_cell
+            .parse::<tycho_types::models::Message<'_>>()
+            .unwrap();
+        let mut mutated_body = mutated_message.body;
+
+        assert_eq!(mutated_body.load_u32().unwrap(), 0x0000_0001);
+        assert_eq!(mutated_body.load_u64().unwrap(), 42);
+        assert_eq!(mutated_body.load_uint(8).unwrap(), 0xaa);
+    }
+
+    #[test]
+    fn replay_mutation_json_uses_artifact_field_names() {
+        let replace = serde_json::to_value(&ReplayMutation::ReplaceBody {
+            body_boc64: "body".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(
+            replace,
+            serde_json::json!({"type": "replaceBody", "bodyBoc64": "body"})
+        );
+
+        let set_uint = serde_json::to_value(&ReplayMutation::SetBodyUint {
+            bit_offset: 32,
+            bits: 64,
+            value: "42".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(
+            set_uint,
+            serde_json::json!({
+                "type": "setBodyUint",
+                "bitOffset": 32,
+                "bits": 64,
+                "value": "42"
+            })
+        );
     }
 
     #[test]

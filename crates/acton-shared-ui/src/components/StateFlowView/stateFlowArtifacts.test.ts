@@ -180,12 +180,24 @@ const runSummary = {
   ],
 }
 
+const artifactManifest = {
+  schemaVersion: 1,
+  kind: "stateFlowArtifactManifest",
+  summary: "out/summary.json",
+  targetCount: 1,
+  artifacts: [
+    {kind: "runSummary", path: "out/summary.json", targetId: undefined},
+    {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
+  ],
+}
+
 const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
   parseStateFlowArtifact(JSON.stringify(corpus)),
   parseStateFlowArtifact(JSON.stringify(schema)),
   parseStateFlowArtifact(JSON.stringify(replay)),
   parseStateFlowArtifact(JSON.stringify(runSummary)),
+  parseStateFlowArtifact(JSON.stringify(artifactManifest)),
 ]
 
 const artifactKinds: Array<StateFlowArtifact["kind"]> = [
@@ -194,6 +206,7 @@ const artifactKinds: Array<StateFlowArtifact["kind"]> = [
   "schema",
   "replay",
   "runSummary",
+  "artifactManifest",
 ]
 
 for (const [index, kind] of artifactKinds.entries()) {
@@ -230,6 +243,10 @@ assert(
   runSummaryView.sections[0]?.rows[0]?.detail?.includes("opcodes 1") === true,
   "expected run summary target detail",
 )
+const manifestView = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(artifactManifest)),
+)
+assert(manifestView.title === "State Flow Artifact Manifest", "expected artifact manifest title")
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
 

@@ -162,6 +162,11 @@ const replay = {
   },
 }
 
+const setBodyUintReplay = {
+  ...replay,
+  mutation: {type: "setBodyUint", bitOffset: 32, bits: 64, value: "42"},
+}
+
 const runSummary = {
   schemaVersion: 1,
   targetCount: 2,
@@ -212,6 +217,21 @@ const runSummary = {
       replay: undefined,
       report: "out/target-b/report.md",
     },
+  ],
+}
+
+const artifactManifest = {
+  schemaVersion: 1,
+  kind: "stateFlowArtifactManifest",
+  summary: "out/summary.json",
+  targetCount: 2,
+  artifacts: [
+    {kind: "runSummary", path: "out/summary.json", targetId: undefined},
+    {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
+    {kind: "schema", path: "out/target-a/schema.json", targetId: "target-a"},
+    {kind: "transaction", path: "out/target-a/transaction-0.json", targetId: "target-a"},
+    {kind: "replay", path: "out/target-a/replay.json", targetId: "target-a"},
+    {kind: "report", path: "out/target-a/report.md", targetId: "target-a"},
   ],
 }
 
@@ -289,6 +309,15 @@ assert(
   replayRiskRows.some(row => row.value === "Mutation changed outbound/action counts"),
   "expected replay outbound/action risk point",
 )
+const setBodyUintReplaySummary = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(setBodyUintReplay)),
+)
+assert(
+  setBodyUintReplaySummary.metrics.some(
+    metric => metric.label === "Mutation" && metric.value === "set body uint 42 at 32:64",
+  ),
+  "expected setBodyUint replay mutation label",
+)
 
 const runSummaryArtifact = parseStateFlowArtifact(JSON.stringify(runSummary))
 assert(runSummaryArtifact.kind === "runSummary", "expected run summary artifact kind")
@@ -310,6 +339,19 @@ assert(targetRows[1]?.value === "failed", "expected failed target value")
 const gateRows = sectionRows(runSummaryView, "Gate Failures")
 assert(gateRows[0]?.label === "target-b", "expected target id on gate failure row")
 assert(gateRows[0]?.value === "replays 0", "expected gate failure reason")
+
+const manifestArtifact = parseStateFlowArtifact(JSON.stringify(artifactManifest))
+assert(manifestArtifact.kind === "artifactManifest", "expected artifact manifest kind")
+const manifestSummary = summarizeStateFlowArtifact(manifestArtifact)
+assert(manifestSummary.title === "State Flow Artifact Manifest", "expected manifest title")
+assert(
+  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "6"),
+  "expected manifest artifact count metric",
+)
+const manifestRows = sectionRows(manifestSummary, "Artifacts")
+assert(manifestRows[0]?.label === "runSummary", "expected run summary manifest row")
+assert(manifestRows[0]?.value === "out/summary.json", "expected run summary path")
+assert(manifestRows[1]?.detail === "target-a", "expected target id in manifest detail")
 
 function sectionRows(
   summary: ReturnType<typeof summarizeStateFlowArtifact>,

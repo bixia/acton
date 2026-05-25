@@ -4,6 +4,7 @@ export type StateFlowArtifact =
   | {readonly kind: "schema"; readonly data: StateFlowSchemaReport}
   | {readonly kind: "replay"; readonly data: StateFlowReplayDiff}
   | {readonly kind: "runSummary"; readonly data: StateFlowRunSummary}
+  | {readonly kind: "artifactManifest"; readonly data: StateFlowArtifactManifest}
 
 export interface ArtifactSummary {
   readonly title: string
@@ -141,6 +142,20 @@ export interface StateFlowRunTargetSummary {
   readonly transaction?: string | null
   readonly replay?: string | null
   readonly report: string
+}
+
+export interface StateFlowArtifactManifest {
+  readonly schemaVersion: number
+  readonly kind: "stateFlowArtifactManifest"
+  readonly summary: string
+  readonly targetCount: number
+  readonly artifacts: readonly StateFlowArtifactManifestEntry[]
+}
+
+export interface StateFlowArtifactManifestEntry {
+  readonly kind: string
+  readonly path: string
+  readonly targetId?: string | null
 }
 
 export interface ShardAccountSnapshot {
@@ -334,6 +349,12 @@ export type ReplayMutation =
   | {readonly type: "none"}
   | {readonly type: "flipBodyBit"; readonly bit: number}
   | {readonly type: "replaceBody"; readonly bodyBoc64: string}
+  | {
+      readonly type: "setBodyUint"
+      readonly bitOffset: number
+      readonly bits: number
+      readonly value: string
+    }
 
 export interface ReplayObservation {
   readonly accepted: boolean
@@ -392,6 +413,14 @@ export function parseStateFlowArtifact(raw: string): StateFlowArtifact {
     return {kind: "runSummary", data: parsed as unknown as StateFlowRunSummary}
   }
   if (
+    parsed.kind === "stateFlowArtifactManifest" &&
+    typeof parsed.summary === "string" &&
+    typeof parsed.targetCount === "number" &&
+    Array.isArray(parsed.artifacts)
+  ) {
+    return {kind: "artifactManifest", data: parsed as unknown as StateFlowArtifactManifest}
+  }
+  if (
     typeof parsed.queryHash === "string" &&
     isRecord(parsed.transaction) &&
     isRecord(parsed.state)
@@ -418,6 +447,9 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
     }
     case "runSummary": {
       return summarizeRunSummary(artifact.data)
+    }
+    case "artifactManifest": {
+      return summarizeArtifactManifest(artifact.data)
     }
   }
 }
@@ -634,6 +666,27 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
             },
           ]
         : []),
+    ],
+  }
+}
+
+function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): ArtifactSummary {
+  return {
+    title: "State Flow Artifact Manifest",
+    subtitle: manifest.summary,
+    metrics: [
+      {label: "Targets", value: manifest.targetCount.toString()},
+      {label: "Artifacts", value: manifest.artifacts.length.toString()},
+    ],
+    sections: [
+      {
+        title: "Artifacts",
+        rows: manifest.artifacts.map(artifact => ({
+          label: artifact.kind,
+          value: artifact.path,
+          detail: artifact.targetId ?? undefined,
+        })),
+      },
     ],
   }
 }
@@ -947,6 +1000,9 @@ function mutationLabel(mutation: ReplayMutation): string {
     }
     case "replaceBody": {
       return "replace body"
+    }
+    case "setBodyUint": {
+      return `set body uint ${mutation.value} at ${mutation.bitOffset}:${mutation.bits}`
     }
   }
 }

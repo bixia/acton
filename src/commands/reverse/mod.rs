@@ -89,18 +89,25 @@ pub enum ReverseCommand {
         tx_hash: Option<String>,
         #[arg(
             long,
-            conflicts_with = "body_boc64",
+            conflicts_with_all = ["body_boc64", "set_body_uint"],
             value_name = "FLIP_BODY_BIT",
             help = "Flip one inbound message body bit before replay"
         )]
         flip_body_bit: Option<u16>,
         #[arg(
             long,
-            conflicts_with = "flip_body_bit",
+            conflicts_with_all = ["flip_body_bit", "set_body_uint"],
             value_name = "BODY_BOC64",
             help = "Replace inbound message body with this base64 BoC before replay"
         )]
         body_boc64: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["flip_body_bit", "body_boc64"],
+            value_name = "BIT_OFFSET:BITS:VALUE",
+            help = "Set an unsigned integer field in the inbound body before replay"
+        )]
+        set_body_uint: Option<String>,
         #[arg(long, help = "Ignore TVM signature checks during local replay")]
         ignore_chksig: bool,
         #[arg(
@@ -162,18 +169,25 @@ pub enum ReverseCommand {
         replay_tx_hash: Option<String>,
         #[arg(
             long,
-            conflicts_with = "body_boc64",
+            conflicts_with_all = ["body_boc64", "set_body_uint"],
             value_name = "FLIP_BODY_BIT",
             help = "Flip one inbound message body bit before replay"
         )]
         flip_body_bit: Option<u16>,
         #[arg(
             long,
-            conflicts_with = "flip_body_bit",
+            conflicts_with_all = ["flip_body_bit", "set_body_uint"],
             value_name = "BODY_BOC64",
             help = "Replace inbound message body with this base64 BoC before replay"
         )]
         body_boc64: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["flip_body_bit", "body_boc64"],
+            value_name = "BIT_OFFSET:BITS:VALUE",
+            help = "Set an unsigned integer field in the inbound body before replay"
+        )]
+        set_body_uint: Option<String>,
         #[arg(long, help = "Ignore TVM signature checks during local replay")]
         ignore_chksig: bool,
         #[arg(
@@ -232,6 +246,7 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             tx_hash,
             flip_body_bit,
             body_boc64,
+            set_body_uint,
             ignore_chksig,
             output,
             pretty,
@@ -241,6 +256,7 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             tx_hash,
             flip_body_bit,
             body_boc64,
+            set_body_uint,
             ignore_chksig,
             output,
             pretty,
@@ -259,6 +275,7 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             replay_tx_hash,
             flip_body_bit,
             body_boc64,
+            set_body_uint,
             ignore_chksig,
             out_dir,
             pretty,
@@ -270,6 +287,7 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             replay_tx_hash,
             flip_body_bit,
             body_boc64,
+            set_body_uint,
             ignore_chksig,
             out_dir,
             pretty,
@@ -354,6 +372,7 @@ fn reverse_replay_cmd(
     tx_hash: Option<String>,
     flip_body_bit: Option<u16>,
     body_boc64: Option<String>,
+    set_body_uint: Option<String>,
     ignore_chksig: bool,
     output: Option<PathBuf>,
     pretty: bool,
@@ -361,14 +380,50 @@ fn reverse_replay_cmd(
     let json = fs::read_to_string(&state_flow)
         .with_context(|| format!("failed to read {}", state_flow.display()))?;
     let flow = parse_replay_input(&json, &state_flow, tx_index, tx_hash.as_deref())?;
-    let mutation = match (flip_body_bit, body_boc64) {
-        (Some(bit), None) => ReplayMutation::FlipBodyBit { bit },
-        (None, Some(body_boc64)) => ReplayMutation::ReplaceBody { body_boc64 },
-        (None, None) => ReplayMutation::None,
-        (Some(_), Some(_)) => anyhow::bail!("only one replay mutation can be selected"),
-    };
+    let mutation = replay_mutation_from_args(flip_body_bit, body_boc64, set_body_uint)?;
     let diff = ton_stateflow::replay_state_flow_tx(&flow, mutation, ignore_chksig)?;
     write_json(&diff, output, pretty, "State-flow replay diff JSON")
+}
+
+fn replay_mutation_from_args(
+    flip_body_bit: Option<u16>,
+    body_boc64: Option<String>,
+    set_body_uint: Option<String>,
+) -> anyhow::Result<ReplayMutation> {
+    match (flip_body_bit, body_boc64, set_body_uint) {
+        (Some(bit), None, None) => Ok(ReplayMutation::FlipBodyBit { bit }),
+        (None, Some(body_boc64), None) => Ok(ReplayMutation::ReplaceBody { body_boc64 }),
+        (None, None, Some(set_body_uint)) => {
+            let (bit_offset, bits, value) = parse_set_body_uint_arg(&set_body_uint)?;
+            Ok(ReplayMutation::SetBodyUint {
+                bit_offset,
+                bits,
+                value,
+            })
+        }
+        (None, None, None) => Ok(ReplayMutation::None),
+        _ => anyhow::bail!("only one replay mutation can be selected"),
+    }
+}
+
+fn parse_set_body_uint_arg(value: &str) -> anyhow::Result<(u16, u16, String)> {
+    let mut parts = value.splitn(3, ':');
+    let bit_offset = parts
+        .next()
+        .context("setBodyUint requires BIT_OFFSET:BITS:VALUE")?
+        .parse::<u16>()
+        .with_context(|| format!("invalid setBodyUint bit offset in {value:?}"))?;
+    let bits = parts
+        .next()
+        .context("setBodyUint requires BIT_OFFSET:BITS:VALUE")?
+        .parse::<u16>()
+        .with_context(|| format!("invalid setBodyUint bit length in {value:?}"))?;
+    let value = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("setBodyUint requires BIT_OFFSET:BITS:VALUE")?
+        .to_owned();
+    Ok((bit_offset, bits, value))
 }
 
 fn parse_replay_input(
@@ -464,6 +519,7 @@ fn reverse_analyze_cmd(
     replay_tx_hash: Option<String>,
     flip_body_bit: Option<u16>,
     body_boc64: Option<String>,
+    set_body_uint: Option<String>,
     ignore_chksig: bool,
     out_dir: PathBuf,
     pretty: bool,
@@ -476,6 +532,7 @@ fn reverse_analyze_cmd(
         replay_tx_hash,
         flip_body_bit,
         body_boc64,
+        set_body_uint,
         ignore_chksig,
     )?;
     run_state_flow_targets(vec![&target], out_dir, pretty)
@@ -613,11 +670,19 @@ fn write_smoke_summary_and_gate(
     out_dir: &Path,
     pretty: bool,
 ) -> anyhow::Result<()> {
+    let summary_path = out_dir.join("summary.json");
     write_json(
         summary,
-        Some(out_dir.join("summary.json")),
+        Some(summary_path.clone()),
         pretty,
         "State-flow smoke summary JSON",
+    )?;
+    let manifest = SmokeArtifactManifest::from_summary(summary, summary_path.display().to_string());
+    write_json(
+        &manifest,
+        Some(out_dir.join("artifacts.json")),
+        pretty,
+        "State-flow artifact manifest JSON",
     )?;
     summary.ensure_passes_gate()
 }
@@ -736,6 +801,7 @@ fn analysis_target_from_args(
     replay_tx_hash: Option<String>,
     flip_body_bit: Option<u16>,
     body_boc64: Option<String>,
+    set_body_uint: Option<String>,
     ignore_chksig: bool,
 ) -> anyhow::Result<SmokeTarget> {
     if replay_tx_index.is_some() && replay_tx_hash.is_some() {
@@ -753,6 +819,7 @@ fn analysis_target_from_args(
         replay_mutation: Some(SmokeReplayMutation::from_args(
             flip_body_bit,
             body_boc64,
+            set_body_uint,
             ignore_chksig,
         )?),
     })
@@ -765,6 +832,9 @@ struct SmokeReplayMutation {
     mutation_type: String,
     bit: Option<u16>,
     body_boc64: Option<String>,
+    bit_offset: Option<u16>,
+    bits: Option<u16>,
+    value: Option<String>,
     #[serde(default)]
     ignore_chksig: bool,
 }
@@ -773,28 +843,50 @@ impl SmokeReplayMutation {
     fn from_args(
         flip_body_bit: Option<u16>,
         body_boc64: Option<String>,
+        set_body_uint: Option<String>,
         ignore_chksig: bool,
     ) -> anyhow::Result<Self> {
-        match (flip_body_bit, body_boc64) {
-            (Some(bit), None) => Ok(Self {
+        match (flip_body_bit, body_boc64, set_body_uint) {
+            (Some(bit), None, None) => Ok(Self {
                 mutation_type: "flipBodyBit".to_owned(),
                 bit: Some(bit),
                 body_boc64: None,
+                bit_offset: None,
+                bits: None,
+                value: None,
                 ignore_chksig,
             }),
-            (None, Some(body_boc64)) => Ok(Self {
+            (None, Some(body_boc64), None) => Ok(Self {
                 mutation_type: "replaceBody".to_owned(),
                 bit: None,
                 body_boc64: Some(body_boc64),
+                bit_offset: None,
+                bits: None,
+                value: None,
                 ignore_chksig,
             }),
-            (None, None) => Ok(Self {
+            (None, None, Some(set_body_uint)) => {
+                let (bit_offset, bits, value) = parse_set_body_uint_arg(&set_body_uint)?;
+                Ok(Self {
+                    mutation_type: "setBodyUint".to_owned(),
+                    bit: None,
+                    body_boc64: None,
+                    bit_offset: Some(bit_offset),
+                    bits: Some(bits),
+                    value: Some(value),
+                    ignore_chksig,
+                })
+            }
+            (None, None, None) => Ok(Self {
                 mutation_type: "none".to_owned(),
                 bit: None,
                 body_boc64: None,
+                bit_offset: None,
+                bits: None,
+                value: None,
                 ignore_chksig,
             }),
-            (Some(_), Some(_)) => anyhow::bail!("only one replay mutation can be selected"),
+            _ => anyhow::bail!("only one replay mutation can be selected"),
         }
     }
 
@@ -811,6 +903,18 @@ impl SmokeReplayMutation {
                     .body_boc64
                     .clone()
                     .context("replaceBody replay mutation requires bodyBoc64")?,
+            }),
+            "setBodyUint" => Ok(ReplayMutation::SetBodyUint {
+                bit_offset: self
+                    .bit_offset
+                    .context("setBodyUint replay mutation requires bitOffset")?,
+                bits: self
+                    .bits
+                    .context("setBodyUint replay mutation requires bits")?,
+                value: self
+                    .value
+                    .clone()
+                    .context("setBodyUint replay mutation requires value")?,
             }),
             mutation_type => anyhow::bail!("unsupported replay mutation type {mutation_type:?}"),
         }
@@ -908,6 +1012,85 @@ struct SmokeTargetRunSummary {
     report: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeArtifactManifest {
+    schema_version: u32,
+    kind: String,
+    summary: String,
+    target_count: usize,
+    artifacts: Vec<SmokeArtifactManifestEntry>,
+}
+
+impl SmokeArtifactManifest {
+    fn from_summary(summary: &SmokeRunSummary, summary_path: impl Into<String>) -> Self {
+        let summary_path = summary_path.into();
+        let mut artifacts = vec![SmokeArtifactManifestEntry::new(
+            "runSummary",
+            summary_path.clone(),
+            None,
+        )];
+
+        for target in &summary.targets {
+            artifacts.push(SmokeArtifactManifestEntry::new(
+                "corpus",
+                target.corpus.clone(),
+                Some(target.id.clone()),
+            ));
+            artifacts.push(SmokeArtifactManifestEntry::new(
+                "schema",
+                target.schema.clone(),
+                Some(target.id.clone()),
+            ));
+            if let Some(transaction) = &target.transaction {
+                artifacts.push(SmokeArtifactManifestEntry::new(
+                    "transaction",
+                    transaction.clone(),
+                    Some(target.id.clone()),
+                ));
+            }
+            if let Some(replay) = &target.replay {
+                artifacts.push(SmokeArtifactManifestEntry::new(
+                    "replay",
+                    replay.clone(),
+                    Some(target.id.clone()),
+                ));
+            }
+            artifacts.push(SmokeArtifactManifestEntry::new(
+                "report",
+                target.report.clone(),
+                Some(target.id.clone()),
+            ));
+        }
+
+        Self {
+            schema_version: 1,
+            kind: "stateFlowArtifactManifest".to_owned(),
+            summary: summary_path,
+            target_count: summary.target_count,
+            artifacts,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeArtifactManifestEntry {
+    kind: String,
+    path: String,
+    target_id: Option<String>,
+}
+
+impl SmokeArtifactManifestEntry {
+    fn new(kind: impl Into<String>, path: impl Into<String>, target_id: Option<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            path: path.into(),
+            target_id,
+        }
+    }
+}
+
 impl SmokeTargetRunSummary {
     fn refresh_gate_status(&mut self) {
         self.gate_failures = self.quality_gate_failures();
@@ -993,6 +1176,7 @@ fn select_corpus_transaction_ref<'a>(
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
+    use ton_stateflow::ReplayMutation;
 
     #[test]
     fn smoke_manifest_deserializes_checked_in_targets() {
@@ -1117,10 +1301,64 @@ mod tests {
     }
 
     #[test]
+    fn smoke_artifact_manifest_indexes_target_outputs() {
+        let summary = sample_smoke_summary();
+
+        let manifest = super::SmokeArtifactManifest::from_summary(&summary, "out/summary.json");
+        let json = serde_json::to_value(&manifest).expect("manifest should serialize");
+
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["kind"], "stateFlowArtifactManifest");
+        assert_eq!(json["summary"], "out/summary.json");
+        assert_eq!(json["targetCount"], 1);
+        assert_eq!(json["artifacts"].as_array().unwrap().len(), 6);
+        assert_eq!(
+            json["artifacts"],
+            serde_json::json!([
+                {"kind": "runSummary", "path": "out/summary.json", "targetId": null},
+                {"kind": "corpus", "path": "out/target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "out/target-a/schema.json", "targetId": "target-a"},
+                {"kind": "transaction", "path": "out/target-a/transaction-0.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "out/target-a/replay.json", "targetId": "target-a"},
+                {"kind": "report", "path": "out/target-a/report.md", "targetId": "target-a"}
+            ])
+        );
+    }
+
+    #[test]
+    fn smoke_artifact_manifest_is_written_before_gate_error() {
+        let mut summary = sample_smoke_summary();
+        summary.targets[0].replay_count = 0;
+        summary.targets[0].replay = None;
+        summary.refresh_gate_status();
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+
+        let err = super::write_smoke_summary_and_gate(&summary, temp_dir.path(), true)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("target-a: replays 0"));
+        let written = fs::read_to_string(temp_dir.path().join("artifacts.json"))
+            .expect("artifact manifest should be written before gate error");
+        let json: serde_json::Value =
+            serde_json::from_str(&written).expect("artifact manifest should be valid JSON");
+        assert_eq!(json["kind"], "stateFlowArtifactManifest");
+        assert_eq!(json["artifacts"].as_array().unwrap().len(), 5);
+        assert!(
+            json["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["kind"] != "replay")
+        );
+    }
+
+    #[test]
     fn analysis_target_defaults_to_baseline_replay() {
-        let target =
-            super::analysis_target_from_args("addr", "mainnet", 2, None, None, None, None, false)
-                .expect("analysis target should build");
+        let target = super::analysis_target_from_args(
+            "addr", "mainnet", 2, None, None, None, None, None, false,
+        )
+        .expect("analysis target should build");
 
         assert_eq!(target.id, "analysis");
         assert_eq!(target.address, "addr");
@@ -1133,6 +1371,39 @@ mod tests {
             .expect("analysis should replay by default");
         assert_eq!(replay.mutation_type, "none");
         assert!(!replay.ignore_chksig);
+    }
+
+    #[test]
+    fn set_body_uint_replay_mutation_parses_for_analysis() {
+        let target = super::analysis_target_from_args(
+            "addr",
+            "mainnet",
+            2,
+            None,
+            None,
+            None,
+            None,
+            Some("32:64:42".to_owned()),
+            true,
+        )
+        .expect("analysis target should build");
+
+        let replay = target
+            .replay_mutation
+            .expect("analysis should replay by default");
+        assert_eq!(replay.mutation_type, "setBodyUint");
+        assert_eq!(replay.bit_offset, Some(32));
+        assert_eq!(replay.bits, Some(64));
+        assert_eq!(replay.value.as_deref(), Some("42"));
+        assert!(replay.ignore_chksig);
+        assert!(matches!(
+            replay.to_replay_mutation().unwrap(),
+            ReplayMutation::SetBodyUint {
+                bit_offset: 32,
+                bits: 64,
+                value
+            } if value == "42"
+        ));
     }
 
     #[test]
