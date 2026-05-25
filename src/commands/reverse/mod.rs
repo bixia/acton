@@ -2376,6 +2376,13 @@ fn validate_manifest_replay_membership(
     {
         gate_failures.push("replay artifacts must include at least one mutation".to_owned());
     }
+    if !replays.is_empty()
+        && !replays
+            .iter()
+            .any(|replay| replay_has_observable_diff(replay))
+    {
+        gate_failures.push("replay artifacts must include an observable diff".to_owned());
+    }
     for replay in replays {
         if !matches!(replay.mutation, ReplayMutation::None) && !replay.diff.input_changed {
             gate_failures.push(format!(
@@ -2393,6 +2400,20 @@ fn validate_manifest_replay_membership(
             ));
         }
     }
+}
+
+fn replay_has_observable_diff(replay: &StateFlowReplayDiff) -> bool {
+    replay.diff.state_changed == Some(true)
+        || replay.diff.code_hash_changed == Some(true)
+        || replay.diff.data_hash_changed == Some(true)
+        || replay.diff.balance_delta_diff.is_some_and(|diff| diff != 0)
+        || replay.diff.exit_code_changed == Some(true)
+        || replay
+            .diff
+            .outbound_count_delta
+            .is_some_and(|diff| diff != 0)
+        || replay.diff.action_count_delta.is_some_and(|diff| diff != 0)
+        || replay.diff.c5_changed == Some(true)
 }
 
 fn corpus_transaction_hashes(corpus: &StateFlowCorpus) -> Vec<&str> {
@@ -3549,6 +3570,54 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_input_only_replay_diff() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": sample_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": false
+                }
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: replay artifacts must include an observable diff")
+            }),
+            "expected input-only replay diff failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_summary_path_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -3872,7 +3941,7 @@ mod tests {
                     "exitCodeChanged": false,
                     "outboundCountDelta": 0,
                     "actionCountDelta": 0,
-                    "c5Changed": false
+                    "c5Changed": true
                 }
             })
             .to_string(),
