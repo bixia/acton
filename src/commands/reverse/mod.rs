@@ -2288,6 +2288,7 @@ fn validate_schema_corpus_membership(
                 gate_failures,
             );
         }
+        validate_schema_state_machine_edge_matches_corpus(edge, corpus, gate_failures);
     }
     for candidate in &schema.opcode_candidates {
         for example in &candidate.examples {
@@ -2343,6 +2344,66 @@ fn validate_schema_corpus_membership(
                 );
             }
         }
+    }
+}
+
+fn validate_schema_state_machine_edge_matches_corpus(
+    edge: &ton_stateflow::StateMachineEdge,
+    corpus: &StateFlowCorpus,
+    gate_failures: &mut Vec<String>,
+) {
+    let matching_count = corpus
+        .transactions
+        .iter()
+        .filter(|tx| {
+            tx.state.pre.status == edge.from_status
+                && tx.state.post.status == edge.to_status
+                && tx.inbound.opcode == edge.opcode
+        })
+        .count();
+    validate_evidence_value_field(
+        "schema state-machine edge count",
+        edge.count,
+        "corpus matching transaction count",
+        matching_count,
+        &report_state_machine_evidence_label(edge),
+        gate_failures,
+    );
+
+    for tx_hash in &edge.examples {
+        let Some(corpus_flow) = corpus
+            .transactions
+            .iter()
+            .find(|tx| tx.query_hash == *tx_hash)
+        else {
+            continue;
+        };
+        validate_evidence_text_field(
+            "schema state-machine edge from status",
+            &edge.from_status,
+            "corpus from status",
+            &corpus_flow.state.pre.status,
+            tx_hash,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema state-machine edge to status",
+            &edge.to_status,
+            "corpus to status",
+            &corpus_flow.state.post.status,
+            tx_hash,
+            gate_failures,
+        );
+        let actual_opcode = option_text_label(edge.opcode.as_deref());
+        let expected_opcode = option_text_label(corpus_flow.inbound.opcode.as_deref());
+        validate_evidence_text_field(
+            "schema state-machine edge opcode",
+            &actual_opcode,
+            "corpus inbound opcode",
+            &expected_opcode,
+            tx_hash,
+            gate_failures,
+        );
     }
 }
 
@@ -6067,6 +6128,56 @@ mod tests {
                 )
             }),
             "expected report state machine evidence confidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_state_machine_edge_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["stateMachine"]["edges"][0]["toStatus"] = serde_json::json!("frozen");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let report_path = temp_dir.path().join("target-a/report.md");
+        let report = fs::read_to_string(&report_path).expect("report artifact should be readable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &report
+                .replace(
+                    "    none --> active: 0x00000001 (2)",
+                    "    none --> frozen: 0x00000001 (2)",
+                )
+                .replace(
+                    "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
+                    "| none | frozen | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
+                ),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema state-machine edge to status frozen for tx-a does not match corpus to status active",
+                )
+            }),
+            "expected state-machine edge status mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
