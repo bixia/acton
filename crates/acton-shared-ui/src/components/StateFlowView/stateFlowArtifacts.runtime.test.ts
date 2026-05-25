@@ -85,8 +85,34 @@ const schema = {
         postCodeHashes: ["code-a"],
       },
       stateTransitions: [{fromStatus: "active", toStatus: "frozen", count: 2}],
-      outboundEffects: [{kind: "internal", count: 1}],
-      outActions: [{kind: "send_msg", count: 1}],
+      outboundEffects: [
+        {
+          kind: "internal",
+          count: 1,
+          txHashes: ["tx-a"],
+          modes: [],
+          destinations: ["out-dst"],
+          valueNanotonsMin: "11",
+          valueNanotonsMax: "11",
+          bodyShape: {minBits: 40, maxBits: 40, minRefs: 1, maxRefs: 1},
+          codeShape: undefined,
+          libraryHashes: [],
+        },
+      ],
+      outActions: [
+        {
+          kind: "send-message",
+          count: 1,
+          txHashes: ["tx-a"],
+          modes: ["64"],
+          destinations: ["action-dst"],
+          valueNanotonsMin: "7",
+          valueNanotonsMax: "7",
+          bodyShape: {minBits: 32, maxBits: 32, minRefs: 0, maxRefs: 0},
+          codeShape: undefined,
+          libraryHashes: [],
+        },
+      ],
       confidence: "low",
       unknownFields: ["message body field names require TL-B recovery"],
     },
@@ -203,6 +229,10 @@ assert(
   "expected candidate summary to include storage field count",
 )
 assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("2 effects") === true,
+  "expected candidate summary to include effect count",
+)
+assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("data 16/1") === true,
   "expected candidate summary to include storage data shape",
 )
@@ -231,6 +261,13 @@ assert(
   storageFieldRows[0]?.detail?.includes("0xdeadbeef") === true,
   "expected storage field samples in row",
 )
+const effectRows = sectionRows(schemaSummary, "Outbound Effects")
+assert(effectRows[0]?.label === "0x00000001 outbound", "expected outbound effect row")
+assert(effectRows[0]?.value === "internal x1", "expected outbound effect kind")
+assert(effectRows[0]?.detail?.includes("out-dst") === true, "expected outbound destination")
+assert(effectRows[1]?.label === "0x00000001 action", "expected action effect row")
+assert(effectRows[1]?.value === "send-message x1", "expected action effect kind")
+assert(effectRows[1]?.detail?.includes("64") === true, "expected action mode")
 
 const schemaRiskRows = sectionRows(schemaSummary, "Risk Points")
 assert(

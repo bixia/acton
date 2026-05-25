@@ -279,6 +279,20 @@ pub struct StateTransitionCandidate {
 pub struct EffectCandidate {
     pub kind: String,
     pub count: usize,
+    #[serde(default)]
+    pub tx_hashes: Vec<String>,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    #[serde(default)]
+    pub destinations: Vec<String>,
+    pub value_nanotons_min: Option<String>,
+    pub value_nanotons_max: Option<String>,
+    #[serde(default)]
+    pub body_shape: Option<CellShapeRange>,
+    #[serde(default)]
+    pub code_shape: Option<CellShapeRange>,
+    #[serde(default)]
+    pub library_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -721,6 +735,35 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## Outbound Effects").ok();
+    let mut effect_rows = 0;
+    for candidate in &schema.opcode_candidates {
+        effect_rows += candidate.outbound_effects.len() + candidate.out_actions.len();
+    }
+    if effect_rows == 0 {
+        writeln!(report, "- No outbound effect candidates were inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |"
+        )
+        .ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |"
+        )
+        .ok();
+        for candidate in &schema.opcode_candidates {
+            for effect in &candidate.outbound_effects {
+                write_effect_row(&mut report, candidate.opcode.as_deref(), "outbound", effect);
+            }
+            for effect in &candidate.out_actions {
+                write_effect_row(&mut report, candidate.opcode.as_deref(), "action", effect);
+            }
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## State Machine").ok();
     let state_machine = render_state_machine(schema);
     if state_machine.is_empty() {
@@ -1120,6 +1163,45 @@ fn format_effects(effects: &[EffectCandidate]) -> String {
         .join("; ")
 }
 
+fn write_effect_row(
+    report: &mut String,
+    opcode: Option<&str>,
+    source: &str,
+    effect: &EffectCandidate,
+) {
+    writeln!(
+        report,
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+        markdown_code_opt(opcode),
+        markdown_escape(source),
+        markdown_escape(&effect.kind),
+        effect.count,
+        format_effect_value(effect),
+        markdown_code_list_or_none(&effect.modes),
+        markdown_code_list_or_none(&effect.destinations),
+        format_optional_shape(&effect.body_shape),
+        format_optional_shape(&effect.code_shape),
+        markdown_code_list_or_none(&effect.library_hashes),
+        markdown_code_list_or_none(&effect.tx_hashes),
+    )
+    .ok();
+}
+
+fn format_effect_value(effect: &EffectCandidate) -> String {
+    match (&effect.value_nanotons_min, &effect.value_nanotons_max) {
+        (Some(min), Some(max)) if min == max => markdown_escape(min),
+        (Some(min), Some(max)) => markdown_escape(&format!("{min}..{max}")),
+        _ => "n/a".to_owned(),
+    }
+}
+
+fn format_optional_shape(shape: &Option<CellShapeRange>) -> String {
+    shape
+        .as_ref()
+        .map(format_cell_shape_range)
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
 fn format_storage(storage: &StorageShapeCandidate) -> String {
     let balance = if storage.balance_delta_min == storage.balance_delta_max {
         storage.balance_delta_min.to_string()
@@ -1188,6 +1270,13 @@ fn markdown_code_list(values: &[String]) -> String {
         .map(|value| format!("`{}`", markdown_escape(value)))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn markdown_code_list_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+    markdown_code_list(values)
 }
 
 fn markdown_escape(value: &str) -> String {
@@ -1386,16 +1475,8 @@ fn opcode_candidate(
             .iter()
             .map(|tx| (tx.state.pre.status.clone(), tx.state.post.status.clone())),
     );
-    let outbound_effects = summarize_kinds(
-        transactions
-            .iter()
-            .flat_map(|tx| tx.outbound.iter().map(|msg| msg.kind.clone())),
-    );
-    let out_actions = summarize_kinds(
-        transactions
-            .iter()
-            .flat_map(|tx| tx.out_actions.iter().map(|action| action.kind.clone())),
-    );
+    let outbound_effects = outbound_effect_candidates(transactions);
+    let out_actions = action_effect_candidates(transactions);
     let stable_body = inbound_body.min_bits == inbound_body.max_bits
         && inbound_body.min_refs == inbound_body.max_refs;
     let confidence = match (transactions.len(), stable_body) {
@@ -1824,15 +1905,127 @@ fn summarize_pairs(pairs: impl Iterator<Item = (String, String)>) -> Vec<StateTr
         .collect()
 }
 
-fn summarize_kinds(kinds: impl Iterator<Item = String>) -> Vec<EffectCandidate> {
-    let mut counts = BTreeMap::<String, usize>::new();
-    for kind in kinds {
-        *counts.entry(kind).or_default() += 1;
+fn outbound_effect_candidates(transactions: &[&StateFlowTx]) -> Vec<EffectCandidate> {
+    let mut summaries = BTreeMap::<String, EffectSummary>::new();
+    for tx in transactions {
+        for message in &tx.outbound {
+            let summary = summaries.entry(message.kind.clone()).or_default();
+            summary.observe_tx(&tx.query_hash);
+            summary.observe_value(message.value_nanotons.as_deref());
+            summary.observe_destination(message.dst.as_deref());
+            summary.observe_body(&message.body);
+        }
     }
-    counts
+    summaries
         .into_iter()
-        .map(|(kind, count)| EffectCandidate { kind, count })
+        .map(|(kind, summary)| summary.into_candidate(kind))
         .collect()
+}
+
+fn action_effect_candidates(transactions: &[&StateFlowTx]) -> Vec<EffectCandidate> {
+    let mut summaries = BTreeMap::<String, EffectSummary>::new();
+    for tx in transactions {
+        for action in &tx.out_actions {
+            let summary = summaries.entry(action.kind.clone()).or_default();
+            summary.observe_tx(&tx.query_hash);
+            summary.observe_mode(action.mode.as_deref());
+            summary.observe_value(action.value_nanotons.as_deref());
+            summary.observe_destination(action.destination.as_deref());
+            if let Some(body) = &action.body {
+                summary.observe_body(body);
+            }
+            if let Some(code) = &action.code {
+                summary.observe_code(code);
+            }
+            if let Some(library) = &action.library {
+                summary.observe_library(library);
+            }
+        }
+    }
+    summaries
+        .into_iter()
+        .map(|(kind, summary)| summary.into_candidate(kind))
+        .collect()
+}
+
+#[derive(Default)]
+struct EffectSummary {
+    count: usize,
+    tx_hashes: BTreeSet<String>,
+    modes: BTreeSet<String>,
+    destinations: BTreeSet<String>,
+    values: Vec<u128>,
+    body_shapes: Vec<CellShape>,
+    code_shapes: Vec<CellShape>,
+    library_hashes: BTreeSet<String>,
+}
+
+impl EffectSummary {
+    fn observe_tx(&mut self, tx_hash: &str) {
+        self.count += 1;
+        self.tx_hashes.insert(tx_hash.to_owned());
+    }
+
+    fn observe_mode(&mut self, mode: Option<&str>) {
+        if let Some(mode) = mode {
+            self.modes.insert(mode.to_owned());
+        }
+    }
+
+    fn observe_value(&mut self, value: Option<&str>) {
+        if let Some(value) = value.and_then(|value| value.parse::<u128>().ok()) {
+            self.values.push(value);
+        }
+    }
+
+    fn observe_destination(&mut self, destination: Option<&str>) {
+        if let Some(destination) = destination {
+            self.destinations.insert(destination.to_owned());
+        }
+    }
+
+    fn observe_body(&mut self, body: &CellArtifact) {
+        self.body_shapes.push(cell_artifact_shape(body));
+    }
+
+    fn observe_code(&mut self, code: &CellArtifact) {
+        self.code_shapes.push(cell_artifact_shape(code));
+    }
+
+    fn observe_library(&mut self, library: &LibraryEffect) {
+        if let Some(hash) = &library.hash {
+            self.library_hashes.insert(hash.clone());
+        }
+        if let Some(cell) = &library.cell {
+            self.library_hashes.insert(cell.hash.clone());
+        }
+    }
+
+    fn into_candidate(self, kind: String) -> EffectCandidate {
+        let value_nanotons_min = self.values.iter().min().map(ToString::to_string);
+        let value_nanotons_max = self.values.iter().max().map(ToString::to_string);
+        EffectCandidate {
+            kind,
+            count: self.count,
+            tx_hashes: limited_samples(self.tx_hashes),
+            modes: limited_samples(self.modes),
+            destinations: limited_samples(self.destinations),
+            value_nanotons_min,
+            value_nanotons_max,
+            body_shape: cell_shape_range(&self.body_shapes),
+            code_shape: cell_shape_range(&self.code_shapes),
+            library_hashes: limited_samples(self.library_hashes),
+        }
+    }
+}
+
+fn cell_artifact_shape(cell: &CellArtifact) -> CellShape {
+    CellShape {
+        boc64: None,
+        hash: cell.hash.clone(),
+        bits: cell.bits,
+        refs: cell.refs,
+    }
 }
 
 fn apply_replay_mutation(message_boc64: &str, mutation: &ReplayMutation) -> anyhow::Result<String> {
@@ -2568,6 +2761,52 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_reports_outbound_effect_evidence() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow_with_effects("tx-a")],
+            failures: Vec::new(),
+        };
+
+        let report = super::infer_schema_candidates(&corpus);
+        let candidate = &report.opcode_candidates[0];
+        let outbound = &candidate.outbound_effects[0];
+        let action = &candidate.out_actions[0];
+
+        assert_eq!(outbound.kind, "internal");
+        assert_eq!(outbound.tx_hashes, vec!["tx-a".to_owned()]);
+        assert_eq!(outbound.destinations, vec!["out-dst".to_owned()]);
+        assert_eq!(outbound.value_nanotons_min.as_deref(), Some("11"));
+        assert_eq!(outbound.value_nanotons_max.as_deref(), Some("11"));
+        assert_eq!(outbound.body_shape.as_ref().unwrap().min_bits, 40);
+        assert_eq!(outbound.body_shape.as_ref().unwrap().min_refs, 1);
+
+        assert_eq!(action.kind, "send-message");
+        assert_eq!(action.modes, vec!["64".to_owned()]);
+        assert_eq!(action.destinations, vec!["action-dst".to_owned()]);
+        assert_eq!(action.value_nanotons_min.as_deref(), Some("7"));
+        assert_eq!(action.value_nanotons_max.as_deref(), Some("7"));
+        assert_eq!(action.body_shape.as_ref().unwrap().min_bits, 32);
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            json["opcodeCandidates"][0]["outboundEffects"][0]["destinations"],
+            serde_json::json!(["out-dst"])
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["outActions"][0]["modes"],
+            serde_json::json!(["64"])
+        );
+    }
+
+    #[test]
     fn replay_mutation_flips_message_body_bit() {
         let mut body = CellBuilder::new();
         body.store_u32(0).unwrap();
@@ -2693,6 +2932,30 @@ mod tests {
         ));
         assert!(report.contains("| `0x00000001` | `data_word_0` | data | 0 | 32..32 | 0..0 | uint32 | `0xdeadbeef` | high |"));
         assert!(report.contains("| `0x00000001` | `data_tail` | data | 32 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | low |"));
+    }
+
+    #[test]
+    fn report_renderer_includes_outbound_effect_candidates() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow_with_effects("tx-a")],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains("## Outbound Effects"));
+        assert!(report.contains("| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |"));
+        assert!(report.contains("| `0x00000001` | outbound | internal | 1 | 11 | none | `out-dst` | 40/1 | n/a | none | `tx-a` |"));
+        assert!(report.contains("| `0x00000001` | action | send-message | 1 | 7 | `64` | `action-dst` | 32/0 | n/a | none | `tx-a` |"));
     }
 
     #[test]
@@ -2919,6 +3182,43 @@ mod tests {
         flow.state.post.data_hash = Some(super::cell_hash(&data));
         flow.state.post.data_cell = Some(super::cell_shape(&data));
         flow
+    }
+
+    fn sample_flow_with_effects(query_hash: &str) -> StateFlowTx {
+        let mut flow = sample_flow(query_hash, Some("0x00000001"));
+        flow.outbound.push(super::MessageArtifact {
+            direction: MessageDirection::Outbound,
+            index: Some(0),
+            kind: "internal".to_owned(),
+            src: Some("addr".to_owned()),
+            dst: Some("out-dst".to_owned()),
+            value_nanotons: Some("11".to_owned()),
+            bounced: Some(false),
+            bounce: Some(true),
+            opcode: Some("0x00000002".to_owned()),
+            message_boc64: "out-msg".to_owned(),
+            body: sample_cell_artifact("out-body", 40, 1),
+        });
+        flow.out_actions.push(super::ActionEffect {
+            index: 0,
+            kind: "send-message".to_owned(),
+            mode: Some("64".to_owned()),
+            value_nanotons: Some("7".to_owned()),
+            destination: Some("action-dst".to_owned()),
+            body: Some(sample_cell_artifact("action-body", 32, 0)),
+            code: None,
+            library: None,
+        });
+        flow
+    }
+
+    fn sample_cell_artifact(hash: &str, bits: u16, refs: u8) -> CellArtifact {
+        CellArtifact {
+            boc64: format!("{hash}-boc"),
+            hash: hash.to_owned(),
+            bits,
+            refs,
+        }
     }
 
     fn sample_replay_diff(

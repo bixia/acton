@@ -320,6 +320,14 @@ export interface StateTransitionCandidate {
 export interface EffectCandidate {
   readonly kind: string
   readonly count: number
+  readonly txHashes?: readonly string[] | null
+  readonly modes?: readonly string[] | null
+  readonly destinations?: readonly string[] | null
+  readonly valueNanotonsMin?: string | null
+  readonly valueNanotonsMax?: string | null
+  readonly bodyShape?: CellShapeRange | null
+  readonly codeShape?: CellShapeRange | null
+  readonly libraryHashes?: readonly string[] | null
 }
 
 export type ReplayMutation =
@@ -476,6 +484,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const auditSignals = schemaAuditSignals(schema)
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
+  const effectRows = schemaEffectRows(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -485,6 +494,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
+      {label: "Effects", value: effectRows.length.toString()},
       {label: "State Edges", value: stateEdges.length.toString()},
       {label: "Audit Signals", value: auditSignals.length.toString()},
     ],
@@ -501,6 +511,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             `${candidateEvidenceCount(candidate)} ${plural(candidateEvidenceCount(candidate), "evidence row")}`,
             `${candidateBodyFieldCount(candidate)} ${plural(candidateBodyFieldCount(candidate), "body field")}`,
             `${candidateStorageFieldCount(candidate)} ${plural(candidateStorageFieldCount(candidate), "storage field")}`,
+            `${candidateEffectCount(candidate)} ${plural(candidateEffectCount(candidate), "effect")}`,
             `${candidate.unknownFields.length} unknowns`,
           ].join(" · "),
         })),
@@ -518,6 +529,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Storage Fields",
               rows: storageFieldRows,
+            },
+          ]
+        : []),
+      ...(effectRows.length > 0
+        ? [
+            {
+              title: "Outbound Effects",
+              rows: effectRows,
             },
           ]
         : []),
@@ -684,6 +703,10 @@ function candidateStorageFieldCount(candidate: OpcodeSchemaCandidate): number {
   return candidate.storage?.fields?.length ?? 0
 }
 
+function candidateEffectCount(candidate: OpcodeSchemaCandidate): number {
+  return candidate.outboundEffects.length + candidate.outActions.length
+}
+
 function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
   return schema.opcodeCandidates.flatMap(candidate => {
     const opcode = candidate.opcode ?? "<none>"
@@ -720,6 +743,58 @@ function schemaStorageFieldRows(schema: StateFlowSchemaReport): readonly Summary
         .join(" · "),
     }))
   })
+}
+
+function schemaEffectRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => [
+    ...candidate.outboundEffects.map(effect => effectRow(candidate.opcode, "outbound", effect)),
+    ...candidate.outActions.map(effect => effectRow(candidate.opcode, "action", effect)),
+  ])
+}
+
+function effectRow(
+  opcode: string | null | undefined,
+  source: "outbound" | "action",
+  effect: EffectCandidate,
+): SummaryRow {
+  return {
+    label: `${opcode ?? "<none>"} ${source}`,
+    value: `${effect.kind} x${effect.count}`,
+    detail: [
+      `value ${effectValueLabel(effect)}`,
+      `body ${shapeLabel(effect.bodyShape)}`,
+      `code ${shapeLabel(effect.codeShape)}`,
+      listLabel("modes", effect.modes),
+      listLabel("destinations", effect.destinations),
+      listLabel("libraries", effect.libraryHashes),
+      listLabel("evidence", effect.txHashes),
+    ]
+      .filter(value => value !== undefined)
+      .join(" · "),
+  }
+}
+
+function effectValueLabel(effect: EffectCandidate): string {
+  if (!effect.valueNanotonsMin || !effect.valueNanotonsMax) {
+    return "n/a"
+  }
+  return effect.valueNanotonsMin === effect.valueNanotonsMax
+    ? effect.valueNanotonsMin
+    : `${effect.valueNanotonsMin}..${effect.valueNanotonsMax}`
+}
+
+function shapeLabel(shape: CellShapeRange | null | undefined): string {
+  return shape ? formatCellShapeRange(shape) : "n/a"
+}
+
+function listLabel(
+  label: string,
+  values: readonly string[] | null | undefined,
+): string | undefined {
+  if (!values || values.length === 0) {
+    return undefined
+  }
+  return `${label} ${values.join(", ")}`
 }
 
 function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachineEdge[] {
