@@ -330,7 +330,7 @@ pub struct ShardAccountSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellShape {
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boc64: Option<String>,
     pub hash: String,
     pub bits: u16,
@@ -2475,7 +2475,6 @@ mod tests {
             ],
             failures: Vec::new(),
         };
-
         let report = super::infer_schema_candidates(&corpus);
         let candidate = &report.opcode_candidates[0];
 
@@ -2532,6 +2531,18 @@ mod tests {
             ],
             failures: Vec::new(),
         };
+        let corpus: StateFlowCorpus =
+            serde_json::from_value(serde_json::to_value(corpus).unwrap()).unwrap();
+        assert!(
+            corpus.transactions[0]
+                .state
+                .post
+                .data_cell
+                .as_ref()
+                .and_then(|shape| shape.boc64.as_ref())
+                .is_some(),
+            "persisted corpus must retain data cell BoC evidence for offline inference"
+        );
 
         let report = super::infer_schema_candidates(&corpus);
         let candidate = &report.opcode_candidates[0];
