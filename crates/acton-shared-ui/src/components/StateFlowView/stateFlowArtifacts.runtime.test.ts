@@ -707,6 +707,13 @@ assert(
 const reportTargetRows = sectionRows(reportSummary, "Target")
 assert(reportTargetRows[0]?.label === "Network", "expected report target network row")
 assert(reportTargetRows[0]?.value === "mainnet", "expected report target network")
+const reportOpcodeRows = sectionRows(reportSummary, "Opcode Candidates")
+assert(reportOpcodeRows[0]?.label === "0x00000001", "expected report opcode candidate row")
+assert(reportOpcodeRows[0]?.value === "low confidence", "expected report opcode confidence")
+assert(
+  reportOpcodeRows[0]?.detail?.includes("2 transactions") === true,
+  "expected report opcode count detail",
+)
 const reportSectionRows = sectionRows(reportSummary, "Report Sections")
 assert(
   reportSectionRows.some(row => row.label === "Schema Evidence" && row.value === "3 lines"),

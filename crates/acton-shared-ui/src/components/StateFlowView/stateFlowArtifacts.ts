@@ -878,6 +878,7 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
 
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
+  const opcodeCandidateRows = reportOpcodeCandidateRows(report)
   const schemaEvidenceRows = reportSchemaEvidenceRows(report)
   const replayDiffRows = reportReplayDiffRows(report)
   const unknownFieldRows = reportUnknownFieldRows(report)
@@ -894,6 +895,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Target",
               rows: reportTargetRows(targetSection),
+            },
+          ]
+        : []),
+      ...(opcodeCandidateRows.length > 0
+        ? [
+            {
+              title: "Opcode Candidates",
+              rows: opcodeCandidateRows,
             },
           ]
         : []),
@@ -1036,6 +1045,28 @@ function reportTargetRows(section: StateFlowReportSection): readonly SummaryRow[
       label: stripMarkdownInline(match[1] ?? ""),
       value: stripMarkdownInline(match[2] ?? ""),
     }))
+}
+
+function reportOpcodeCandidateRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Opcode Candidates").map(row => {
+    const count = rowValue(row, "Count")
+    return {
+      label: rowValue(row, "Opcode") || "<none>",
+      value: `${rowValue(row, "Confidence") || "n/a"} confidence`,
+      detail: [
+        count.length > 0 ? `${count} ${plural(Number(count), "transaction")}` : undefined,
+        tableValueLabel("body bits", rowValue(row, "Body bits")),
+        tableValueLabel("body refs", rowValue(row, "Body refs")),
+        tableValueLabel("storage", rowValue(row, "Storage")),
+        tableValueLabel("state", rowValue(row, "State transitions")),
+        tableValueLabel("outbound", rowValue(row, "Outbound effects")),
+        tableValueLabel("actions", rowValue(row, "Out actions")),
+        tableValueLabel("evidence", rowValue(row, "Evidence")),
+      ]
+        .filter((value): value is string => value !== undefined)
+        .join(" · "),
+    }
+  })
 }
 
 function reportSchemaEvidenceRows(report: StateFlowReport): readonly SummaryRow[] {

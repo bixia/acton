@@ -289,6 +289,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 - Retraced transactions: 1
 - Replay failures while collecting: 0
 
+## Opcode Candidates
+| Opcode | Count | Confidence |
+| --- | ---: | --- |
+| \`0x00000001\` | 1 | medium |
+
 ## Schema Evidence
 | Opcode | Tx | Body hash | Body bits/refs | State |
 | --- | --- | --- | ---: | --- |
@@ -463,7 +468,7 @@ assert(
 const reportView = summarizeStateFlowArtifact(parseStateFlowArtifact(reportMarkdown))
 assert(reportView.title === "TON State Flow Reverse Report", "expected report summary title")
 assert(
-  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "5"),
+  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "6"),
   "expected report summary section count",
 )
 assert(
@@ -471,6 +476,12 @@ assert(
     .find(section => section.title === "Target")
     ?.rows.some(row => row.label === "Address" && row.value === "account") === true,
   "expected report target rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Opcode Candidates")
+    ?.rows.some(row => row.label === "0x00000001" && row.value === "medium confidence") === true,
+  "expected report opcode candidate table rows",
 )
 assert(
   reportView.sections
