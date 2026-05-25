@@ -252,6 +252,9 @@ const artifactManifest = {
     {kind: "replay", path: "out/target-a/replay.json", targetId: "target-a"},
     {kind: "replay", path: "out/target-a/replay-probe-query-id-32-64.json", targetId: "target-a"},
     {kind: "report", path: "out/target-a/report.md", targetId: "target-a"},
+    {kind: "corpus", path: "out/target-b/corpus.json", targetId: "target-b"},
+    {kind: "schema", path: "out/target-b/schema.json", targetId: "target-b"},
+    {kind: "report", path: "out/target-b/report.md", targetId: "target-b"},
   ],
 }
 
@@ -380,9 +383,18 @@ assert(manifestArtifact.kind === "artifactManifest", "expected artifact manifest
 const manifestSummary = summarizeStateFlowArtifact(manifestArtifact)
 assert(manifestSummary.title === "State Flow Artifact Manifest", "expected manifest title")
 assert(
-  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "7"),
+  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "10"),
   "expected manifest artifact count metric",
 )
+const manifestTargetRows = sectionRows(manifestSummary, "Targets")
+assert(manifestTargetRows[0]?.label === "target-a", "expected first manifest target row")
+assert(manifestTargetRows[0]?.value === "6 artifacts", "expected target-a artifact count")
+assert(
+  manifestTargetRows[0]?.detail?.includes("replay x2") === true,
+  "expected target-a replay artifact coverage",
+)
+assert(manifestTargetRows[1]?.label === "target-b", "expected second manifest target row")
+assert(manifestTargetRows[1]?.value === "3 artifacts", "expected target-b artifact count")
 const manifestRows = sectionRows(manifestSummary, "Artifacts")
 assert(manifestRows[0]?.label === "runSummary", "expected run summary manifest row")
 assert(manifestRows[0]?.value === "out/summary.json", "expected run summary path")

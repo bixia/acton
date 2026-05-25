@@ -696,6 +696,7 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
 }
 
 function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): ArtifactSummary {
+  const targetRows = artifactManifestTargetRows(manifest)
   return {
     title: "State Flow Artifact Manifest",
     subtitle: manifest.summary,
@@ -704,6 +705,14 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
       {label: "Artifacts", value: manifest.artifacts.length.toString()},
     ],
     sections: [
+      ...(targetRows.length > 0
+        ? [
+            {
+              title: "Targets",
+              rows: targetRows,
+            },
+          ]
+        : []),
       {
         title: "Artifacts",
         rows: manifest.artifacts.map(artifact => ({
@@ -714,6 +723,32 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
       },
     ],
   }
+}
+
+function artifactManifestTargetRows(manifest: StateFlowArtifactManifest): readonly SummaryRow[] {
+  const artifactsByTarget = new Map<string, StateFlowArtifactManifestEntry[]>()
+  for (const artifact of manifest.artifacts) {
+    if (!artifact.targetId) {
+      continue
+    }
+    const artifacts = artifactsByTarget.get(artifact.targetId) ?? []
+    artifacts.push(artifact)
+    artifactsByTarget.set(artifact.targetId, artifacts)
+  }
+
+  return [...artifactsByTarget.entries()].map(([targetId, artifacts]) => ({
+    label: targetId,
+    value: `${artifacts.length} ${plural(artifacts.length, "artifact")}`,
+    detail: artifactKindCoverage(artifacts),
+  }))
+}
+
+function artifactKindCoverage(artifacts: readonly StateFlowArtifactManifestEntry[]): string {
+  const counts = new Map<string, number>()
+  for (const artifact of artifacts) {
+    counts.set(artifact.kind, (counts.get(artifact.kind) ?? 0) + 1)
+  }
+  return [...counts.entries()].map(([kind, count]) => `${kind} x${count}`).join(" · ")
 }
 
 function formatGateFailureRow(failure: string): SummaryRow {

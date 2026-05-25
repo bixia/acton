@@ -192,6 +192,7 @@ const runSummary = {
       schema: "out/target-a/schema.json",
       transaction: "out/target-a/transaction-0.json",
       replay: "out/target-a/replay.json",
+      replays: ["out/target-a/replay.json", "out/target-a/replay-probe-query-id-32-64.json"],
       report: "out/target-a/report.md",
     },
   ],
@@ -205,6 +206,11 @@ const artifactManifest = {
   artifacts: [
     {kind: "runSummary", path: "out/summary.json", targetId: undefined},
     {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
+    {kind: "schema", path: "out/target-a/schema.json", targetId: "target-a"},
+    {kind: "transaction", path: "out/target-a/transaction-0.json", targetId: "target-a"},
+    {kind: "replay", path: "out/target-a/replay.json", targetId: "target-a"},
+    {kind: "replay", path: "out/target-a/replay-probe-query-id-32-64.json", targetId: "target-a"},
+    {kind: "report", path: "out/target-a/report.md", targetId: "target-a"},
   ],
 }
 
@@ -272,6 +278,12 @@ const manifestView = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(artifactManifest)),
 )
 assert(manifestView.title === "State Flow Artifact Manifest", "expected artifact manifest title")
+assert(
+  manifestView.sections
+    .find(section => section.title === "Targets")
+    ?.rows[0]?.detail?.includes("replay x2") === true,
+  "expected artifact manifest target coverage",
+)
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
 
