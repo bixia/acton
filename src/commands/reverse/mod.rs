@@ -4248,6 +4248,13 @@ fn validate_report_schema_deliverables(
     }
 
     if let Some(section) = markdown_section(markdown, "## Message Body Fields") {
+        if schema
+            .opcode_candidates
+            .iter()
+            .any(|candidate| !candidate.inbound_body.field_candidates.is_empty())
+        {
+            validate_report_message_body_fields_header(section, gate_failures);
+        }
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
             for field in &candidate.inbound_body.field_candidates {
@@ -4386,6 +4393,35 @@ fn validate_report_schema_deliverables(
             }
         }
     }
+}
+
+fn validate_report_message_body_fields_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = message_body_fields_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report message body fields header {expected:?} is missing"
+        ));
+    }
+}
+
+fn message_body_fields_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Field",
+        "Offset",
+        "Bits",
+        "Refs",
+        "Kind",
+        "Samples",
+        "Confidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
 }
 
 fn validate_report_storage_fields_header(section: &str, gate_failures: &mut Vec<String>) {
@@ -7741,6 +7777,45 @@ mod tests {
     }
 
     #[test]
+    fn report_schema_deliverables_rejects_message_body_field_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"] = serde_json::json!([{
+            "name": "query_id",
+            "bitOffset": 32,
+            "minBits": 64,
+            "maxBits": 64,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint64",
+            "presentCount": 2,
+            "valueSamples": ["0x7"],
+            "confidence": "high"
+        }]);
+        let schema: super::StateFlowSchemaReport =
+            serde_json::from_value(schema).expect("schema should deserialize");
+        let mut gate_failures = Vec::new();
+
+        super::validate_report_schema_deliverables(
+            &sample_report_markdown_with_wrong_message_body_field_header("addr"),
+            &schema,
+            &mut gate_failures,
+        );
+
+        assert!(
+            gate_failures.iter().any(|failure| failure.contains(
+                "report message body fields header [\"Opcode\", \"Field\", \"Offset\", \"Bits\", \"Refs\", \"Kind\", \"Samples\", \"Confidence\"] is missing"
+            )),
+            "expected message body fields header failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_replay_probe_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10440,6 +10515,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Message Body Fields\n- No message body field candidates were inferred.",
             "## Message Body Fields\n| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | 0x7 | high |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_message_body_field_header(address: &str) -> String {
+        sample_report_markdown_with_schema_message_body_field(address).replace(
+            "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |",
+            "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence stale |",
         )
     }
 
