@@ -121,9 +121,10 @@ mod tests;
 
 pub mod trace;
 
-pub use crate::runner::{Network, retrace, retrace_base_tx};
+pub use crate::runner::{Network, replay_transaction, retrace, retrace_base_tx};
 pub use crate::types::{
-    AccountTxRef, BaseTxInfo, ComputeInfo, TraceEmulatedTx, TraceInMessage, TraceMoneyResult,
-    TraceReplayArtifacts, TraceResult,
+    AccountTxRef, BaseTxInfo, ComputeInfo, ReplayTransactionArgs, ReplayTransactionArtifacts,
+    ReplayTransactionError, ReplayTransactionResult, ReplayTransactionSuccess, TraceEmulatedTx,
+    TraceInMessage, TraceMoneyResult, TraceReplayArtifacts, TraceResult,
 };
 pub use methods::{collect_account_transaction_refs, find_base_tx_by_hash};

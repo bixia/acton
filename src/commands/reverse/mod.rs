@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use ton_retrace::Network;
-use ton_stateflow::{StateFlowCorpus, StateFlowTx};
+use ton_stateflow::{ReplayMutation, StateFlowCorpus, StateFlowTx};
 
 #[derive(Subcommand, Clone)]
 pub enum ReverseCommand {
@@ -66,6 +66,37 @@ pub enum ReverseCommand {
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
     },
+    #[command(about = "Replay or mutate a StateFlowTx artifact and emit a diff")]
+    Replay {
+        #[arg(help = "StateFlowTx JSON produced by `acton reverse retrace`")]
+        state_flow: PathBuf,
+        #[arg(
+            long,
+            conflicts_with = "body_boc64",
+            value_name = "FLIP_BODY_BIT",
+            help = "Flip one inbound message body bit before replay"
+        )]
+        flip_body_bit: Option<u16>,
+        #[arg(
+            long,
+            conflicts_with = "flip_body_bit",
+            value_name = "BODY_BOC64",
+            help = "Replace inbound message body with this base64 BoC before replay"
+        )]
+        body_boc64: Option<String>,
+        #[arg(long, help = "Ignore TVM signature checks during local replay")]
+        ignore_chksig: bool,
+        #[arg(
+            short,
+            long,
+            alias = "out",
+            visible_alias = "out",
+            help = "Write replay diff JSON to a file"
+        )]
+        output: Option<PathBuf>,
+        #[arg(long, help = "Pretty-print JSON output")]
+        pretty: bool,
+    },
 }
 
 pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
@@ -88,6 +119,21 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             output,
             pretty,
         } => reverse_infer_cmd(corpus, output, pretty),
+        ReverseCommand::Replay {
+            state_flow,
+            flip_body_bit,
+            body_boc64,
+            ignore_chksig,
+            output,
+            pretty,
+        } => reverse_replay_cmd(
+            state_flow,
+            flip_body_bit,
+            body_boc64,
+            ignore_chksig,
+            output,
+            pretty,
+        ),
     }
 }
 
@@ -154,6 +200,28 @@ fn reverse_infer_cmd(corpus: PathBuf, output: Option<PathBuf>, pretty: bool) -> 
         .with_context(|| format!("failed to parse {}", corpus.display()))?;
     let report = ton_stateflow::infer_schema_candidates(&corpus);
     write_json(&report, output, pretty, "State-flow schema report JSON")
+}
+
+fn reverse_replay_cmd(
+    state_flow: PathBuf,
+    flip_body_bit: Option<u16>,
+    body_boc64: Option<String>,
+    ignore_chksig: bool,
+    output: Option<PathBuf>,
+    pretty: bool,
+) -> anyhow::Result<()> {
+    let json = fs::read_to_string(&state_flow)
+        .with_context(|| format!("failed to read {}", state_flow.display()))?;
+    let flow: StateFlowTx = serde_json::from_str(&json)
+        .with_context(|| format!("failed to parse {}", state_flow.display()))?;
+    let mutation = match (flip_body_bit, body_boc64) {
+        (Some(bit), None) => ReplayMutation::FlipBodyBit { bit },
+        (None, Some(body_boc64)) => ReplayMutation::ReplaceBody { body_boc64 },
+        (None, None) => ReplayMutation::None,
+        (Some(_), Some(_)) => anyhow::bail!("only one replay mutation can be selected"),
+    };
+    let diff = ton_stateflow::replay_state_flow_tx(&flow, mutation, ignore_chksig)?;
+    write_json(&diff, output, pretty, "State-flow replay diff JSON")
 }
 
 fn write_state_flow(

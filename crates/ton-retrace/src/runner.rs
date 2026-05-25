@@ -4,7 +4,9 @@ use crate::methods::{
     find_raw_tx_by_hash, find_shard_block_for_tx, get_block_account, get_block_config, tx_opcode,
 };
 use crate::types::{
-    BaseTxInfo, TraceEmulatedTx, TraceInMessage, TraceReplayArtifacts, TraceResult,
+    BaseTxInfo, ReplayTransactionArgs, ReplayTransactionArtifacts, ReplayTransactionError,
+    ReplayTransactionResult, ReplayTransactionSuccess, TraceEmulatedTx, TraceInMessage,
+    TraceReplayArtifacts, TraceResult,
 };
 use crate::{ComputeInfo, find_base_tx_by_hash, methods};
 use base64::Engine;
@@ -330,6 +332,96 @@ pub async fn retrace_base_tx(
             replayed_prev_tx_count,
         },
     })
+}
+
+/// Replays a captured inbound message against a captured shard-account state.
+///
+/// Unlike [`retrace`], this function performs no network lookups. Callers supply
+/// all executor inputs, so it can be used for offline local/fork replay and for
+/// executing mutated messages against a known pre-state.
+pub fn replay_transaction(args: ReplayTransactionArgs) -> anyhow::Result<ReplayTransactionResult> {
+    let rand_seed = decode_rand_seed(&args.rand_seed_hex)?;
+    let shard_account: ShardAccount = Boc::decode_base64(&args.shard_account_boc64)?.parse()?;
+    let balance_before = shard_account
+        .load_account()?
+        .map_or(Tokens::ZERO, |account| account.balance.tokens);
+
+    let emulator = Executor::new(
+        ExecutorVerbosity::FullLocationStackVerbose,
+        Some(&args.block_config_boc64),
+    )?;
+    let (tx_res, executor_logs) = emulator.run_transaction(
+        &args.message_boc64,
+        &RunTransactionArgs {
+            libs: args.libs_boc64.clone(),
+            shard_account: args.shard_account_boc64.clone(),
+            now: args.now,
+            lt: args.lt,
+            random_seed: Some(rand_seed),
+            ignore_chksig: args.ignore_chksig,
+            debug_enabled: true,
+            prev_blocks_info: None,
+            is_tick_tock: None,
+            is_tock: None,
+        },
+    )?;
+
+    let res = match tx_res {
+        EmulationResult::Success(res) => res,
+        EmulationResult::Error(err) => {
+            return Ok(ReplayTransactionResult::Error(ReplayTransactionError {
+                error: err.error,
+                external_not_accepted: err.external_not_accepted,
+                vm_exit_code: err.vm_exit_code,
+                vm_logs: err.vm_log,
+                executor_logs: err.executor_logs,
+            }));
+        }
+    };
+
+    let (final_actions, c5) = find_final_actions(&res);
+    let (sender, contract, amount, money, emulated_tx, compute_info) =
+        compute_final_data(&res, balance_before)?;
+    let opcode = tx_opcode(&emulated_tx);
+
+    Ok(ReplayTransactionResult::Success(ReplayTransactionSuccess {
+        in_msg: TraceInMessage {
+            sender,
+            contract,
+            amount: amount.map(|amount| u128::from(amount) as u64),
+            opcode,
+        },
+        money,
+        emulated_tx: TraceEmulatedTx {
+            raw: emulated_tx,
+            utime: u64::from(args.now),
+            lt: args.lt,
+            compute_info,
+            executor_logs,
+            actions: final_actions,
+            c5,
+            vm_logs: res.vm_log,
+        },
+        artifacts: ReplayTransactionArtifacts {
+            shard_account_before_boc64: args.shard_account_boc64,
+            shard_account_after_boc64: res.shard_account.to_string(),
+            in_msg_boc64: args.message_boc64,
+            transaction_boc64: res.transaction.to_string(),
+            c5_boc64: res.actions.as_ref().map(ToString::to_string),
+            block_config_boc64: args.block_config_boc64,
+            rand_seed_hex: args.rand_seed_hex,
+        },
+    }))
+}
+
+fn decode_rand_seed(rand_seed_hex: &str) -> anyhow::Result<[u8; 32]> {
+    let bytes = hex::decode(rand_seed_hex)?;
+    if bytes.len() != 32 {
+        anyhow::bail!("rand seed must be 32 bytes, got {}", bytes.len());
+    }
+    let mut rand_seed = [0u8; 32];
+    rand_seed.copy_from_slice(&bytes);
+    Ok(rand_seed)
 }
 
 /// Re-emulates all transactions that occurred in the same account within

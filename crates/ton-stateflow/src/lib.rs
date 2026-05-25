@@ -1,11 +1,14 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use ton_retrace::{AccountTxRef, ComputeInfo, Network, TraceResult};
+use ton_retrace::{
+    AccountTxRef, ComputeInfo, Network, ReplayTransactionArgs, ReplayTransactionResult,
+    ReplayTransactionSuccess, TraceResult,
+};
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, HashBytes, Store};
 use tycho_types::models::{
-    AccountState, IntAddr, MsgInfo, OutAction, RelaxedMsgInfo, ShardAccount,
+    AccountState, IntAddr, MsgInfo, OutAction, OwnedMessage, RelaxedMsgInfo, ShardAccount,
 };
 
 pub const STATE_FLOW_SCHEMA_VERSION: u32 = 1;
@@ -68,6 +71,65 @@ pub struct StateFlowSchemaReport {
     pub address: String,
     pub transaction_count: usize,
     pub opcode_candidates: Vec<OpcodeSchemaCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateFlowReplayDiff {
+    pub schema_version: u32,
+    pub source_query_hash: String,
+    pub mutation: ReplayMutation,
+    pub ignore_chksig: bool,
+    pub baseline: ReplayObservation,
+    pub replay: ReplayObservation,
+    pub diff: ReplayDiffSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ReplayMutation {
+    None,
+    FlipBodyBit { bit: u16 },
+    ReplaceBody { body_boc64: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayObservation {
+    pub accepted: bool,
+    pub state: Option<ShardAccountSnapshot>,
+    pub inbound: MessageArtifact,
+    pub outbound: Vec<MessageArtifact>,
+    pub compute: Option<StateFlowCompute>,
+    pub money: Option<MoneyFlow>,
+    pub c5: Option<CellArtifact>,
+    pub out_actions: Vec<ActionEffect>,
+    pub vm_trace: Option<LogArtifact>,
+    pub executor_trace: Option<LogArtifact>,
+    pub error: Option<ReplayErrorArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayErrorArtifact {
+    pub message: String,
+    pub external_not_accepted: bool,
+    pub vm_exit_code: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayDiffSummary {
+    pub replay_accepted: bool,
+    pub input_changed: bool,
+    pub state_changed: Option<bool>,
+    pub code_hash_changed: Option<bool>,
+    pub data_hash_changed: Option<bool>,
+    pub balance_delta_diff: Option<i128>,
+    pub exit_code_changed: Option<bool>,
+    pub outbound_count_delta: Option<i64>,
+    pub action_count_delta: Option<i64>,
+    pub c5_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +355,60 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
     }
 }
 
+pub fn replay_state_flow_tx(
+    flow: &StateFlowTx,
+    mutation: ReplayMutation,
+    ignore_chksig: bool,
+) -> anyhow::Result<StateFlowReplayDiff> {
+    let message_boc64 = apply_replay_mutation(&flow.inbound.message_boc64, &mutation)?;
+    let replay_inbound = inbound_artifact_from_boc64(&message_boc64)?;
+    let result = ton_retrace::replay_transaction(ReplayTransactionArgs {
+        message_boc64: message_boc64.clone(),
+        shard_account_boc64: flow.state.pre.shard_account_boc64.clone(),
+        block_config_boc64: flow.replay.block_config_boc64.clone(),
+        rand_seed_hex: flow.replay.rand_seed_hex.clone(),
+        now: flow.transaction.utime.try_into().unwrap_or(u32::MAX),
+        lt: flow.transaction.lt,
+        libs_boc64: None,
+        ignore_chksig,
+    })?;
+
+    let baseline = ReplayObservation::from_flow(flow);
+    let replay = match result {
+        ReplayTransactionResult::Success(success) => {
+            ReplayObservation::from_success(&message_boc64, replay_inbound, &success)?
+        }
+        ReplayTransactionResult::Error(error) => ReplayObservation {
+            accepted: false,
+            state: None,
+            inbound: replay_inbound,
+            outbound: Vec::new(),
+            compute: None,
+            money: None,
+            c5: None,
+            out_actions: Vec::new(),
+            vm_trace: error.vm_logs.as_deref().map(LogArtifact::from),
+            executor_trace: error.executor_logs.as_deref().map(LogArtifact::from),
+            error: Some(ReplayErrorArtifact {
+                message: error.error,
+                external_not_accepted: error.external_not_accepted,
+                vm_exit_code: error.vm_exit_code,
+            }),
+        },
+    };
+    let diff = ReplayDiffSummary::compare(&baseline, &replay);
+
+    Ok(StateFlowReplayDiff {
+        schema_version: STATE_FLOW_SCHEMA_VERSION,
+        source_query_hash: flow.query_hash.clone(),
+        mutation,
+        ignore_chksig,
+        baseline,
+        replay,
+        diff,
+    })
+}
+
 impl StateFlowTx {
     pub fn from_retrace_result(
         network: impl Into<String>,
@@ -354,6 +470,122 @@ impl StateFlowTx {
             vm_trace: LogArtifact::from(result.emulated_tx.vm_logs.as_ref()),
             executor_trace: LogArtifact::from(result.emulated_tx.executor_logs.as_ref()),
         })
+    }
+}
+
+impl ReplayObservation {
+    fn from_flow(flow: &StateFlowTx) -> Self {
+        Self {
+            accepted: true,
+            state: Some(flow.state.post.clone()),
+            inbound: flow.inbound.clone(),
+            outbound: flow.outbound.clone(),
+            compute: Some(flow.compute.clone()),
+            money: Some(flow.money.clone()),
+            c5: flow.c5.clone(),
+            out_actions: flow.out_actions.clone(),
+            vm_trace: Some(flow.vm_trace.clone()),
+            executor_trace: Some(flow.executor_trace.clone()),
+            error: None,
+        }
+    }
+
+    fn from_success(
+        message_boc64: &str,
+        inbound: MessageArtifact,
+        success: &ReplayTransactionSuccess,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            accepted: true,
+            state: Some(shard_account_snapshot(
+                &success.artifacts.shard_account_after_boc64,
+            )?),
+            inbound: MessageArtifact {
+                message_boc64: message_boc64.to_owned(),
+                ..inbound
+            },
+            outbound: outbound_message_artifacts(&success.emulated_tx.raw)?,
+            compute: Some(StateFlowCompute::from(&success.emulated_tx.compute_info)),
+            money: Some(MoneyFlow {
+                balance_before: success.money.balance_before,
+                sent_total: success.money.sent_total,
+                total_fees: success.money.total_fees,
+                balance_after: success.money.balance_after,
+            }),
+            c5: success
+                .emulated_tx
+                .c5
+                .as_ref()
+                .map(cell_artifact)
+                .transpose()?,
+            out_actions: success
+                .emulated_tx
+                .actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| action_effect(index, action))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            vm_trace: Some(LogArtifact::from(success.emulated_tx.vm_logs.as_ref())),
+            executor_trace: Some(LogArtifact::from(
+                success.emulated_tx.executor_logs.as_ref(),
+            )),
+            error: None,
+        })
+    }
+}
+
+impl ReplayDiffSummary {
+    fn compare(baseline: &ReplayObservation, replay: &ReplayObservation) -> Self {
+        let baseline_state = baseline.state.as_ref();
+        let replay_state = replay.state.as_ref();
+        let baseline_exit = baseline
+            .compute
+            .as_ref()
+            .and_then(|compute| compute.exit_code);
+        let replay_exit = replay
+            .compute
+            .as_ref()
+            .and_then(|compute| compute.exit_code);
+        let baseline_balance = baseline
+            .money
+            .as_ref()
+            .map(|money| money.balance_after as i128 - money.balance_before as i128);
+        let replay_balance = replay
+            .money
+            .as_ref()
+            .map(|money| money.balance_after as i128 - money.balance_before as i128);
+
+        Self {
+            replay_accepted: replay.accepted,
+            input_changed: baseline.inbound.body.hash != replay.inbound.body.hash
+                || baseline.inbound.message_boc64 != replay.inbound.message_boc64,
+            state_changed: baseline_state
+                .zip(replay_state)
+                .map(|(lhs, rhs)| lhs.shard_account_boc64 != rhs.shard_account_boc64),
+            code_hash_changed: baseline_state
+                .zip(replay_state)
+                .map(|(lhs, rhs)| lhs.code_hash != rhs.code_hash),
+            data_hash_changed: baseline_state
+                .zip(replay_state)
+                .map(|(lhs, rhs)| lhs.data_hash != rhs.data_hash),
+            balance_delta_diff: baseline_balance
+                .zip(replay_balance)
+                .map(|(baseline, replay)| replay - baseline),
+            exit_code_changed: baseline
+                .compute
+                .as_ref()
+                .zip(replay.compute.as_ref())
+                .map(|_| baseline_exit != replay_exit),
+            outbound_count_delta: replay
+                .accepted
+                .then_some(replay.outbound.len() as i64 - baseline.outbound.len() as i64),
+            action_count_delta: replay
+                .accepted
+                .then_some(replay.out_actions.len() as i64 - baseline.out_actions.len() as i64),
+            c5_changed: replay.accepted.then_some(
+                baseline.c5.as_ref().map(|c5| &c5.hash) != replay.c5.as_ref().map(|c5| &c5.hash),
+            ),
+        }
     }
 }
 
@@ -462,6 +694,64 @@ fn summarize_kinds(kinds: impl Iterator<Item = String>) -> Vec<EffectCandidate> 
         .into_iter()
         .map(|(kind, count)| EffectCandidate { kind, count })
         .collect()
+}
+
+fn apply_replay_mutation(message_boc64: &str, mutation: &ReplayMutation) -> anyhow::Result<String> {
+    match mutation {
+        ReplayMutation::None => Ok(message_boc64.to_owned()),
+        ReplayMutation::FlipBodyBit { bit } => {
+            let message_cell = Boc::decode_base64(message_boc64)?;
+            let message = message_cell.parse::<tycho_types::models::Message<'_>>()?;
+            let body = cell_from_slice(&message.body)?;
+            let mutated_body = flip_cell_bit(&body, *bit)?;
+            message_with_body_boc64(&message, mutated_body)
+        }
+        ReplayMutation::ReplaceBody { body_boc64 } => {
+            let message_cell = Boc::decode_base64(message_boc64)?;
+            let message = message_cell.parse::<tycho_types::models::Message<'_>>()?;
+            let body = Boc::decode_base64(body_boc64)?;
+            message_with_body_boc64(&message, body)
+        }
+    }
+}
+
+fn message_with_body_boc64(
+    message: &tycho_types::models::Message<'_>,
+    body: Cell,
+) -> anyhow::Result<String> {
+    let owned = OwnedMessage {
+        info: message.info.clone(),
+        init: message.init.clone(),
+        body: body.into(),
+        layout: message.layout,
+    };
+    Ok(Boc::encode_base64(to_cell(&owned)?))
+}
+
+fn flip_cell_bit(cell: &Cell, bit: u16) -> anyhow::Result<Cell> {
+    let slice = cell.as_slice_allow_exotic();
+    if bit >= slice.size_bits() {
+        anyhow::bail!(
+            "cannot flip body bit {bit}; body has {} bits",
+            slice.size_bits()
+        );
+    }
+
+    let mut builder = CellBuilder::new();
+    for index in 0..slice.size_bits() {
+        let value = slice.get_bit(index)?;
+        builder.store_bit(if index == bit { !value } else { value })?;
+    }
+    for index in 0..slice.size_refs() {
+        builder.store_reference(slice.get_reference_cloned(index)?)?;
+    }
+    Ok(builder.build()?)
+}
+
+fn inbound_artifact_from_boc64(message_boc64: &str) -> anyhow::Result<MessageArtifact> {
+    let message_cell = Boc::decode_base64(message_boc64)?;
+    let message = message_cell.parse::<tycho_types::models::Message<'_>>()?;
+    inbound_message_artifact(&message, message_boc64)
 }
 
 impl StateFlowFailure {
@@ -814,6 +1104,9 @@ mod tests {
         CellArtifact, LogArtifact, MessageDirection, MoneyFlow, ReplaySummary, StateFlowCompute,
         StateFlowCorpus, StateFlowTx, StateTransition, TransactionIdentity,
     };
+    use tycho_types::boc::Boc;
+    use tycho_types::cell::CellBuilder;
+    use tycho_types::models::{IntMsgInfo, MsgInfo, OwnedMessage};
 
     #[test]
     fn state_flow_tx_serializes_camel_case_schema_version() {
@@ -883,6 +1176,32 @@ mod tests {
                 .iter()
                 .any(|field| field.contains("TL-B"))
         );
+    }
+
+    #[test]
+    fn replay_mutation_flips_message_body_bit() {
+        let mut body = CellBuilder::new();
+        body.store_u32(0).unwrap();
+        let message = OwnedMessage {
+            info: MsgInfo::Int(IntMsgInfo::default()),
+            init: None,
+            body: body.build().unwrap().into(),
+            layout: None,
+        };
+        let message_boc64 = Boc::encode_base64(super::to_cell(&message).unwrap());
+
+        let mutated = super::apply_replay_mutation(
+            &message_boc64,
+            &super::ReplayMutation::FlipBodyBit { bit: 0 },
+        )
+        .unwrap();
+        let mutated_cell = Boc::decode_base64(mutated).unwrap();
+        let mutated_message = mutated_cell
+            .parse::<tycho_types::models::Message<'_>>()
+            .unwrap();
+        let mut mutated_body = mutated_message.body;
+
+        assert_eq!(mutated_body.load_u32().unwrap(), 0x8000_0000);
     }
 
     fn sample_flow(query_hash: &str, opcode: Option<&str>) -> StateFlowTx {

@@ -292,6 +292,83 @@ pub struct TraceReplayArtifacts {
     pub replayed_prev_tx_count: usize,
 }
 
+/// Inputs required to execute a local replay from previously captured state-flow evidence.
+#[derive(Debug, Clone)]
+pub struct ReplayTransactionArgs {
+    /// Base64 BoC of the inbound message to execute.
+    pub message_boc64: String,
+    /// Base64 BoC of the shard account state used as replay pre-state.
+    pub shard_account_boc64: String,
+    /// Base64 BoC blockchain config passed to the executor.
+    pub block_config_boc64: String,
+    /// Hex-encoded 32-byte random seed.
+    pub rand_seed_hex: String,
+    /// Unix time passed to the executor.
+    pub now: u32,
+    /// Logical time passed to the executor.
+    pub lt: u64,
+    /// Optional base64 BoC library dictionary.
+    pub libs_boc64: Option<String>,
+    /// Whether signature checks should be ignored during local replay.
+    pub ignore_chksig: bool,
+}
+
+/// Local replay result for a successful executor run.
+#[derive(Debug, Clone)]
+pub struct ReplayTransactionSuccess {
+    /// Information about the replay inbound message.
+    pub in_msg: TraceInMessage,
+    /// Money movement summary calculated from replay output.
+    pub money: TraceMoneyResult,
+    /// Full replayed transaction details.
+    pub emulated_tx: TraceEmulatedTx,
+    /// Raw replay input/output BoCs.
+    pub artifacts: ReplayTransactionArtifacts,
+}
+
+/// Local replay result when the executor rejects the transaction before a transaction is produced.
+#[derive(Debug, Clone)]
+pub struct ReplayTransactionError {
+    /// Executor error message.
+    pub error: String,
+    /// Whether an external-in message was rejected before acceptance.
+    pub external_not_accepted: bool,
+    /// VM exit code if the executor reported one.
+    pub vm_exit_code: Option<i64>,
+    /// VM log if the executor reported one.
+    pub vm_logs: Option<String>,
+    /// Executor log if the executor reported one.
+    pub executor_logs: Option<Arc<str>>,
+}
+
+/// Raw input/output artifacts for a local replay.
+#[derive(Debug, Clone)]
+pub struct ReplayTransactionArtifacts {
+    /// Replay pre-state shard account BoC.
+    pub shard_account_before_boc64: String,
+    /// Replay post-state shard account BoC, if a transaction was produced.
+    pub shard_account_after_boc64: String,
+    /// Inbound message BoC used for replay.
+    pub in_msg_boc64: String,
+    /// Replayed transaction BoC.
+    pub transaction_boc64: String,
+    /// Final c5 action-list cell returned by the executor, if present.
+    pub c5_boc64: Option<String>,
+    /// Block config BoC passed to the executor.
+    pub block_config_boc64: String,
+    /// Random seed passed to the executor.
+    pub rand_seed_hex: String,
+}
+
+/// Result of a local replay attempt.
+#[derive(Debug, Clone)]
+pub enum ReplayTransactionResult {
+    /// The executor produced a transaction.
+    Success(ReplayTransactionSuccess),
+    /// The executor rejected the transaction.
+    Error(ReplayTransactionError),
+}
+
 /// Breakdown of money movements and fees within the transaction.
 ///
 /// All values are in nanoton (10^-9 TON).

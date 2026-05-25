@@ -386,6 +386,40 @@ fn test_acton_reverse_infer_help() {
 }
 
 #[test]
+fn test_acton_reverse_replay_help() {
+    let output = snapbox::cmd::Command::acton_ui()
+        .arg("reverse")
+        .arg("replay")
+        .arg("--help")
+        .output()
+        .expect("failed to run acton reverse replay --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse replay --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Replay or mutate a StateFlowTx artifact and emit a diff",
+        "Usage: acton reverse replay",
+        "--flip-body-bit <FLIP_BODY_BIT>",
+        "--body-boc64 <BODY_BOC64>",
+        "--ignore-chksig",
+        "--output <OUTPUT>",
+        "[aliases: --out]",
+        "--pretty",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse replay --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_help_retrace() {
     snapbox::cmd::Command::acton_ui()
         .arg("help")
