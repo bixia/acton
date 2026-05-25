@@ -257,12 +257,24 @@ export interface OpcodeSchemaCandidate {
     readonly bodyHashes: readonly string[]
     readonly fieldCandidates?: readonly BodyFieldCandidate[] | null
   }
+  readonly replayProbes?: readonly ReplayProbeCandidate[] | null
   readonly storage?: StorageShapeCandidate | null
   readonly stateTransitions: readonly StateTransitionCandidate[]
   readonly outboundEffects: readonly EffectCandidate[]
   readonly outActions: readonly EffectCandidate[]
   readonly confidence: string
   readonly unknownFields: readonly string[]
+}
+
+export interface ReplayProbeCandidate {
+  readonly fieldName: string
+  readonly bitOffset: number
+  readonly bits: number
+  readonly value: string
+  readonly mutation: ReplayMutation
+  readonly cliArg: string
+  readonly confidence: string
+  readonly evidence: readonly string[]
 }
 
 export interface BodyFieldCandidate {
@@ -517,6 +529,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
   const effectRows = schemaEffectRows(schema)
+  const replayProbeRows = schemaReplayProbeRows(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -527,6 +540,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
       {label: "Effects", value: effectRows.length.toString()},
+      {label: "Replay Probes", value: replayProbeRows.length.toString()},
       {label: "State Edges", value: stateEdges.length.toString()},
       {label: "Audit Signals", value: auditSignals.length.toString()},
     ],
@@ -544,6 +558,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             `${candidateBodyFieldCount(candidate)} ${plural(candidateBodyFieldCount(candidate), "body field")}`,
             `${candidateStorageFieldCount(candidate)} ${plural(candidateStorageFieldCount(candidate), "storage field")}`,
             `${candidateEffectCount(candidate)} ${plural(candidateEffectCount(candidate), "effect")}`,
+            `${candidateReplayProbeCount(candidate)} ${plural(candidateReplayProbeCount(candidate), "replay probe")}`,
             `${candidate.unknownFields.length} unknowns`,
           ].join(" · "),
         })),
@@ -569,6 +584,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Outbound Effects",
               rows: effectRows,
+            },
+          ]
+        : []),
+      ...(replayProbeRows.length > 0
+        ? [
+            {
+              title: "Replay Probes",
+              rows: replayProbeRows,
             },
           ]
         : []),
@@ -760,6 +783,10 @@ function candidateEffectCount(candidate: OpcodeSchemaCandidate): number {
   return candidate.outboundEffects.length + candidate.outActions.length
 }
 
+function candidateReplayProbeCount(candidate: OpcodeSchemaCandidate): number {
+  return candidate.replayProbes?.length ?? 0
+}
+
 function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
   return schema.opcodeCandidates.flatMap(candidate => {
     const opcode = candidate.opcode ?? "<none>"
@@ -803,6 +830,24 @@ function schemaEffectRows(schema: StateFlowSchemaReport): readonly SummaryRow[] 
     ...candidate.outboundEffects.map(effect => effectRow(candidate.opcode, "outbound", effect)),
     ...candidate.outActions.map(effect => effectRow(candidate.opcode, "action", effect)),
   ])
+}
+
+function schemaReplayProbeRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const opcode = candidate.opcode ?? "<none>"
+    return (candidate.replayProbes ?? []).map(probe => ({
+      label: `${opcode} ${probe.fieldName}`,
+      value: probe.cliArg,
+      detail: [
+        `${probe.bits} bits @${probe.bitOffset}`,
+        probe.confidence,
+        mutationLabel(probe.mutation),
+        probe.evidence.map(hash => shortHash(hash)).join(", "),
+      ]
+        .filter(value => value.length > 0)
+        .join(" · "),
+    }))
+  })
 }
 
 function effectRow(

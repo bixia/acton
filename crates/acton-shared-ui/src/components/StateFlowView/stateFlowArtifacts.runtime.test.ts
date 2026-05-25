@@ -59,6 +59,23 @@ const schema = {
           },
         ],
       },
+      replayProbes: [
+        {
+          fieldName: "query_id",
+          bitOffset: 32,
+          bits: 64,
+          value: "0x0000000000000006",
+          mutation: {
+            type: "setBodyUint",
+            bitOffset: 32,
+            bits: 64,
+            value: "0x0000000000000006",
+          },
+          cliArg: "--set-body-uint 32:64:0x0000000000000006",
+          confidence: "high",
+          evidence: ["tx-a"],
+        },
+      ],
       storage: {
         balanceDeltaMin: -2,
         balanceDeltaMax: 4,
@@ -253,6 +270,10 @@ assert(
   "expected candidate summary to include effect count",
 )
 assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("1 replay probe") === true,
+  "expected candidate summary to include replay probe count",
+)
+assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("data 16/1") === true,
   "expected candidate summary to include storage data shape",
 )
@@ -288,6 +309,13 @@ assert(effectRows[0]?.detail?.includes("out-dst") === true, "expected outbound d
 assert(effectRows[1]?.label === "0x00000001 action", "expected action effect row")
 assert(effectRows[1]?.value === "send-message x1", "expected action effect kind")
 assert(effectRows[1]?.detail?.includes("64") === true, "expected action mode")
+const replayProbeRows = sectionRows(schemaSummary, "Replay Probes")
+assert(replayProbeRows[0]?.label === "0x00000001 query_id", "expected replay probe row")
+assert(
+  replayProbeRows[0]?.value === "--set-body-uint 32:64:0x0000000000000006",
+  "expected replay probe CLI arg",
+)
+assert(replayProbeRows[0]?.detail?.includes("tx-a") === true, "expected replay probe evidence")
 
 const schemaRiskRows = sectionRows(schemaSummary, "Risk Points")
 assert(

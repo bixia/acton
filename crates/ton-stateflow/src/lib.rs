@@ -183,12 +183,27 @@ pub struct OpcodeSchemaCandidate {
     pub evidence: Vec<SchemaEvidence>,
     pub inbound_body: BodyShapeCandidate,
     #[serde(default)]
+    pub replay_probes: Vec<ReplayProbeCandidate>,
+    #[serde(default)]
     pub storage: StorageShapeCandidate,
     pub state_transitions: Vec<StateTransitionCandidate>,
     pub outbound_effects: Vec<EffectCandidate>,
     pub out_actions: Vec<EffectCandidate>,
     pub confidence: String,
     pub unknown_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayProbeCandidate {
+    pub field_name: String,
+    pub bit_offset: u16,
+    pub bits: u16,
+    pub value: String,
+    pub mutation: ReplayMutation,
+    pub cli_arg: String,
+    pub confidence: String,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -700,6 +715,37 @@ pub fn render_state_flow_report(
                     markdown_escape(&field.kind),
                     markdown_code_list(&field.value_samples),
                     markdown_escape(&field.confidence),
+                )
+                .ok();
+            }
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Replay Probes").ok();
+    let mut probe_rows = 0;
+    for candidate in &schema.opcode_candidates {
+        probe_rows += candidate.replay_probes.len();
+    }
+    if probe_rows == 0 {
+        writeln!(report, "- No replay probe candidates were inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Opcode | Field | CLI mutation | Confidence | Evidence |"
+        )
+        .ok();
+        writeln!(report, "| --- | --- | --- | --- | --- |").ok();
+        for candidate in &schema.opcode_candidates {
+            for probe in &candidate.replay_probes {
+                writeln!(
+                    report,
+                    "| {} | `{}` | `{}` | {} | {} |",
+                    markdown_code_opt(candidate.opcode.as_deref()),
+                    markdown_escape(&probe.field_name),
+                    markdown_escape(&probe.cli_arg),
+                    markdown_escape(&probe.confidence),
+                    markdown_code_list(&probe.evidence),
                 )
                 .ok();
             }
@@ -1511,17 +1557,20 @@ fn opcode_candidate(
     if !outbound_effects.is_empty() || !out_actions.is_empty() {
         unknown_fields.push("outbound effect payload fields require TL-B recovery".to_owned());
     }
+    let examples = transactions
+        .iter()
+        .take(5)
+        .map(|tx| tx.query_hash.clone())
+        .collect::<Vec<_>>();
+    let replay_probes = replay_probe_candidates(&inbound_body, &examples);
 
     OpcodeSchemaCandidate {
         opcode,
         count: transactions.len(),
-        examples: transactions
-            .iter()
-            .take(5)
-            .map(|tx| tx.query_hash.clone())
-            .collect(),
+        examples,
         evidence: schema_evidence(transactions),
         inbound_body,
+        replay_probes,
         storage,
         state_transitions,
         outbound_effects,
@@ -1862,6 +1911,67 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
     candidates
 }
 
+fn replay_probe_candidates(
+    inbound_body: &BodyShapeCandidate,
+    examples: &[String],
+) -> Vec<ReplayProbeCandidate> {
+    inbound_body
+        .field_candidates
+        .iter()
+        .filter_map(|field| replay_probe_candidate(field, examples))
+        .collect()
+}
+
+fn replay_probe_candidate(
+    field: &BodyFieldCandidate,
+    examples: &[String],
+) -> Option<ReplayProbeCandidate> {
+    let bits = exact_uint_body_field_bits(field)?;
+    let value = replay_probe_value(field, bits)?;
+    let cli_arg = format!("--set-body-uint {}:{}:{}", field.bit_offset, bits, value);
+
+    Some(ReplayProbeCandidate {
+        field_name: field.name.clone(),
+        bit_offset: field.bit_offset,
+        bits,
+        value: value.clone(),
+        mutation: ReplayMutation::SetBodyUint {
+            bit_offset: field.bit_offset,
+            bits,
+            value,
+        },
+        cli_arg,
+        confidence: field.confidence.clone(),
+        evidence: examples.iter().take(5).cloned().collect(),
+    })
+}
+
+fn exact_uint_body_field_bits(field: &BodyFieldCandidate) -> Option<u16> {
+    let bits = field.min_bits;
+    (bits == field.max_bits
+        && bits > 0
+        && bits <= 64
+        && field.min_refs == 0
+        && field.max_refs == 0
+        && field.kind.starts_with("uint"))
+    .then_some(bits)
+}
+
+fn replay_probe_value(field: &BodyFieldCandidate, bits: u16) -> Option<String> {
+    let sample = field
+        .value_samples
+        .first()
+        .and_then(|value| parse_uint_value(value).ok())
+        .unwrap_or(0);
+    let mask = if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    let value = (sample ^ 1) & mask;
+    Some(format_uint_for_bits(value, bits))
+}
+
 fn read_body_u32_at(boc64: &str, bit_offset: u16) -> Option<u32> {
     let cell = Boc::decode_base64(boc64).ok()?;
     read_cell_u32_at(&cell, bit_offset)
@@ -1886,6 +1996,11 @@ fn format_u32_hex(value: u32) -> String {
 
 fn format_u64_hex(value: u64) -> String {
     format!("0x{value:016x}")
+}
+
+fn format_uint_for_bits(value: u64, bits: u16) -> String {
+    let digits = usize::from(bits).div_ceil(4);
+    format!("0x{value:0digits$x}")
 }
 
 fn limited_samples(values: BTreeSet<String>) -> Vec<String> {
@@ -2771,6 +2886,14 @@ mod tests {
         );
         assert_eq!(candidate.inbound_body.field_candidates[2].bit_offset, 96);
         assert_eq!(candidate.inbound_body.field_candidates[2].min_bits, 8);
+        assert_eq!(candidate.replay_probes.len(), 2);
+        assert_eq!(candidate.replay_probes[1].field_name, "query_id");
+        assert_eq!(candidate.replay_probes[1].bit_offset, 32);
+        assert_eq!(candidate.replay_probes[1].bits, 64);
+        assert_eq!(
+            candidate.replay_probes[1].cli_arg,
+            "--set-body-uint 32:64:0x0000000000000006"
+        );
 
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(
@@ -2780,6 +2903,15 @@ mod tests {
         assert_eq!(
             json["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"][1]["valueSamples"],
             serde_json::json!(["0x0000000000000007", "0x0000000000000008"])
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["replayProbes"][1]["mutation"],
+            serde_json::json!({
+                "type": "setBodyUint",
+                "bitOffset": 32,
+                "bits": 64,
+                "value": "0x0000000000000006"
+            })
         );
     }
 
@@ -3044,6 +3176,8 @@ mod tests {
         assert!(report.contains(
             "| `0x00000001` | `payload_tail` | 96 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | low |"
         ));
+        assert!(report.contains("## Replay Probes"));
+        assert!(report.contains("| `0x00000001` | `query_id` | `--set-body-uint 32:64:0x0000000000000006` | high | `tx-a` |"));
     }
 
     #[test]

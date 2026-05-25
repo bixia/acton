@@ -111,6 +111,23 @@ const schema = {
       count: 1,
       examples: ["tx-hash"],
       inboundBody: {minBits: 32, maxBits: 32, minRefs: 0, maxRefs: 0, bodyHashes: ["body-hash"]},
+      replayProbes: [
+        {
+          fieldName: "query_id",
+          bitOffset: 32,
+          bits: 64,
+          value: "0x0000000000000006",
+          mutation: {
+            type: "setBodyUint",
+            bitOffset: 32,
+            bits: 64,
+            value: "0x0000000000000006",
+          },
+          cliArg: "--set-body-uint 32:64:0x0000000000000006",
+          confidence: "high",
+          evidence: ["tx-hash"],
+        },
+      ],
       storage: {
         balanceDeltaMin: -2,
         balanceDeltaMax: -2,
@@ -230,6 +247,14 @@ assert(
 assert(
   schemaSummary.metrics.some(metric => metric.label === "State Edges" && metric.value === "1"),
   "expected schema summary to include state machine edge count",
+)
+assert(
+  schemaSummary.metrics.some(metric => metric.label === "Replay Probes" && metric.value === "1"),
+  "expected schema summary to include replay probe count",
+)
+assert(
+  schemaSummary.sections.some(section => section.title === "Replay Probes"),
+  "expected schema summary to include replay probes",
 )
 assert(
   schemaSummary.sections.some(section => section.title === "Risk Points"),
