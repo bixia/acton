@@ -2426,6 +2426,20 @@ fn validate_schema_opcode_candidate_matches_corpus(
         &opcode,
         gate_failures,
     );
+    let expected_body_hashes = sorted_values(
+        matching_transactions
+            .iter()
+            .map(|tx| tx.inbound.body.hash.clone())
+            .collect(),
+    );
+    validate_evidence_text_field(
+        "schema opcode candidate body hashes",
+        &report_kind_list(&candidate.inbound_body.body_hashes),
+        "corpus body hashes",
+        &report_kind_list(&expected_body_hashes),
+        &opcode,
+        gate_failures,
+    );
 
     let expected_min_balance_delta = matching_transactions
         .iter()
@@ -2469,6 +2483,64 @@ fn validate_schema_opcode_candidate_matches_corpus(
         candidate.storage.code_hash_changed_count,
         "corpus code hash change count",
         expected_code_hash_changed_count,
+        &opcode,
+        gate_failures,
+    );
+    let expected_post_data_hashes = sorted_values(
+        matching_transactions
+            .iter()
+            .filter_map(|tx| tx.state.post.data_hash.clone())
+            .collect(),
+    );
+    validate_evidence_text_field(
+        "schema storage post data hashes",
+        &report_kind_list(&candidate.storage.post_data_hashes),
+        "corpus post data hashes",
+        &report_kind_list(&expected_post_data_hashes),
+        &opcode,
+        gate_failures,
+    );
+    let expected_post_code_hashes = sorted_values(
+        matching_transactions
+            .iter()
+            .filter_map(|tx| tx.state.post.code_hash.clone())
+            .collect(),
+    );
+    validate_evidence_text_field(
+        "schema storage post code hashes",
+        &report_kind_list(&candidate.storage.post_code_hashes),
+        "corpus post code hashes",
+        &report_kind_list(&expected_post_code_hashes),
+        &opcode,
+        gate_failures,
+    );
+    let expected_post_data_shape = effect_shape_range(
+        &matching_transactions
+            .iter()
+            .filter_map(|tx| tx.state.post.data_cell.as_ref())
+            .map(|shape| (shape.bits, shape.refs))
+            .collect::<Vec<_>>(),
+    );
+    validate_evidence_text_field(
+        "schema storage post data shape",
+        &report_optional_shape(&candidate.storage.post_data_shape),
+        "corpus post data shape",
+        &report_optional_shape(&expected_post_data_shape),
+        &opcode,
+        gate_failures,
+    );
+    let expected_post_code_shape = effect_shape_range(
+        &matching_transactions
+            .iter()
+            .filter_map(|tx| tx.state.post.code_cell.as_ref())
+            .map(|shape| (shape.bits, shape.refs))
+            .collect::<Vec<_>>(),
+    );
+    validate_evidence_text_field(
+        "schema storage post code shape",
+        &report_optional_shape(&candidate.storage.post_code_shape),
+        "corpus post code shape",
+        &report_optional_shape(&expected_post_code_shape),
         &opcode,
         gate_failures,
     );
@@ -3265,6 +3337,12 @@ fn sorted_limited_values(values: HashSet<String>) -> Vec<String> {
     let mut values = values.into_iter().collect::<Vec<_>>();
     values.sort();
     values.truncate(5);
+    values
+}
+
+fn sorted_values(values: HashSet<String>) -> Vec<String> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort();
     values
 }
 
@@ -6272,7 +6350,7 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": []
+                        "bodyHashes": ["hash"]
                     },
                     "storage": {
                         "balanceDeltaMin": -3,
@@ -6426,6 +6504,42 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_opcode_body_hash_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["bodyHashes"] =
+            serde_json::json!(["wrong-body-hash"]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema opcode candidate body hashes wrong-body-hash for 0x00000001 does not match corpus body hashes hash",
+                )
+            }),
+            "expected opcode body hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_storage_candidate_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6474,6 +6588,42 @@ mod tests {
                 )
             }),
             "expected storage balance delta mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_storage_post_hash_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["storage"]["postDataHashes"] =
+            serde_json::json!(["fake-data-hash"]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema storage post data hashes fake-data-hash for 0x00000001 does not match corpus post data hashes none",
+                )
+            }),
+            "expected storage post data hash mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -8114,7 +8264,7 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": []
+                        "bodyHashes": ["hash"]
                     },
                     "replayProbes": [{
                         "fieldName": "query_id",
@@ -8211,7 +8361,7 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": []
+                        "bodyHashes": ["hash"]
                     },
                     "replayProbes": [{
                         "fieldName": "query_id",
@@ -8942,7 +9092,7 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": []
+                        "bodyHashes": ["hash"]
                     },
                     "storage": {
                         "balanceDeltaMin": -3,
