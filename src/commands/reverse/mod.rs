@@ -4162,6 +4162,37 @@ fn report_kind_list(kinds: &[String]) -> String {
     kinds.join(", ")
 }
 
+fn validate_report_opcode_candidate_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = opcode_candidate_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report opcode candidate header {expected:?} is missing"
+        ));
+    }
+}
+
+fn opcode_candidate_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Count",
+        "Confidence",
+        "Body bits",
+        "Body refs",
+        "Storage",
+        "State transitions",
+        "Outbound effects",
+        "Out actions",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_report_schema_evidence_header(section: &str, gate_failures: &mut Vec<String>) {
     let expected = schema_evidence_report_header();
     let header = section
@@ -4198,6 +4229,9 @@ fn validate_report_schema_deliverables(
     gate_failures: &mut Vec<String>,
 ) {
     if let Some(section) = markdown_section(markdown, "## Opcode Candidates") {
+        if !schema.opcode_candidates.is_empty() {
+            validate_report_opcode_candidate_header(section, gate_failures);
+        }
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
             let candidate_row = report_opcode_candidate_row(section, &opcode);
@@ -7477,6 +7511,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_opcode_candidate_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_opcode_candidate_header("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "target-a: report opcode candidate header [\"Opcode\", \"Count\", \"Confidence\", \"Body bits\", \"Body refs\", \"Storage\", \"State transitions\", \"Outbound effects\", \"Out actions\", \"Evidence\"] is missing"
+            )),
+            "expected report opcode header failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_accepts_report_opcode_candidate_range_format() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10262,6 +10324,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
             "| `0x00000001` | 2 | medium | 32 | 0 | balance 0 | none | none | none | tx-a, tx-b |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_opcode_candidate_header(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |",
+            "| Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence stale |",
         )
     }
 
