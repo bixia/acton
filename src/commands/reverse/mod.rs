@@ -2266,6 +2266,7 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
         "executor trace",
         gate_failures,
     );
+    validate_out_action_evidence_keys(value, prefix, gate_failures);
 }
 
 fn validate_message_artifact_evidence_keys(
@@ -2323,6 +2324,84 @@ fn validate_cell_artifact_evidence_keys(
                 "{prefix} {label_prefix} missing {label} evidence key"
             ));
         }
+    }
+}
+
+fn validate_out_action_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(actions) = value.get("outActions").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, action) in actions.iter().enumerate() {
+        let action_prefix = format!("{prefix} outActions[{index}]");
+        for (label, path) in [
+            ("index", &["index"][..]),
+            ("kind", &["kind"][..]),
+            ("mode", &["mode"][..]),
+            ("value nanotons", &["valueNanotons"][..]),
+            ("destination", &["destination"][..]),
+            ("body", &["body"][..]),
+            ("code", &["code"][..]),
+            ("library", &["library"][..]),
+        ] {
+            if !json_path_exists(action, path) {
+                gate_failures.push(format!("{action_prefix} missing {label} evidence key"));
+            }
+        }
+        if matches!(action.get("body"), Some(serde_json::Value::Object(_))) {
+            validate_cell_artifact_evidence_keys(
+                action,
+                &["body"],
+                prefix,
+                &format!("outActions[{index}] body"),
+                gate_failures,
+            );
+        }
+        if matches!(action.get("code"), Some(serde_json::Value::Object(_))) {
+            validate_cell_artifact_evidence_keys(
+                action,
+                &["code"],
+                prefix,
+                &format!("outActions[{index}] code"),
+                gate_failures,
+            );
+        }
+        validate_library_effect_evidence_keys(action, prefix, &action_prefix, gate_failures);
+    }
+}
+
+fn validate_library_effect_evidence_keys(
+    action: &serde_json::Value,
+    prefix: &str,
+    action_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(library) = action.get("library") else {
+        return;
+    };
+    if library.is_null() {
+        return;
+    }
+    for (label, path) in [
+        ("library mode", &["mode"][..]),
+        ("library hash", &["hash"][..]),
+        ("library cell", &["cell"][..]),
+    ] {
+        if !json_path_exists(library, path) {
+            gate_failures.push(format!("{action_prefix} missing {label} evidence key"));
+        }
+    }
+    if matches!(library.get("cell"), Some(serde_json::Value::Object(_))) {
+        validate_cell_artifact_evidence_keys(
+            library,
+            &["cell"],
+            prefix,
+            &format!("{action_prefix} library cell"),
+            gate_failures,
+        );
     }
 }
 
@@ -8240,6 +8319,46 @@ mod tests {
                 )
             }),
             "expected missing VM trace line count key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_missing_out_action_mode_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["outActions"] = serde_json::json!([{
+            "index": 0,
+            "kind": "send-message",
+            "valueNanotons": "7",
+            "destination": "dst",
+            "body": null,
+            "code": null,
+            "library": null
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json outActions[0] missing mode evidence key",
+                )
+            }),
+            "expected missing out action mode key failure, got {:?}",
             validation.gate_failures
         );
     }
