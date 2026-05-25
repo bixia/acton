@@ -465,6 +465,19 @@ assert(
     ?.rows.some(row => row.label === "Address" && row.value === "account") === true,
   "expected report target rows",
 )
+assert(
+  reportView.sections
+    .find(section => section.title === "Schema Evidence")
+    ?.rows.some(row => row.label === "0x00000001 tx-hash" && row.value === "active -> frozen") ===
+    true,
+  "expected report schema evidence table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Replay Diffs")
+    ?.rows.some(row => row.label === "tx-hash" && row.value === "flip body bit 32") === true,
+  "expected report replay diff table rows",
+)
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
 

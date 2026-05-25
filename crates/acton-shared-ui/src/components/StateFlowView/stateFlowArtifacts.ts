@@ -878,6 +878,8 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
 
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
+  const schemaEvidenceRows = reportSchemaEvidenceRows(report)
+  const replayDiffRows = reportReplayDiffRows(report)
   return {
     title: report.title,
     metrics: [
@@ -890,6 +892,22 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Target",
               rows: reportTargetRows(targetSection),
+            },
+          ]
+        : []),
+      ...(schemaEvidenceRows.length > 0
+        ? [
+            {
+              title: "Schema Evidence",
+              rows: schemaEvidenceRows,
+            },
+          ]
+        : []),
+      ...(replayDiffRows.length > 0
+        ? [
+            {
+              title: "Replay Diffs",
+              rows: replayDiffRows,
             },
           ]
         : []),
@@ -1000,6 +1018,95 @@ function reportTargetRows(section: StateFlowReportSection): readonly SummaryRow[
       label: stripMarkdownInline(match[1] ?? ""),
       value: stripMarkdownInline(match[2] ?? ""),
     }))
+}
+
+function reportSchemaEvidenceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Schema Evidence").map(row => ({
+    label: [rowValue(row, "Opcode"), rowValue(row, "Tx")]
+      .filter(value => value.length > 0)
+      .join(" "),
+    value: rowValue(row, "State") || "n/a",
+    detail: [
+      `body ${rowValue(row, "Body hash") || "n/a"} ${rowValue(row, "Body bits/refs") || "n/a"}`,
+      tableTransitionLabel("data", rowValue(row, "Data hash")),
+      tableTransitionLabel("code", rowValue(row, "Code hash")),
+      tableValueLabel("out", rowValue(row, "Outbound")),
+      tableValueLabel("actions", rowValue(row, "Actions")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportReplayDiffRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Replay Diffs").map(row => ({
+    label: rowValue(row, "Source tx") || "n/a",
+    value: rowValue(row, "Mutation") || "n/a",
+    detail: [
+      tableValueLabel("accepted", rowValue(row, "Accepted")),
+      tableValueLabel("input", rowValue(row, "Input changed")),
+      tableValueLabel("state", rowValue(row, "State changed")),
+      tableValueLabel("exit", rowValue(row, "Exit changed")),
+      tableValueLabel("outbound delta", rowValue(row, "Outbound delta")),
+      tableValueLabel("action delta", rowValue(row, "Action delta")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportTableRows(
+  report: StateFlowReport,
+  sectionTitle: string,
+): readonly Map<string, string>[] {
+  const section = report.sections.find(section => section.title === sectionTitle)
+  if (!section) {
+    return []
+  }
+
+  const tableRows = section.body
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line.startsWith("|") && line.endsWith("|"))
+    .map(line => parseMarkdownTableRow(line))
+  const header = tableRows[0]
+  if (!header) {
+    return []
+  }
+
+  return tableRows
+    .slice(1)
+    .filter(values => isMarkdownTableDataRow(values))
+    .map(values => {
+      const row = new Map<string, string>()
+      for (const [index, key] of header.entries()) {
+        row.set(key, values[index] ?? "")
+      }
+      return row
+    })
+}
+
+function parseMarkdownTableRow(line: string): readonly string[] {
+  return line
+    .slice(1, -1)
+    .split("|")
+    .map(cell => stripMarkdownInline(cell))
+}
+
+function isMarkdownTableDataRow(values: readonly string[]): boolean {
+  return values.some(value => !/^:?-{3,}:?$/.test(value))
+}
+
+function rowValue(row: ReadonlyMap<string, string>, key: string): string {
+  return row.get(key)?.trim() ?? ""
+}
+
+function tableValueLabel(label: string, value: string): string | undefined {
+  return value.length > 0 ? `${label} ${value}` : undefined
+}
+
+function tableTransitionLabel(label: string, value: string): string | undefined {
+  return value.length > 0 && value !== "n/a" ? `${label} ${value}` : undefined
 }
 
 function reportSectionPreview(section: StateFlowReportSection): string | undefined {

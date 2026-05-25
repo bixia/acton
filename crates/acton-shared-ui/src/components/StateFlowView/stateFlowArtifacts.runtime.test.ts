@@ -712,6 +712,26 @@ assert(
   reportSectionRows.some(row => row.label === "Replay Diffs"),
   "expected report replay diffs section summary",
 )
+const reportSchemaEvidenceRows = sectionRows(reportSummary, "Schema Evidence")
+assert(
+  reportSchemaEvidenceRows[0]?.label === "0x00000001 tx-a",
+  "expected report schema evidence row",
+)
+assert(
+  reportSchemaEvidenceRows[0]?.value === "active -> frozen",
+  "expected report schema evidence transition",
+)
+assert(
+  reportSchemaEvidenceRows[0]?.detail?.includes("body body-a 32/0") === true,
+  "expected report schema evidence body detail",
+)
+const reportReplayDiffRows = sectionRows(reportSummary, "Replay Diffs")
+assert(reportReplayDiffRows[0]?.label === "tx-a", "expected report replay tx row")
+assert(reportReplayDiffRows[0]?.value === "flip body bit 32", "expected report replay mutation")
+assert(
+  reportReplayDiffRows[0]?.detail?.includes("accepted true") === true,
+  "expected report replay accepted detail",
+)
 
 function sectionRows(
   summary: ReturnType<typeof summarizeStateFlowArtifact>,
