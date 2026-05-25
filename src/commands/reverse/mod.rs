@@ -4273,6 +4273,13 @@ fn validate_report_schema_deliverables(
     }
 
     if let Some(section) = markdown_section(markdown, "## Replay Probes") {
+        if schema
+            .opcode_candidates
+            .iter()
+            .any(|candidate| !candidate.replay_probes.is_empty())
+        {
+            validate_report_replay_probes_header(section, gate_failures);
+        }
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
             for probe in &candidate.replay_probes {
@@ -4422,6 +4429,26 @@ fn message_body_fields_report_header() -> Vec<String> {
     .iter()
     .map(|header| header.to_string())
     .collect()
+}
+
+fn validate_report_replay_probes_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = replay_probes_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report replay probes header {expected:?} is missing"
+        ));
+    }
+}
+
+fn replay_probes_report_header() -> Vec<String> {
+    ["Opcode", "Field", "CLI mutation", "Confidence", "Evidence"]
+        .iter()
+        .map(|header| header.to_string())
+        .collect()
 }
 
 fn validate_report_storage_fields_header(section: &str, gate_failures: &mut Vec<String>) {
@@ -7874,6 +7901,43 @@ mod tests {
     }
 
     #[test]
+    fn report_schema_deliverables_rejects_replay_probe_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["replayProbes"] = serde_json::json!([{
+            "fieldName": "foreign_field",
+            "bitOffset": 0,
+            "bits": 1,
+            "value": "0x0",
+            "mutation": {"type": "flipBodyBit", "bit": 0},
+            "cliArg": "--flip-body-bit 0",
+            "confidence": "medium",
+            "evidence": ["tx-a"]
+        }]);
+        let schema: super::StateFlowSchemaReport =
+            serde_json::from_value(schema).expect("schema should deserialize");
+        let mut gate_failures = Vec::new();
+
+        super::validate_report_schema_deliverables(
+            &sample_report_markdown_with_wrong_replay_probe_header("addr"),
+            &schema,
+            &mut gate_failures,
+        );
+
+        assert!(
+            gate_failures.iter().any(|failure| failure.contains(
+                "report replay probes header [\"Opcode\", \"Field\", \"CLI mutation\", \"Confidence\", \"Evidence\"] is missing"
+            )),
+            "expected replay probes header failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_replay_probe_without_field_candidate() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10536,6 +10600,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Replay Probes\n- No replay probe candidates were inferred.",
             "## Replay Probes\n| Opcode | Field | CLI mutation | Confidence | Evidence |\n| --- | --- | --- | --- | --- |\n| `0x00000001` | `foreign_field` | `--flip-body-bit 0` | medium | `tx-a` |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_replay_probe_header(address: &str) -> String {
+        sample_report_markdown_with_schema_replay_probe(address).replace(
+            "| Opcode | Field | CLI mutation | Confidence | Evidence |",
+            "| Opcode | Field | CLI mutation | Confidence | Evidence stale |",
         )
     }
 
