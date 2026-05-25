@@ -2305,6 +2305,13 @@ fn validate_schema_corpus_membership(
                 &corpus_hashes,
                 gate_failures,
             );
+            if let Some(corpus_flow) = corpus
+                .transactions
+                .iter()
+                .find(|tx| tx.query_hash == evidence.tx_hash)
+            {
+                validate_schema_evidence_matches_corpus(evidence, corpus_flow, gate_failures);
+            }
         }
         for probe in &candidate.replay_probes {
             for evidence in &probe.evidence {
@@ -2337,6 +2344,112 @@ fn validate_schema_corpus_membership(
             }
         }
     }
+}
+
+fn validate_schema_evidence_matches_corpus(
+    evidence: &ton_stateflow::SchemaEvidence,
+    corpus_flow: &StateFlowTx,
+    gate_failures: &mut Vec<String>,
+) {
+    let tx_hash = &evidence.tx_hash;
+    validate_evidence_text_field(
+        "schema evidence inbound body hash",
+        &evidence.inbound_body_hash,
+        "corpus inbound body hash",
+        &corpus_flow.inbound.body.hash,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "schema evidence inbound body bits",
+        evidence.inbound_body_bits,
+        "corpus inbound body bits",
+        corpus_flow.inbound.body.bits,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "schema evidence inbound body refs",
+        evidence.inbound_body_refs,
+        "corpus inbound body refs",
+        corpus_flow.inbound.body.refs,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema evidence from status",
+        &evidence.from_status,
+        "corpus from status",
+        &corpus_flow.state.pre.status,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema evidence to status",
+        &evidence.to_status,
+        "corpus to status",
+        &corpus_flow.state.post.status,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "schema evidence pre data hash",
+        evidence.pre_data_hash.clone(),
+        "corpus pre data hash",
+        corpus_flow.state.pre.data_hash.clone(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "schema evidence post data hash",
+        evidence.post_data_hash.clone(),
+        "corpus post data hash",
+        corpus_flow.state.post.data_hash.clone(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "schema evidence pre code hash",
+        evidence.pre_code_hash.clone(),
+        "corpus pre code hash",
+        corpus_flow.state.pre.code_hash.clone(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        "schema evidence post code hash",
+        evidence.post_code_hash.clone(),
+        "corpus post code hash",
+        corpus_flow.state.post.code_hash.clone(),
+        tx_hash,
+        gate_failures,
+    );
+    let corpus_outbound_kinds = corpus_flow
+        .outbound
+        .iter()
+        .map(|message| message.kind.clone())
+        .collect::<Vec<_>>();
+    validate_evidence_text_field(
+        "schema evidence outbound kinds",
+        &report_kind_list(&evidence.outbound_kinds),
+        "corpus outbound kinds",
+        &report_kind_list(&corpus_outbound_kinds),
+        tx_hash,
+        gate_failures,
+    );
+    let corpus_action_kinds = corpus_flow
+        .out_actions
+        .iter()
+        .map(|action| action.kind.clone())
+        .collect::<Vec<_>>();
+    validate_evidence_text_field(
+        "schema evidence out-action kinds",
+        &report_kind_list(&evidence.out_action_kinds),
+        "corpus out-action kinds",
+        &report_kind_list(&corpus_action_kinds),
+        tx_hash,
+        gate_failures,
+    );
 }
 
 fn validate_schema_replay_probe_artifacts(
@@ -5132,7 +5245,7 @@ mod tests {
                     "examples": ["tx-a"],
                     "evidence": [{
                         "txHash": "foreign-tx",
-                        "inboundBodyHash": "body",
+                        "inboundBodyHash": "hash",
                         "inboundBodyBits": 32,
                         "inboundBodyRefs": 0,
                         "fromStatus": "active",
@@ -5177,6 +5290,62 @@ mod tests {
                 )
             }),
             "expected schema evidence membership failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["evidence"][0]["inboundBodyHash"] =
+            serde_json::json!("wrong-body-hash");
+        schema["opcodeCandidates"][0]["evidence"][0]["toStatus"] = serde_json::json!("frozen");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let report_path = temp_dir.path().join("target-a/report.md");
+        let report = fs::read_to_string(&report_path).expect("report artifact should be readable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &report.replace(
+                "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
+                "| `0x00000001` | `tx-a` | `wrong-body-hash` | 32/0 | none -> frozen | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
+            ),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema evidence inbound body hash wrong-body-hash for tx-a does not match corpus inbound body hash hash",
+                )
+            }),
+            "expected schema evidence body hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema evidence to status frozen for tx-a does not match corpus to status active",
+                )
+            }),
+            "expected schema evidence state mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -5999,7 +6168,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: report schema evidence body hash body for tx tx-a is missing",
+                    "target-a: report schema evidence body hash hash for tx tx-a is missing",
                 )
             }),
             "expected report schema evidence body failure, got {:?}",
@@ -6184,7 +6353,7 @@ mod tests {
                     "examples": ["tx-a", "tx-b"],
                     "evidence": [{
                         "txHash": "tx-a",
-                        "inboundBodyHash": "body",
+                        "inboundBodyHash": "hash",
                         "inboundBodyBits": 32,
                         "inboundBodyRefs": 0,
                         "fromStatus": "none",
@@ -6387,7 +6556,7 @@ mod tests {
                     "examples": ["tx-a", "tx-b"],
                     "evidence": [{
                         "txHash": "tx-a",
-                        "inboundBodyHash": "body",
+                        "inboundBodyHash": "hash",
                         "inboundBodyBits": 32,
                         "inboundBodyRefs": 0,
                         "fromStatus": "none",
@@ -6484,7 +6653,7 @@ mod tests {
                     "examples": ["tx-a", "tx-b"],
                     "evidence": [{
                         "txHash": "tx-a",
-                        "inboundBodyHash": "body",
+                        "inboundBodyHash": "hash",
                         "inboundBodyBits": 32,
                         "inboundBodyRefs": 0,
                         "fromStatus": "none",
@@ -7215,7 +7384,7 @@ mod tests {
                     "examples": ["tx-a", "tx-b"],
                     "evidence": [{
                         "txHash": "tx-a",
-                        "inboundBodyHash": "body",
+                        "inboundBodyHash": "hash",
                         "inboundBodyBits": 32,
                         "inboundBodyRefs": 0,
                         "fromStatus": "none",
@@ -7386,7 +7555,7 @@ mod tests {
 
     fn sample_report_markdown_with_wrong_schema_evidence(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
+            "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
             "| `0x00000001` | `tx-a` | `wrong-body` | 16/1 | active -> none | n/a | n/a | outbound | action |",
         )
     }
@@ -7426,7 +7595,7 @@ mod tests {
             ""
         };
         let schema_evidence_row = if include_schema_evidence {
-            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
+            "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
         } else {
             ""
         };
