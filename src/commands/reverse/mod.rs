@@ -3,6 +3,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use ton_retrace::Network;
@@ -70,10 +71,22 @@ pub enum ReverseCommand {
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
     },
-    #[command(about = "Replay or mutate a StateFlowTx artifact and emit a diff")]
+    #[command(about = "Replay or mutate a StateFlowTx or corpus artifact and emit a diff")]
     Replay {
-        #[arg(help = "StateFlowTx JSON produced by `acton reverse retrace`")]
+        #[arg(
+            help = "StateFlowTx JSON from `acton reverse retrace` or corpus JSON from `acton reverse collect`"
+        )]
         state_flow: PathBuf,
+        #[arg(
+            long,
+            help = "Transaction index to replay when the input is a corpus artifact"
+        )]
+        tx_index: Option<usize>,
+        #[arg(
+            long,
+            help = "Transaction hash to replay when the input is a corpus artifact"
+        )]
+        tx_hash: Option<String>,
         #[arg(
             long,
             conflicts_with = "body_boc64",
@@ -165,6 +178,8 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
         } => reverse_infer_cmd(corpus, output, pretty),
         ReverseCommand::Replay {
             state_flow,
+            tx_index,
+            tx_hash,
             flip_body_bit,
             body_boc64,
             ignore_chksig,
@@ -172,6 +187,8 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             pretty,
         } => reverse_replay_cmd(
             state_flow,
+            tx_index,
+            tx_hash,
             flip_body_bit,
             body_boc64,
             ignore_chksig,
@@ -260,6 +277,8 @@ fn reverse_infer_cmd(corpus: PathBuf, output: Option<PathBuf>, pretty: bool) -> 
 
 fn reverse_replay_cmd(
     state_flow: PathBuf,
+    tx_index: Option<usize>,
+    tx_hash: Option<String>,
     flip_body_bit: Option<u16>,
     body_boc64: Option<String>,
     ignore_chksig: bool,
@@ -268,8 +287,7 @@ fn reverse_replay_cmd(
 ) -> anyhow::Result<()> {
     let json = fs::read_to_string(&state_flow)
         .with_context(|| format!("failed to read {}", state_flow.display()))?;
-    let flow: StateFlowTx = serde_json::from_str(&json)
-        .with_context(|| format!("failed to parse {}", state_flow.display()))?;
+    let flow = parse_replay_input(&json, &state_flow, tx_index, tx_hash.as_deref())?;
     let mutation = match (flip_body_bit, body_boc64) {
         (Some(bit), None) => ReplayMutation::FlipBodyBit { bit },
         (None, Some(body_boc64)) => ReplayMutation::ReplaceBody { body_boc64 },
@@ -278,6 +296,64 @@ fn reverse_replay_cmd(
     };
     let diff = ton_stateflow::replay_state_flow_tx(&flow, mutation, ignore_chksig)?;
     write_json(&diff, output, pretty, "State-flow replay diff JSON")
+}
+
+fn parse_replay_input(
+    json: &str,
+    path: &Path,
+    tx_index: Option<usize>,
+    tx_hash: Option<&str>,
+) -> anyhow::Result<StateFlowTx> {
+    if tx_index.is_some() && tx_hash.is_some() {
+        anyhow::bail!("only one corpus transaction selector can be provided");
+    }
+
+    let value: serde_json::Value = serde_json::from_str(json)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if is_corpus_json(&value) {
+        let corpus: StateFlowCorpus = serde_json::from_value(value)
+            .with_context(|| format!("failed to parse corpus {}", path.display()))?;
+        if let Some(tx_hash) = tx_hash {
+            return corpus
+                .transactions
+                .into_iter()
+                .find(|flow| flow.query_hash == tx_hash)
+                .with_context(|| {
+                    format!(
+                        "corpus transaction hash {tx_hash:?} was not found in {}",
+                        path.display()
+                    )
+                });
+        }
+
+        let tx_index = tx_index.unwrap_or(0);
+        let len = corpus.transactions.len();
+        return corpus
+            .transactions
+            .into_iter()
+            .nth(tx_index)
+            .with_context(|| {
+                format!(
+                    "corpus transaction index {tx_index} out of range for {} transaction(s) in {}",
+                    len,
+                    path.display()
+                )
+            });
+    }
+
+    if tx_index.is_some() || tx_hash.is_some() {
+        anyhow::bail!("corpus transaction selectors require a corpus replay input");
+    }
+    serde_json::from_value::<StateFlowTx>(value)
+        .with_context(|| format!("failed to parse StateFlowTx {}", path.display()))
+}
+
+fn is_corpus_json(value: &serde_json::Value) -> bool {
+    value
+        .get("transactions")
+        .and_then(serde_json::Value::as_array)
+        .is_some()
+        && value.get("opcodeSummary").is_some()
 }
 
 fn reverse_report_cmd(
@@ -657,6 +733,8 @@ fn safe_path_segment(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     #[test]
     fn smoke_manifest_deserializes_checked_in_targets() {
         let manifest = super::SmokeManifest::from_json(include_str!(
@@ -706,6 +784,38 @@ mod tests {
         summary.ensure_passes_gate().unwrap();
     }
 
+    #[test]
+    fn replay_input_selects_transaction_from_corpus_by_index() {
+        let corpus = sample_replay_corpus_json();
+
+        let flow = super::parse_replay_input(&corpus, Path::new("corpus.json"), Some(1), None)
+            .expect("corpus replay input should parse");
+
+        assert_eq!(flow.query_hash, "tx-b");
+    }
+
+    #[test]
+    fn replay_input_selects_transaction_from_corpus_by_hash() {
+        let corpus = sample_replay_corpus_json();
+
+        let flow = super::parse_replay_input(&corpus, Path::new("corpus.json"), None, Some("tx-b"))
+            .expect("corpus replay input should parse");
+
+        assert_eq!(flow.query_hash, "tx-b");
+    }
+
+    #[test]
+    fn replay_input_reports_missing_corpus_transaction() {
+        let corpus = sample_replay_corpus_json();
+
+        let err = super::parse_replay_input(&corpus, Path::new("corpus.json"), Some(9), None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("corpus transaction index 9 out of range"));
+        assert!(err.contains("2 transaction(s)"));
+    }
+
     fn sample_smoke_summary() -> super::SmokeRunSummary {
         super::SmokeRunSummary {
             schema_version: 1,
@@ -731,5 +841,98 @@ mod tests {
                 report: "out/target-a/report.md".to_owned(),
             }],
         }
+    }
+
+    fn sample_replay_corpus_json() -> String {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "network": "mainnet",
+            "address": "addr",
+            "requestedLimit": 2,
+            "sourceTxCount": 2,
+            "retracedCount": 2,
+            "failureCount": 0,
+            "opcodeSummary": [],
+            "transactions": [
+                sample_state_flow_json("tx-a"),
+                sample_state_flow_json("tx-b")
+            ],
+            "failures": []
+        })
+        .to_string()
+    }
+
+    fn sample_state_flow_json(query_hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "network": "mainnet",
+            "queryHash": query_hash,
+            "transaction": {
+                "lt": 42,
+                "utime": 1,
+                "account": "addr",
+                "stateUpdateHashOk": true,
+                "transactionBoc64": "tx"
+            },
+            "replay": {
+                "mcSeqno": 7,
+                "randSeedHex": "00",
+                "replayedPrevTxCount": 0,
+                "blockConfigBoc64": "config",
+                "libsBoc64": "libs"
+            },
+            "state": {
+                "pre": sample_snapshot_json("pre", "none"),
+                "post": sample_snapshot_json("post", "active")
+            },
+            "inbound": {
+                "direction": "inbound",
+                "index": null,
+                "kind": "internal",
+                "src": "src",
+                "dst": "dst",
+                "valueNanotons": "1",
+                "bounced": false,
+                "bounce": true,
+                "opcode": "0x00000001",
+                "messageBoc64": "msg",
+                "body": {"boc64": "body", "hash": "hash", "bits": 32, "refs": 0}
+            },
+            "outbound": [],
+            "compute": {
+                "skipped": false,
+                "success": true,
+                "exitCode": 0,
+                "vmSteps": 1,
+                "gasUsed": 2,
+                "gasFees": 3
+            },
+            "money": {
+                "balanceBefore": 10,
+                "sentTotal": 1,
+                "totalFees": 2,
+                "balanceAfter": 7
+            },
+            "c5": null,
+            "outActions": [],
+            "vmTrace": {"lineCount": 0, "text": ""},
+            "executorTrace": {"lineCount": 0, "text": ""}
+        })
+    }
+
+    fn sample_snapshot_json(boc64: &str, status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "shardAccountBoc64": boc64,
+            "lastTransLt": 0,
+            "lastTransHash": "00",
+            "accountAddress": null,
+            "status": status,
+            "balanceNanotons": "0",
+            "codeHash": null,
+            "dataHash": null,
+            "codeCell": null,
+            "dataCell": null,
+            "frozenHash": null
+        })
     }
 }

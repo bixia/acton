@@ -403,8 +403,10 @@ fn test_acton_reverse_replay_help() {
 
     let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
     for expected in [
-        "Replay or mutate a StateFlowTx artifact and emit a diff",
+        "Replay or mutate a StateFlowTx or corpus artifact and emit a diff",
         "Usage: acton reverse replay",
+        "--tx-index <TX_INDEX>",
+        "--tx-hash <TX_HASH>",
         "--flip-body-bit <FLIP_BODY_BIT>",
         "--body-boc64 <BODY_BOC64>",
         "--ignore-chksig",
