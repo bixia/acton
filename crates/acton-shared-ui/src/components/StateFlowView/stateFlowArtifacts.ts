@@ -880,6 +880,11 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
   const opcodeCandidateRows = reportOpcodeCandidateRows(report)
   const schemaEvidenceRows = reportSchemaEvidenceRows(report)
+  const messageBodyFieldRows = reportMessageBodyFieldRows(report)
+  const replayProbeRows = reportReplayProbeRows(report)
+  const storageFieldRows = reportStorageFieldRows(report)
+  const outboundEffectRows = reportOutboundEffectRows(report)
+  const stateMachineRows = reportStateMachineRows(report)
   const replayDiffRows = reportReplayDiffRows(report)
   const unknownFieldRows = reportUnknownFieldRows(report)
   const riskPointRows = reportRiskPointRows(report)
@@ -911,6 +916,46 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Schema Evidence",
               rows: schemaEvidenceRows,
+            },
+          ]
+        : []),
+      ...(messageBodyFieldRows.length > 0
+        ? [
+            {
+              title: "Message Body Fields",
+              rows: messageBodyFieldRows,
+            },
+          ]
+        : []),
+      ...(replayProbeRows.length > 0
+        ? [
+            {
+              title: "Replay Probes",
+              rows: replayProbeRows,
+            },
+          ]
+        : []),
+      ...(storageFieldRows.length > 0
+        ? [
+            {
+              title: "Storage Fields",
+              rows: storageFieldRows,
+            },
+          ]
+        : []),
+      ...(outboundEffectRows.length > 0
+        ? [
+            {
+              title: "Outbound Effects",
+              rows: outboundEffectRows,
+            },
+          ]
+        : []),
+      ...(stateMachineRows.length > 0
+        ? [
+            {
+              title: "State Machine",
+              rows: stateMachineRows,
             },
           ]
         : []),
@@ -1087,6 +1132,85 @@ function reportSchemaEvidenceRows(report: StateFlowReport): readonly SummaryRow[
   }))
 }
 
+function reportMessageBodyFieldRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Message Body Fields").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Field"]),
+    value: rowValue(row, "Kind") || "n/a",
+    detail: [
+      tableValueLabel("offset", rowValue(row, "Offset")),
+      tableValueLabel("bits", rowValue(row, "Bits")),
+      tableValueLabel("refs", rowValue(row, "Refs")),
+      tableValueLabel("sample", rowValue(row, "Samples")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportReplayProbeRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Replay Probes").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Field"]),
+    value: rowValue(row, "CLI mutation") || "n/a",
+    detail: [
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportStorageFieldRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Storage Fields").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Field"]),
+    value: tableLocationLabel(rowValue(row, "Cell"), rowValue(row, "Offset")),
+    detail: [
+      tableValueLabel("bits", rowValue(row, "Bits")),
+      tableValueLabel("refs", rowValue(row, "Refs")),
+      tableValueLabel("kind", rowValue(row, "Kind")),
+      tableValueLabel("sample", rowValue(row, "Samples")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportOutboundEffectRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Outbound Effects").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Source", "Kind"]),
+    value: tableCountLabel(rowValue(row, "Count"), "effect"),
+    detail: [
+      tableValueLabel("value", rowValue(row, "Value")),
+      tableValueLabel("modes", rowValue(row, "Modes")),
+      tableValueLabel("destinations", rowValue(row, "Destinations")),
+      tableValueLabel("body", rowValue(row, "Body")),
+      tableValueLabel("code", rowValue(row, "Code")),
+      tableValueLabel("libraries", rowValue(row, "Libraries")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportStateMachineRows(report: StateFlowReport): readonly SummaryRow[] {
+  const section = report.sections.find(section => section.title === "State Machine")
+  if (!section) {
+    return []
+  }
+
+  return section.body
+    .split("\n")
+    .map(line => line.match(/^\s*(.+?)\s+-->\s+(.+?):\s*(.+)$/))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map(match => ({
+      label: `${stripMarkdownInline(match[1] ?? "")} -> ${stripMarkdownInline(match[2] ?? "")}`,
+      value: stripMarkdownInline(match[3] ?? ""),
+    }))
+}
+
 function reportReplayDiffRows(report: StateFlowReport): readonly SummaryRow[] {
   return reportTableRows(report, "Replay Diffs").map(row => ({
     label: rowValue(row, "Source tx") || "n/a",
@@ -1191,6 +1315,28 @@ function isMarkdownTableDataRow(values: readonly string[]): boolean {
 
 function rowValue(row: ReadonlyMap<string, string>, key: string): string {
   return row.get(key)?.trim() ?? ""
+}
+
+function tableRowLabel(row: ReadonlyMap<string, string>, keys: readonly string[]): string {
+  return keys
+    .map(key => rowValue(row, key))
+    .filter(value => value.length > 0)
+    .join(" ")
+}
+
+function tableLocationLabel(cell: string, offset: string): string {
+  if (cell.length > 0 && offset.length > 0) {
+    return `${cell} @ ${offset}`
+  }
+  return cell || offset || "n/a"
+}
+
+function tableCountLabel(count: string, singular: string): string {
+  const value = Number(count)
+  if (Number.isFinite(value)) {
+    return `${count} ${plural(value, singular)}`
+  }
+  return count || `0 ${plural(0, singular)}`
 }
 
 function tableValueLabel(label: string, value: string): string | undefined {

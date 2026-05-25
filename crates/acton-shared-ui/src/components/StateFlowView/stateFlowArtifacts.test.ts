@@ -299,6 +299,32 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | --- | ---: | --- |
 | \`0x00000001\` | \`tx-hash\` | \`body-hash\` | 32/0 | active -> frozen |
 
+## Message Body Fields
+| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |
+| --- | --- | ---: | --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`query_id\` | 32 | 64..64 | 0..0 | uint64 | \`0x7\` | high |
+
+## Replay Probes
+| Opcode | Field | CLI mutation | Confidence | Evidence |
+| --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`query_id\` | \`--set-body-uint 32:64:0x6\` | high | \`tx-hash\` |
+
+## Storage Fields
+| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |
+| --- | --- | --- | ---: | --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | \`0xdeadbeef\` | medium |
+
+## Outbound Effects
+| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |
+| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |
+| \`0x00000001\` | outbound | internal | 1 | 11 | none | \`dst\` | 40/1 | n/a | none | \`tx-hash\` |
+
+## State Machine
+\`\`\`mermaid
+stateDiagram-v2
+    active --> frozen: 0x00000001 (1)
+\`\`\`
+
 ## Replay Diffs
 | Source tx | Mutation | Accepted |
 | --- | --- | --- |
@@ -468,7 +494,7 @@ assert(
 const reportView = summarizeStateFlowArtifact(parseStateFlowArtifact(reportMarkdown))
 assert(reportView.title === "TON State Flow Reverse Report", "expected report summary title")
 assert(
-  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "6"),
+  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "11"),
   "expected report summary section count",
 )
 assert(
@@ -489,6 +515,39 @@ assert(
     ?.rows.some(row => row.label === "0x00000001 tx-hash" && row.value === "active -> frozen") ===
     true,
   "expected report schema evidence table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Message Body Fields")
+    ?.rows.some(row => row.label === "0x00000001 query_id" && row.value === "uint64") === true,
+  "expected report message body field table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Replay Probes")
+    ?.rows.some(
+      row => row.label === "0x00000001 query_id" && row.value === "--set-body-uint 32:64:0x6",
+    ) === true,
+  "expected report replay probe table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Storage Fields")
+    ?.rows.some(row => row.label === "0x00000001 data_word_0" && row.value === "data @ 0") === true,
+  "expected report storage field table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Outbound Effects")
+    ?.rows.some(row => row.label === "0x00000001 outbound internal" && row.value === "1 effect") ===
+    true,
+  "expected report outbound effect table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "State Machine")
+    ?.rows.some(row => row.label === "active -> frozen" && row.value === "0x00000001 (1)") === true,
+  "expected report state machine rows",
 )
 assert(
   reportView.sections

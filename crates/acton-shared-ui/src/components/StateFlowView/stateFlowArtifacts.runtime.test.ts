@@ -414,6 +414,32 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | --- | ---: | --- |
 | \`0x00000001\` | \`tx-a\` | \`body-a\` | 32/0 | active -> frozen |
 
+## Message Body Fields
+| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |
+| --- | --- | ---: | --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`query_id\` | 32 | 64..64 | 0..0 | uint64 | \`0x7\` | high |
+
+## Replay Probes
+| Opcode | Field | CLI mutation | Confidence | Evidence |
+| --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`query_id\` | \`--set-body-uint 32:64:0x6\` | high | \`tx-a\` |
+
+## Storage Fields
+| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |
+| --- | --- | --- | ---: | --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | \`0xdeadbeef\` | medium |
+
+## Outbound Effects
+| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |
+| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |
+| \`0x00000001\` | outbound | internal | 1 | 11 | none | \`dst\` | 40/1 | n/a | none | \`tx-a\` |
+
+## State Machine
+\`\`\`mermaid
+stateDiagram-v2
+    active --> frozen: 0x00000001 (2)
+\`\`\`
+
 ## Replay Diffs
 | Source tx | Mutation | Accepted |
 | --- | --- | --- |
@@ -701,7 +727,7 @@ assert(reportArtifact.kind === "report", "expected report markdown artifact kind
 const reportSummary = summarizeStateFlowArtifact(reportArtifact)
 assert(reportSummary.title === "TON State Flow Reverse Report", "expected report title")
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "6"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "11"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -736,6 +762,38 @@ assert(
   reportSchemaEvidenceRows[0]?.detail?.includes("body body-a 32/0") === true,
   "expected report schema evidence body detail",
 )
+const reportMessageBodyRows = sectionRows(reportSummary, "Message Body Fields")
+assert(reportMessageBodyRows[0]?.label === "0x00000001 query_id", "expected report body field row")
+assert(reportMessageBodyRows[0]?.value === "uint64", "expected report body field kind")
+assert(
+  reportMessageBodyRows[0]?.detail?.includes("confidence high") === true,
+  "expected report body field confidence detail",
+)
+const reportReplayProbeRows = sectionRows(reportSummary, "Replay Probes")
+assert(reportReplayProbeRows[0]?.label === "0x00000001 query_id", "expected replay probe row")
+assert(
+  reportReplayProbeRows[0]?.value === "--set-body-uint 32:64:0x6",
+  "expected replay probe mutation",
+)
+const reportStorageRows = sectionRows(reportSummary, "Storage Fields")
+assert(reportStorageRows[0]?.label === "0x00000001 data_word_0", "expected storage field row")
+assert(reportStorageRows[0]?.value === "data @ 0", "expected storage field location")
+assert(
+  reportStorageRows[0]?.detail?.includes("sample 0xdeadbeef") === true,
+  "expected storage field sample detail",
+)
+const reportOutboundRows = sectionRows(reportSummary, "Outbound Effects")
+assert(
+  reportOutboundRows[0]?.label === "0x00000001 outbound internal",
+  "expected outbound effect row",
+)
+assert(reportOutboundRows[0]?.value === "1 effect", "expected outbound effect count")
+const reportStateMachineRows = sectionRows(reportSummary, "State Machine")
+assert(
+  reportStateMachineRows[0]?.label === "active -> frozen",
+  "expected report state transition row",
+)
+assert(reportStateMachineRows[0]?.value === "0x00000001 (2)", "expected report state transition")
 const reportReplayDiffRows = sectionRows(reportSummary, "Replay Diffs")
 assert(reportReplayDiffRows[0]?.label === "tx-a", "expected report replay tx row")
 assert(reportReplayDiffRows[0]?.value === "flip body bit 32", "expected report replay mutation")
