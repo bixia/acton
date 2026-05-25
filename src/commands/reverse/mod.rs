@@ -2751,6 +2751,21 @@ fn validate_report_schema_deliverables(
         }
     }
 
+    if let Some(section) = markdown_section(markdown, "## State Machine Evidence") {
+        for edge in &schema.state_machine.edges {
+            let edge_row = report_state_machine_evidence_row(section, edge);
+            if edge_row.is_none() {
+                gate_failures.push(format!(
+                    "report state machine evidence edge {} is missing",
+                    report_state_machine_evidence_label(edge)
+                ));
+            }
+            if let Some(row) = edge_row {
+                validate_report_state_machine_evidence_values(edge, &row, gate_failures);
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## Risk Points") {
         for signal in &schema.audit_signals {
             let risk_line = report_risk_line(section, signal);
@@ -2762,6 +2777,65 @@ fn validate_report_schema_deliverables(
             }
         }
     }
+}
+
+fn report_state_machine_evidence_row(
+    section: &str,
+    edge: &ton_stateflow::StateMachineEdge,
+) -> Option<Vec<String>> {
+    let opcode = report_opcode_label(edge.opcode.as_deref());
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == &edge.from_status)
+            && cells.get(1).is_some_and(|cell| cell == &edge.to_status)
+            && cells.get(2).is_some_and(|cell| cell == &opcode))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_state_machine_evidence_values(
+    edge: &ton_stateflow::StateMachineEdge,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_state_machine_evidence_cell(
+        "count",
+        edge.count.to_string(),
+        edge,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_state_machine_evidence_cell(
+        "evidence",
+        report_sample_list(&edge.examples),
+        edge,
+        row.get(4),
+        gate_failures,
+    );
+}
+
+fn validate_report_state_machine_evidence_cell(
+    label: &str,
+    expected: String,
+    edge: &ton_stateflow::StateMachineEdge,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report state machine evidence {label} {expected} for {} is missing",
+            report_state_machine_evidence_label(edge)
+        ));
+    }
+}
+
+fn report_state_machine_evidence_label(edge: &ton_stateflow::StateMachineEdge) -> String {
+    format!(
+        "{} -> {} {}",
+        edge.from_status,
+        edge.to_status,
+        report_opcode_label(edge.opcode.as_deref())
+    )
 }
 
 fn validate_report_effect_row(
@@ -4757,6 +4831,45 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_state_machine_evidence_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_state_machine_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report state machine evidence count 2 for none -> active 0x00000001 is missing",
+                )
+            }),
+            "expected report state machine evidence count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report state machine evidence evidence tx-a, tx-b for none -> active 0x00000001 is missing",
+                )
+            }),
+            "expected report state machine evidence tx failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_risk_evidence_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6094,6 +6207,13 @@ mod tests {
         )
     }
 
+    fn sample_report_markdown_with_wrong_state_machine_evidence(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |",
+            "| none | active | `0x00000001` | 9 | `tx-a` |",
+        )
+    }
+
     fn sample_report_markdown_with_wrong_schema_evidence(address: &str) -> String {
         sample_report_markdown(address).replace(
             "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
@@ -6135,6 +6255,11 @@ mod tests {
         };
         let state_edge = if include_schema_summary_rows {
             "    none --> active: 0x00000001 (2)\n"
+        } else {
+            ""
+        };
+        let state_machine_evidence_row = if include_schema_summary_rows {
+            "| none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |\n"
         } else {
             ""
         };
@@ -6180,6 +6305,11 @@ mod tests {
              stateDiagram-v2\n\
              {state_edge}\
              ```\n\
+             \n\
+             ## State Machine Evidence\n\
+             | From | To | Opcode | Count | Evidence |\n\
+             | --- | --- | --- | ---: | --- |\n\
+             {state_machine_evidence_row}\
              \n\
              ## Unknown Fields\n\
              - `0x00000001`:\n\

@@ -835,6 +835,27 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## State Machine Evidence").ok();
+    if schema.state_machine.edges.is_empty() {
+        writeln!(report, "- No state-machine edge evidence was inferred.").ok();
+    } else {
+        writeln!(report, "| From | To | Opcode | Count | Evidence |").ok();
+        writeln!(report, "| --- | --- | --- | ---: | --- |").ok();
+        for edge in &schema.state_machine.edges {
+            writeln!(
+                report,
+                "| {} | {} | {} | {} | {} |",
+                markdown_escape(&edge.from_status),
+                markdown_escape(&edge.to_status),
+                markdown_code_opt(edge.opcode.as_deref()),
+                edge.count,
+                markdown_code_list(&edge.examples),
+            )
+            .ok();
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## Unknown Fields").ok();
     if schema.opcode_candidates.is_empty() {
         writeln!(report, "- No opcode candidates were inferred.").ok();
@@ -3146,6 +3167,32 @@ mod tests {
         assert!(report.contains("| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `data` | `<none>` -> `code` | none | none |"));
         assert!(report.contains("## Unknown Fields"));
         assert!(report.contains("TL-B"));
+    }
+
+    #[test]
+    fn report_renderer_includes_state_machine_edge_evidence() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow("tx-a", Some("0x00000001")),
+                sample_flow("tx-b", Some("0x00000001")),
+            ],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains("## State Machine Evidence"));
+        assert!(report.contains("| From | To | Opcode | Count | Evidence |"));
+        assert!(report.contains("| none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |"));
     }
 
     #[test]
