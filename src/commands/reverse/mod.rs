@@ -1981,6 +1981,7 @@ fn validate_manifest_target_content_matches_summary(
             target.failure_count,
             gate_failures,
         );
+        validate_corpus_internal_counts(corpus, gate_failures);
     }
     validate_manifest_transaction_membership(
         manifest_path,
@@ -2017,6 +2018,30 @@ fn validate_manifest_target_content_matches_summary(
             gate_failures,
         );
     }
+}
+
+fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
+    validate_target_usize_field(
+        "corpus retraced count",
+        corpus.retraced_count,
+        "transaction list length",
+        corpus.transactions.len(),
+        gate_failures,
+    );
+    validate_target_usize_field(
+        "corpus failure count",
+        corpus.failure_count,
+        "failure list length",
+        corpus.failures.len(),
+        gate_failures,
+    );
+    validate_target_usize_field(
+        "corpus source transaction count",
+        corpus.source_tx_count,
+        "retraced plus failure count",
+        corpus.retraced_count + corpus.failure_count,
+        gate_failures,
+    );
 }
 
 fn validate_manifest_transaction_membership(
@@ -2829,6 +2854,48 @@ mod tests {
                 )
             }),
             "expected schema content mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_count_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "requestedLimit": 2,
+                "sourceTxCount": 2,
+                "retracedCount": 2,
+                "failureCount": 0,
+                "opcodeSummary": [],
+                "transactions": [sample_state_flow_json("tx-a")],
+                "failures": []
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: corpus retraced count 2 does not match transaction list length 1",
+                )
+            }),
+            "expected corpus count mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
