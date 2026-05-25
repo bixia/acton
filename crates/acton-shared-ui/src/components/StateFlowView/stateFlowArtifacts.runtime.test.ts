@@ -32,6 +32,32 @@ const schema = {
         minRefs: 0,
         maxRefs: 1,
         bodyHashes: ["body-a", "body-b"],
+        fieldCandidates: [
+          {
+            name: "opcode",
+            bitOffset: 0,
+            minBits: 32,
+            maxBits: 32,
+            minRefs: 0,
+            maxRefs: 0,
+            kind: "uint32",
+            presentCount: 2,
+            valueSamples: ["0x00000001"],
+            confidence: "high",
+          },
+          {
+            name: "query_id",
+            bitOffset: 32,
+            minBits: 64,
+            maxBits: 64,
+            minRefs: 0,
+            maxRefs: 0,
+            kind: "uint64",
+            presentCount: 2,
+            valueSamples: ["0x0000000000000007", "0x0000000000000008"],
+            confidence: "high",
+          },
+        ],
       },
       storage: {
         balanceDeltaMin: -2,
@@ -101,6 +127,10 @@ assert(
   "expected candidate summary to include evidence row count",
 )
 assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("2 body fields") === true,
+  "expected candidate summary to include body field count",
+)
+assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("data 16/1") === true,
   "expected candidate summary to include storage data shape",
 )
@@ -114,6 +144,13 @@ assert(stateMachineRows[0]?.value === "active -> frozen", "expected state transi
 assert(
   stateMachineRows[0]?.detail === "2 observed transitions",
   "expected transition evidence count",
+)
+const bodyFieldRows = sectionRows(schemaSummary, "Message Body Fields")
+assert(bodyFieldRows[1]?.label === "0x00000001 query_id", "expected query_id body field row")
+assert(bodyFieldRows[1]?.value === "uint64 @32", "expected query_id field offset")
+assert(
+  bodyFieldRows[1]?.detail?.includes("0x0000000000000007") === true,
+  "expected query_id samples in body field row",
 )
 
 const schemaRiskRows = sectionRows(schemaSummary, "Risk Points")

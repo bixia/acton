@@ -207,6 +207,7 @@ export interface OpcodeSchemaCandidate {
     readonly minRefs: number
     readonly maxRefs: number
     readonly bodyHashes: readonly string[]
+    readonly fieldCandidates?: readonly BodyFieldCandidate[] | null
   }
   readonly storage?: StorageShapeCandidate | null
   readonly stateTransitions: readonly StateTransitionCandidate[]
@@ -214,6 +215,19 @@ export interface OpcodeSchemaCandidate {
   readonly outActions: readonly EffectCandidate[]
   readonly confidence: string
   readonly unknownFields: readonly string[]
+}
+
+export interface BodyFieldCandidate {
+  readonly name: string
+  readonly bitOffset: number
+  readonly minBits: number
+  readonly maxBits: number
+  readonly minRefs: number
+  readonly maxRefs: number
+  readonly kind: string
+  readonly presentCount: number
+  readonly valueSamples: readonly string[]
+  readonly confidence: string
 }
 
 export interface SchemaEvidence {
@@ -401,6 +415,7 @@ function summarizeCorpus(corpus: StateFlowCorpus): ArtifactSummary {
 function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const stateEdges = stateMachineEdges(schema)
   const auditSignals = schemaAuditSignals(schema)
+  const bodyFieldRows = schemaBodyFieldRows(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -408,6 +423,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Network", value: schema.network},
       {label: "Transactions", value: schema.transactionCount.toString()},
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
+      {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "State Edges", value: stateEdges.length.toString()},
       {label: "Audit Signals", value: auditSignals.length.toString()},
     ],
@@ -422,10 +438,19 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             `body ${formatRange(candidate.inboundBody.minBits, candidate.inboundBody.maxBits)} bits`,
             `storage ${storageLabel(candidate.storage)}`,
             `${candidateEvidenceCount(candidate)} ${plural(candidateEvidenceCount(candidate), "evidence row")}`,
+            `${candidateBodyFieldCount(candidate)} ${plural(candidateBodyFieldCount(candidate), "body field")}`,
             `${candidate.unknownFields.length} unknowns`,
           ].join(" · "),
         })),
       },
+      ...(bodyFieldRows.length > 0
+        ? [
+            {
+              title: "Message Body Fields",
+              rows: bodyFieldRows,
+            },
+          ]
+        : []),
       ...(stateEdges.length > 0
         ? [
             {
@@ -495,6 +520,10 @@ function formatRange(min: number, max: number): string {
   return min === max ? min.toString() : `${min}-${max}`
 }
 
+function formatFieldRange(min: number, max: number): string {
+  return `${min}..${max}`
+}
+
 function storageLabel(storage: StorageShapeCandidate | null | undefined): string {
   if (!storage) {
     return "n/a"
@@ -522,6 +551,29 @@ function formatCellShapeRange(shape: CellShapeRange): string {
 
 function candidateEvidenceCount(candidate: OpcodeSchemaCandidate): number {
   return candidate.evidence?.length ?? candidate.examples.length
+}
+
+function candidateBodyFieldCount(candidate: OpcodeSchemaCandidate): number {
+  return candidate.inboundBody.fieldCandidates?.length ?? 0
+}
+
+function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const opcode = candidate.opcode ?? "<none>"
+    return (candidate.inboundBody.fieldCandidates ?? []).map(field => ({
+      label: `${opcode} ${field.name}`,
+      value: `${field.kind} @${field.bitOffset}`,
+      detail: [
+        `${formatFieldRange(field.minBits, field.maxBits)} bits`,
+        `${formatFieldRange(field.minRefs, field.maxRefs)} refs`,
+        `${field.presentCount} ${plural(field.presentCount, "observation")}`,
+        field.confidence,
+        field.valueSamples.join(", "),
+      ]
+        .filter(value => value.length > 0)
+        .join(" · "),
+    }))
+  })
 }
 
 function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachineEdge[] {

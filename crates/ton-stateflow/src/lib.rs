@@ -229,6 +229,23 @@ pub struct BodyShapeCandidate {
     pub min_refs: u8,
     pub max_refs: u8,
     pub body_hashes: Vec<String>,
+    #[serde(default)]
+    pub field_candidates: Vec<BodyFieldCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyFieldCandidate {
+    pub name: String,
+    pub bit_offset: u16,
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
+    pub kind: String,
+    pub present_count: usize,
+    pub value_samples: Vec<String>,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,6 +628,40 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## Message Body Fields").ok();
+    let mut body_field_rows = 0;
+    for candidate in &schema.opcode_candidates {
+        body_field_rows += candidate.inbound_body.field_candidates.len();
+    }
+    if body_field_rows == 0 {
+        writeln!(report, "- No message body field candidates were inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |"
+        )
+        .ok();
+        writeln!(report, "| --- | --- | ---: | --- | --- | --- | --- | --- |").ok();
+        for candidate in &schema.opcode_candidates {
+            for field in &candidate.inbound_body.field_candidates {
+                writeln!(
+                    report,
+                    "| {} | `{}` | {} | {} | {} | {} | {} | {} |",
+                    markdown_code_opt(candidate.opcode.as_deref()),
+                    markdown_escape(&field.name),
+                    field.bit_offset,
+                    format_field_range(field.min_bits, field.max_bits),
+                    format_field_range(field.min_refs, field.max_refs),
+                    markdown_escape(&field.kind),
+                    markdown_code_list(&field.value_samples),
+                    markdown_escape(&field.confidence),
+                )
+                .ok();
+            }
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## State Machine").ok();
     let state_machine = render_state_machine(schema);
     if state_machine.is_empty() {
@@ -976,6 +1027,13 @@ where
     }
 }
 
+fn format_field_range<T>(min: T, max: T) -> String
+where
+    T: Copy + std::fmt::Display,
+{
+    format!("{min}..{max}")
+}
+
 fn format_state_transitions(transitions: &[StateTransitionCandidate]) -> String {
     if transitions.is_empty() {
         return "none".to_owned();
@@ -1060,6 +1118,17 @@ fn format_optional_bool(value: Option<bool>) -> String {
 
 fn markdown_code_opt(value: Option<&str>) -> String {
     value.map_or_else(|| "`<none>`".to_owned(), |value| format!("`{value}`"))
+}
+
+fn markdown_code_list(values: &[String]) -> String {
+    if values.is_empty() {
+        return "`<none>`".to_owned();
+    }
+    values
+        .iter()
+        .map(|value| format!("`{}`", markdown_escape(value)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn markdown_escape(value: &str) -> String {
@@ -1416,6 +1485,7 @@ fn inbound_body_shape(transactions: &[&StateFlowTx]) -> BodyShapeCandidate {
     let mut min_refs = u8::MAX;
     let mut max_refs = 0;
     let mut body_hashes = BTreeSet::new();
+    let field_candidates = inbound_body_field_candidates(transactions);
     for tx in transactions {
         min_bits = min_bits.min(tx.inbound.body.bits);
         max_bits = max_bits.max(tx.inbound.body.bits);
@@ -1430,6 +1500,141 @@ fn inbound_body_shape(transactions: &[&StateFlowTx]) -> BodyShapeCandidate {
         min_refs: if min_refs == u8::MAX { 0 } else { min_refs },
         max_refs,
         body_hashes: body_hashes.into_iter().collect(),
+        field_candidates,
+    }
+}
+
+fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyFieldCandidate> {
+    if transactions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    let mut opcode_samples = BTreeSet::new();
+    let mut opcode_present_count = 0;
+    let mut query_id_samples = BTreeSet::new();
+    let mut query_id_present_count = 0;
+    let mut tail_min_bits = u16::MAX;
+    let mut tail_max_bits = 0;
+    let mut tail_min_refs = u8::MAX;
+    let mut tail_max_refs = 0;
+    let mut tail_present_count = 0;
+    let mut tail_samples = BTreeSet::new();
+
+    for tx in transactions {
+        if tx.inbound.body.bits >= 32 {
+            let opcode = tx
+                .inbound
+                .opcode
+                .clone()
+                .or_else(|| read_body_u32_at(&tx.inbound.body.boc64, 0).map(format_u32_hex));
+            if let Some(opcode) = opcode {
+                opcode_present_count += 1;
+                opcode_samples.insert(opcode);
+            }
+        }
+
+        if tx.inbound.body.bits >= 96 {
+            if let Some(query_id) = read_body_u64_at(&tx.inbound.body.boc64, 32) {
+                query_id_present_count += 1;
+                query_id_samples.insert(format_u64_hex(query_id));
+            }
+
+            if tx.inbound.body.bits > 96 || tx.inbound.body.refs > 0 {
+                let tail_bits = tx.inbound.body.bits.saturating_sub(96);
+                tail_min_bits = tail_min_bits.min(tail_bits);
+                tail_max_bits = tail_max_bits.max(tail_bits);
+                tail_min_refs = tail_min_refs.min(tx.inbound.body.refs);
+                tail_max_refs = tail_max_refs.max(tx.inbound.body.refs);
+                tail_present_count += 1;
+                tail_samples.insert(format!("{tail_bits} bits, {} refs", tx.inbound.body.refs));
+            }
+        }
+    }
+
+    if opcode_present_count > 0 {
+        candidates.push(BodyFieldCandidate {
+            name: "opcode".to_owned(),
+            bit_offset: 0,
+            min_bits: 32,
+            max_bits: 32,
+            min_refs: 0,
+            max_refs: 0,
+            kind: "uint32".to_owned(),
+            present_count: opcode_present_count,
+            value_samples: limited_samples(opcode_samples),
+            confidence: body_field_confidence(opcode_present_count, transactions.len()),
+        });
+    }
+
+    if query_id_present_count > 0 {
+        candidates.push(BodyFieldCandidate {
+            name: "query_id".to_owned(),
+            bit_offset: 32,
+            min_bits: 64,
+            max_bits: 64,
+            min_refs: 0,
+            max_refs: 0,
+            kind: "uint64".to_owned(),
+            present_count: query_id_present_count,
+            value_samples: limited_samples(query_id_samples),
+            confidence: body_field_confidence(query_id_present_count, transactions.len()),
+        });
+    }
+
+    if tail_present_count > 0 {
+        candidates.push(BodyFieldCandidate {
+            name: "payload_tail".to_owned(),
+            bit_offset: 96,
+            min_bits: tail_min_bits,
+            max_bits: tail_max_bits,
+            min_refs: if tail_min_refs == u8::MAX {
+                0
+            } else {
+                tail_min_refs
+            },
+            max_refs: tail_max_refs,
+            kind: "raw".to_owned(),
+            present_count: tail_present_count,
+            value_samples: limited_samples(tail_samples),
+            confidence: "low".to_owned(),
+        });
+    }
+
+    candidates
+}
+
+fn read_body_u32_at(boc64: &str, bit_offset: u16) -> Option<u32> {
+    let cell = Boc::decode_base64(boc64).ok()?;
+    let mut slice = cell.as_slice_allow_exotic();
+    slice.skip_first(bit_offset, 0).ok()?;
+    slice.load_u32().ok()
+}
+
+fn read_body_u64_at(boc64: &str, bit_offset: u16) -> Option<u64> {
+    let cell = Boc::decode_base64(boc64).ok()?;
+    let mut slice = cell.as_slice_allow_exotic();
+    slice.skip_first(bit_offset, 0).ok()?;
+    slice.load_u64().ok()
+}
+
+fn format_u32_hex(value: u32) -> String {
+    format!("0x{value:08x}")
+}
+
+fn format_u64_hex(value: u64) -> String {
+    format!("0x{value:016x}")
+}
+
+fn limited_samples(values: BTreeSet<String>) -> Vec<String> {
+    values.into_iter().take(5).collect()
+}
+
+fn body_field_confidence(present_count: usize, transaction_count: usize) -> String {
+    if present_count == transaction_count {
+        "high".to_owned()
+    } else {
+        "medium".to_owned()
     }
 }
 
@@ -2084,6 +2289,63 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_reports_inbound_body_field_candidates() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_body_fields("tx-a", 0x0000_0001, 7, 0xaa),
+                sample_flow_with_body_fields("tx-b", 0x0000_0001, 8, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let report = super::infer_schema_candidates(&corpus);
+        let candidate = &report.opcode_candidates[0];
+
+        assert_eq!(candidate.inbound_body.field_candidates.len(), 3);
+        assert_eq!(candidate.inbound_body.field_candidates[0].name, "opcode");
+        assert_eq!(candidate.inbound_body.field_candidates[0].bit_offset, 0);
+        assert_eq!(candidate.inbound_body.field_candidates[0].min_bits, 32);
+        assert_eq!(
+            candidate.inbound_body.field_candidates[0].value_samples,
+            vec!["0x00000001".to_owned()]
+        );
+        assert_eq!(candidate.inbound_body.field_candidates[1].name, "query_id");
+        assert_eq!(candidate.inbound_body.field_candidates[1].bit_offset, 32);
+        assert_eq!(candidate.inbound_body.field_candidates[1].min_bits, 64);
+        assert_eq!(
+            candidate.inbound_body.field_candidates[1].value_samples,
+            vec![
+                "0x0000000000000007".to_owned(),
+                "0x0000000000000008".to_owned()
+            ]
+        );
+        assert_eq!(
+            candidate.inbound_body.field_candidates[2].name,
+            "payload_tail"
+        );
+        assert_eq!(candidate.inbound_body.field_candidates[2].bit_offset, 96);
+        assert_eq!(candidate.inbound_body.field_candidates[2].min_bits, 8);
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            json["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"][1]["name"],
+            "query_id"
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"][1]["valueSamples"],
+            serde_json::json!(["0x0000000000000007", "0x0000000000000008"])
+        );
+    }
+
+    #[test]
     fn replay_mutation_flips_message_body_bit() {
         let mut body = CellBuilder::new();
         body.store_u32(0).unwrap();
@@ -2153,6 +2415,36 @@ mod tests {
         assert!(report.contains("| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `data` | `<none>` -> `code` | none | none |"));
         assert!(report.contains("## Unknown Fields"));
         assert!(report.contains("TL-B"));
+    }
+
+    #[test]
+    fn report_renderer_includes_message_body_field_candidates() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow_with_body_fields("tx-a", 0x0000_0001, 7, 0xaa)],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains("## Message Body Fields"));
+        assert!(
+            report.contains(
+                "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |"
+            )
+        );
+        assert!(report.contains("| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | `0x0000000000000007` | high |"));
+        assert!(report.contains(
+            "| `0x00000001` | `payload_tail` | 96 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | low |"
+        ));
     }
 
     #[test]
@@ -2350,6 +2642,22 @@ mod tests {
                 text: String::new(),
             },
         }
+    }
+
+    fn sample_flow_with_body_fields(
+        query_hash: &str,
+        opcode: u32,
+        query_id: u64,
+        tail: u8,
+    ) -> StateFlowTx {
+        let mut flow = sample_flow(query_hash, Some(&format!("0x{opcode:08x}")));
+        let mut builder = CellBuilder::new();
+        builder.store_u32(opcode).unwrap();
+        builder.store_u64(query_id).unwrap();
+        builder.store_raw(&[tail], 8).unwrap();
+        let body = builder.build().unwrap();
+        flow.inbound.body = super::cell_artifact(&body).unwrap();
+        flow
     }
 
     fn sample_replay_diff(
