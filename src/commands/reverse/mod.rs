@@ -1155,7 +1155,7 @@ impl SmokeReplayMutation {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeRunSummary {
     schema_version: u32,
@@ -1237,7 +1237,7 @@ impl SmokeRunSummary {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeTargetRunSummary {
     id: String,
@@ -1483,7 +1483,9 @@ fn validate_artifact_manifest_bundle(
         let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
         if !path.exists() {
             gate_failures.push(format!("missing artifact {}", artifact.path));
+            continue;
         }
+        validate_manifest_artifact_content(&path, artifact, &mut gate_failures);
     }
 
     let targets = selected_target_ids
@@ -1508,6 +1510,62 @@ fn validate_artifact_manifest_bundle(
         gate_failures,
         targets,
     })
+}
+
+fn validate_manifest_artifact_content(
+    path: &Path,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    match artifact.kind.as_str() {
+        "runSummary" => validate_json_artifact::<SmokeRunSummary>(path, artifact, gate_failures),
+        "corpus" => validate_json_artifact::<StateFlowCorpus>(path, artifact, gate_failures),
+        "schema" => validate_json_artifact::<StateFlowSchemaReport>(path, artifact, gate_failures),
+        "transaction" => validate_json_artifact::<StateFlowTx>(path, artifact, gate_failures),
+        "replay" => validate_json_artifact::<StateFlowReplayDiff>(path, artifact, gate_failures),
+        "report" => validate_report_artifact(path, artifact, gate_failures),
+        _ => {}
+    }
+}
+
+fn validate_json_artifact<T>(
+    path: &Path,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) where
+    T: for<'de> Deserialize<'de>,
+{
+    match fs::read_to_string(path) {
+        Ok(json) => {
+            if let Err(err) = serde_json::from_str::<T>(&json) {
+                gate_failures.push(format!(
+                    "invalid {} artifact {}: {err}",
+                    artifact.kind, artifact.path
+                ));
+            }
+        }
+        Err(err) => gate_failures.push(format!(
+            "failed to read {} artifact {}: {err}",
+            artifact.kind, artifact.path
+        )),
+    }
+}
+
+fn validate_report_artifact(
+    path: &Path,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    match fs::read_to_string(path) {
+        Ok(markdown) if markdown.trim().is_empty() => {
+            gate_failures.push(format!("empty report artifact {}", artifact.path));
+        }
+        Ok(_) => {}
+        Err(err) => gate_failures.push(format!(
+            "failed to read report artifact {}: {err}",
+            artifact.path
+        )),
+    }
 }
 
 fn validate_artifact_manifest_target(
@@ -2103,32 +2161,8 @@ mod tests {
     #[test]
     fn artifact_manifest_validation_accepts_portable_bundle() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
-        for path in [
-            "summary.json",
-            "target-a/corpus.json",
-            "target-a/schema.json",
-            "target-a/replay.json",
-            "target-a/report.md",
-        ] {
-            let path = temp_dir.path().join(path);
-            fs::create_dir_all(path.parent().unwrap()).expect("parent dir should be created");
-            fs::write(path, "{}").expect("artifact should be written");
-        }
-        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
-            "schemaVersion": 1,
-            "kind": "stateFlowArtifactManifest",
-            "summary": "summary.json",
-            "targetCount": 1,
-            "absolutePathCount": 0,
-            "artifacts": [
-                {"kind": "runSummary", "path": "summary.json", "targetId": null},
-                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
-                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
-                {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
-                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
-            ]
-        }))
-        .expect("artifact manifest should deserialize");
+        write_sample_validation_artifacts(temp_dir.path());
+        let manifest = sample_validation_manifest();
 
         let validation = super::validate_artifact_manifest_bundle(
             &manifest,
@@ -2147,16 +2181,7 @@ mod tests {
     #[test]
     fn artifact_manifest_validation_reports_missing_replay() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
-        for path in [
-            "summary.json",
-            "target-a/corpus.json",
-            "target-a/schema.json",
-            "target-a/report.md",
-        ] {
-            let path = temp_dir.path().join(path);
-            fs::create_dir_all(path.parent().unwrap()).expect("parent dir should be created");
-            fs::write(path, "{}").expect("artifact should be written");
-        }
+        write_sample_validation_artifacts(temp_dir.path());
         let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
             "kind": "stateFlowArtifactManifest",
@@ -2183,6 +2208,29 @@ mod tests {
         assert_eq!(
             validation.gate_failures,
             vec!["target-a: missing replay artifact"]
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_invalid_corpus_json() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        fs::write(temp_dir.path().join("target-a/corpus.json"), "{}")
+            .expect("invalid corpus should be written");
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("invalid corpus artifact target-a/corpus.json")
+            })
         );
     }
 
@@ -2327,6 +2375,99 @@ mod tests {
             "failures": []
         })
         .to_string()
+    }
+
+    fn sample_validation_manifest() -> super::SmokeArtifactManifest {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "summary.json",
+            "targetCount": 1,
+            "absolutePathCount": 0,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
+                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize")
+    }
+
+    fn write_sample_validation_artifacts(out_dir: &Path) {
+        write_sample_validation_artifact(
+            out_dir,
+            "summary.json",
+            &serde_json::to_string(&sample_smoke_summary()).expect("summary should serialize"),
+        );
+        write_sample_validation_artifact(
+            out_dir,
+            "target-a/corpus.json",
+            &sample_replay_corpus_json(),
+        );
+        write_sample_validation_artifact(
+            out_dir,
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "transactionCount": 2,
+                "stateMachine": {"edges": []},
+                "auditSignals": [],
+                "opcodeCandidates": []
+            })
+            .to_string(),
+        );
+        write_sample_validation_artifact(
+            out_dir,
+            "target-a/replay.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "none"},
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": sample_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": false,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": false
+                }
+            })
+            .to_string(),
+        );
+        write_sample_validation_artifact(out_dir, "target-a/report.md", "# report\n");
+    }
+
+    fn write_sample_validation_artifact(out_dir: &Path, path: &str, contents: &str) {
+        let path = out_dir.join(path);
+        fs::create_dir_all(path.parent().unwrap()).expect("parent dir should be created");
+        fs::write(path, contents).expect("artifact should be written");
+    }
+
+    fn sample_replay_observation_json(accepted: bool) -> serde_json::Value {
+        serde_json::json!({
+            "accepted": accepted,
+            "state": null,
+            "inbound": sample_state_flow_json("tx-a")["inbound"].clone(),
+            "outbound": [],
+            "compute": null,
+            "money": null,
+            "c5": null,
+            "outActions": [],
+            "vmTrace": null,
+            "executorTrace": null,
+            "error": null
+        })
     }
 
     fn sample_state_flow_json(query_hash: &str) -> serde_json::Value {
