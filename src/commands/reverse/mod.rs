@@ -2170,6 +2170,7 @@ fn validate_manifest_target_content_matches_summary(
             gate_failures,
         );
         validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
+        validate_schema_replay_probe_artifacts(&schema, manifest_path, artifacts, gate_failures);
     }
     validate_manifest_report_content_matches_summary(
         manifest_path,
@@ -2269,6 +2270,62 @@ fn validate_schema_corpus_membership(
                 );
             }
         }
+    }
+}
+
+fn validate_schema_replay_probe_artifacts(
+    schema: &StateFlowSchemaReport,
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    gate_failures: &mut Vec<String>,
+) {
+    let replays =
+        read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay");
+    for candidate in &schema.opcode_candidates {
+        for probe in &candidate.replay_probes {
+            if !replays
+                .iter()
+                .any(|replay| replay_mutations_match(&replay.mutation, &probe.mutation))
+            {
+                gate_failures.push(format!(
+                    "schema replay probe {} has no matching replay artifact",
+                    probe.cli_arg
+                ));
+            }
+        }
+    }
+}
+
+fn replay_mutations_match(actual: &ReplayMutation, expected: &ReplayMutation) -> bool {
+    match (actual, expected) {
+        (ReplayMutation::None, ReplayMutation::None) => true,
+        (
+            ReplayMutation::FlipBodyBit { bit: actual },
+            ReplayMutation::FlipBodyBit { bit: expected },
+        ) => actual == expected,
+        (
+            ReplayMutation::ReplaceBody { body_boc64: actual },
+            ReplayMutation::ReplaceBody {
+                body_boc64: expected,
+            },
+        ) => actual == expected,
+        (
+            ReplayMutation::SetBodyUint {
+                bit_offset: actual_offset,
+                bits: actual_bits,
+                value: actual_value,
+            },
+            ReplayMutation::SetBodyUint {
+                bit_offset: expected_offset,
+                bits: expected_bits,
+                value: expected_value,
+            },
+        ) => {
+            actual_offset == expected_offset
+                && actual_bits == expected_bits
+                && actual_value == expected_value
+        }
+        _ => false,
     }
 }
 
@@ -3405,6 +3462,103 @@ mod tests {
                 failure.contains("target-a: report schema evidence tx hash tx-a is missing")
             }),
             "expected report schema evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_probe_without_replay() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "transactionCount": 2,
+                "stateMachine": {
+                    "edges": [{
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "opcode": "0x00000001",
+                        "count": 2,
+                        "examples": ["tx-a", "tx-b"]
+                    }]
+                },
+                "auditSignals": [{
+                    "kind": "unknown-fields",
+                    "severity": "info",
+                    "description": "Unknown fields remain.",
+                    "evidence": ["tx-a"]
+                }],
+                "opcodeCandidates": [{
+                    "opcode": "0x00000001",
+                    "count": 2,
+                    "examples": ["tx-a", "tx-b"],
+                    "evidence": [{
+                        "txHash": "tx-a",
+                        "inboundBodyHash": "body",
+                        "inboundBodyBits": 32,
+                        "inboundBodyRefs": 0,
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "preDataHash": null,
+                        "postDataHash": null,
+                        "preCodeHash": null,
+                        "postCodeHash": null,
+                        "outboundKinds": [],
+                        "outActionKinds": []
+                    }],
+                    "inboundBody": {
+                        "minBits": 32,
+                        "maxBits": 32,
+                        "minRefs": 0,
+                        "maxRefs": 0,
+                        "bodyHashes": []
+                    },
+                    "replayProbes": [{
+                        "fieldName": "query_id",
+                        "bitOffset": 32,
+                        "bits": 64,
+                        "value": "42",
+                        "mutation": {
+                            "type": "setBodyUint",
+                            "bitOffset": 32,
+                            "bits": 64,
+                            "value": "42"
+                        },
+                        "cliArg": "--set-body-uint 32:64:42",
+                        "confidence": "high",
+                        "evidence": ["tx-a"]
+                    }],
+                    "stateTransitions": [],
+                    "outboundEffects": [],
+                    "outActions": [],
+                    "confidence": "medium",
+                    "unknownFields": []
+                }]
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema replay probe --set-body-uint 32:64:42 has no matching replay artifact",
+                )
+            }),
+            "expected schema replay probe artifact failure, got {:?}",
             validation.gate_failures
         );
     }
