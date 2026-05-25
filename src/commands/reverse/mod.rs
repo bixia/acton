@@ -2271,6 +2271,20 @@ fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut
         gate_failures,
     );
     validate_corpus_opcode_summary(corpus, gate_failures);
+    validate_corpus_transaction_networks(corpus, gate_failures);
+}
+
+fn validate_corpus_transaction_networks(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
+    for tx in &corpus.transactions {
+        validate_evidence_text_field(
+            "corpus transaction network",
+            &tx.network,
+            "corpus network",
+            &corpus.network,
+            &tx.query_hash,
+            gate_failures,
+        );
+    }
 }
 
 fn validate_corpus_opcode_summary(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
@@ -8613,6 +8627,39 @@ mod tests {
                 )
             }),
             "expected corpus opcode summary mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_transaction_network_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][1]["network"] = serde_json::json!("testnet");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: corpus transaction network testnet for tx-b does not match corpus network mainnet",
+                )
+            }),
+            "expected corpus transaction network mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
