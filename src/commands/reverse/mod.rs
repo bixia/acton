@@ -1742,7 +1742,10 @@ fn validate_manifest_artifact_content(
             validate_json_artifact::<ArtifactManifestValidation>(path, artifact, gate_failures)
         }
         "report" => validate_report_artifact(path, artifact, gate_failures),
-        _ => {}
+        _ => gate_failures.push(format!(
+            "unsupported artifact kind {} at {}",
+            artifact.kind, artifact.path
+        )),
     }
 }
 
@@ -6366,6 +6369,41 @@ mod tests {
         assert_eq!(
             validation.gate_failures,
             vec!["target-a: missing replay artifact"]
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_unknown_artifact_kind() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/notes.json",
+            r#"{"schemaVersion":1}"#,
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .push(super::SmokeArtifactManifestEntry::new(
+                "notes",
+                "target-a/notes.json",
+                Some("target-a".to_owned()),
+            ));
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation
+                .gate_failures
+                .contains(&"unsupported artifact kind notes at target-a/notes.json".to_owned()),
+            "expected unsupported artifact kind failure, got {:?}",
+            validation.gate_failures
         );
     }
 
