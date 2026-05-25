@@ -280,6 +280,26 @@ const artifactValidation = {
   ],
 }
 
+const reportMarkdown = `# TON State Flow Reverse Report
+
+## Target
+- Network: \`mainnet\`
+- Address: \`account\`
+- Source transactions: 1
+- Retraced transactions: 1
+- Replay failures while collecting: 0
+
+## Schema Evidence
+| Opcode | Tx | Body hash | Body bits/refs | State |
+| --- | --- | --- | ---: | --- |
+| \`0x00000001\` | \`tx-hash\` | \`body-hash\` | 32/0 | active -> frozen |
+
+## Replay Diffs
+| Source tx | Mutation | Accepted |
+| --- | --- | --- |
+| \`tx-hash\` | flip body bit 32 | true |
+`
+
 const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
   parseStateFlowArtifact(JSON.stringify(corpus)),
@@ -288,6 +308,7 @@ const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(runSummary)),
   parseStateFlowArtifact(JSON.stringify(artifactManifest)),
   parseStateFlowArtifact(JSON.stringify(artifactValidation)),
+  parseStateFlowArtifact(reportMarkdown),
 ]
 
 const artifactKinds: Array<StateFlowArtifact["kind"]> = [
@@ -298,6 +319,7 @@ const artifactKinds: Array<StateFlowArtifact["kind"]> = [
   "runSummary",
   "artifactManifest",
   "artifactValidation",
+  "report",
 ]
 
 for (const [index, kind] of artifactKinds.entries()) {
@@ -430,6 +452,18 @@ assert(
     ?.rows.some(row => row.label === "target-b" && row.value === "missing replay artifact") ===
     true,
   "expected artifact validation target failure rows",
+)
+const reportView = summarizeStateFlowArtifact(parseStateFlowArtifact(reportMarkdown))
+assert(reportView.title === "TON State Flow Reverse Report", "expected report summary title")
+assert(
+  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "3"),
+  "expected report summary section count",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Target")
+    ?.rows.some(row => row.label === "Address" && row.value === "account") === true,
+  "expected report target rows",
 )
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")

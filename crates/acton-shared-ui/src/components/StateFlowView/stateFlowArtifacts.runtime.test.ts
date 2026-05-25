@@ -395,6 +395,34 @@ const artifactValidation = {
   ],
 }
 
+const reportMarkdown = `# TON State Flow Reverse Report
+
+## Target
+- Network: \`mainnet\`
+- Address: \`addr-a\`
+- Source transactions: 2
+- Retraced transactions: 2
+- Replay failures while collecting: 0
+
+## Opcode Candidates
+| Opcode | Count | Confidence |
+| --- | ---: | --- |
+| \`0x00000001\` | 2 | low |
+
+## Schema Evidence
+| Opcode | Tx | Body hash | Body bits/refs | State |
+| --- | --- | --- | ---: | --- |
+| \`0x00000001\` | \`tx-a\` | \`body-a\` | 32/0 | active -> frozen |
+
+## Replay Diffs
+| Source tx | Mutation | Accepted |
+| --- | --- | --- |
+| \`tx-a\` | flip body bit 32 | true |
+
+## Risk Points
+- Unknown fields remain for opcode 0x00000001.
+`
+
 const transactionSummary = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
 )
@@ -663,6 +691,26 @@ assert(validationTargetGateRows[0]?.label === "target-b", "expected failed valid
 assert(
   validationTargetGateRows[0]?.value === "missing replay artifact",
   "expected validation target failure reason",
+)
+const reportArtifact = parseStateFlowArtifact(reportMarkdown)
+assert(reportArtifact.kind === "report", "expected report markdown artifact kind")
+const reportSummary = summarizeStateFlowArtifact(reportArtifact)
+assert(reportSummary.title === "TON State Flow Reverse Report", "expected report title")
+assert(
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "5"),
+  "expected report section count metric",
+)
+const reportTargetRows = sectionRows(reportSummary, "Target")
+assert(reportTargetRows[0]?.label === "Network", "expected report target network row")
+assert(reportTargetRows[0]?.value === "mainnet", "expected report target network")
+const reportSectionRows = sectionRows(reportSummary, "Report Sections")
+assert(
+  reportSectionRows.some(row => row.label === "Schema Evidence" && row.value === "3 lines"),
+  "expected report schema evidence section summary",
+)
+assert(
+  reportSectionRows.some(row => row.label === "Replay Diffs"),
+  "expected report replay diffs section summary",
 )
 
 function sectionRows(

@@ -6,6 +6,7 @@ export type StateFlowArtifact =
   | {readonly kind: "runSummary"; readonly data: StateFlowRunSummary}
   | {readonly kind: "artifactManifest"; readonly data: StateFlowArtifactManifest}
   | {readonly kind: "artifactValidation"; readonly data: StateFlowArtifactValidation}
+  | {readonly kind: "report"; readonly data: StateFlowReport}
 
 export interface ArtifactSummary {
   readonly title: string
@@ -180,6 +181,19 @@ export interface StateFlowArtifactValidationTarget {
   readonly replayCount: number
   readonly passed: boolean
   readonly gateFailures: readonly string[]
+}
+
+export interface StateFlowReport {
+  readonly markdown: string
+  readonly title: string
+  readonly lineCount: number
+  readonly sections: readonly StateFlowReportSection[]
+}
+
+export interface StateFlowReportSection {
+  readonly title: string
+  readonly body: string
+  readonly lineCount: number
 }
 
 export interface ShardAccountSnapshot {
@@ -426,7 +440,18 @@ export interface ReplayDiffSummary {
 }
 
 export function parseStateFlowArtifact(raw: string): StateFlowArtifact {
-  const parsed = JSON.parse(raw) as unknown
+  const report = parseReportMarkdown(raw)
+  if (report) {
+    return {kind: "report", data: report}
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw) as unknown
+  } catch {
+    throw new Error("Unsupported StateFlow artifact shape")
+  }
+
   if (!isRecord(parsed)) {
     throw new Error("StateFlow artifact must be a JSON object")
   }
@@ -501,6 +526,9 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
     }
     case "artifactValidation": {
       return summarizeArtifactValidation(artifact.data)
+    }
+    case "report": {
+      return summarizeReport(artifact.data)
     }
   }
 }
@@ -848,6 +876,35 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
   }
 }
 
+function summarizeReport(report: StateFlowReport): ArtifactSummary {
+  const targetSection = report.sections.find(section => section.title === "Target")
+  return {
+    title: report.title,
+    metrics: [
+      {label: "Lines", value: report.lineCount.toString()},
+      {label: "Sections", value: report.sections.length.toString()},
+    ],
+    sections: [
+      ...(targetSection
+        ? [
+            {
+              title: "Target",
+              rows: reportTargetRows(targetSection),
+            },
+          ]
+        : []),
+      {
+        title: "Report Sections",
+        rows: report.sections.map(section => ({
+          label: section.title,
+          value: `${section.lineCount} ${plural(section.lineCount, "line")}`,
+          detail: reportSectionPreview(section),
+        })),
+      },
+    ],
+  }
+}
+
 function artifactManifestTargetRows(manifest: StateFlowArtifactManifest): readonly SummaryRow[] {
   const artifactsByTarget = new Map<string, StateFlowArtifactManifestEntry[]>()
   for (const artifact of manifest.artifacts) {
@@ -887,6 +944,75 @@ function artifactKindCoverage(artifacts: readonly StateFlowArtifactManifestEntry
     counts.set(artifact.kind, (counts.get(artifact.kind) ?? 0) + 1)
   }
   return [...counts.entries()].map(([kind, count]) => `${kind} x${count}`).join(" · ")
+}
+
+function parseReportMarkdown(raw: string): StateFlowReport | undefined {
+  const markdown = raw.replaceAll("\r\n", "\n").trimEnd()
+  const lines = markdown.split("\n")
+  const titleLine = lines.find(line => line.trim().length > 0)
+  if (titleLine?.trim() !== "# TON State Flow Reverse Report") {
+    return undefined
+  }
+
+  const sections: StateFlowReportSection[] = []
+  let currentTitle: string | undefined
+  let currentBody: string[] = []
+
+  const finishSection = () => {
+    if (!currentTitle) {
+      return
+    }
+    sections.push({
+      title: currentTitle,
+      body: currentBody.join("\n").trim(),
+      lineCount: nonEmptyLineCount(currentBody),
+    })
+  }
+
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      finishSection()
+      currentTitle = line.slice(3).trim()
+      currentBody = []
+      continue
+    }
+
+    if (currentTitle) {
+      currentBody.push(line)
+    }
+  }
+  finishSection()
+
+  return {
+    markdown,
+    title: titleLine.trim().slice(2).trim(),
+    lineCount: nonEmptyLineCount(lines),
+    sections,
+  }
+}
+
+function reportTargetRows(section: StateFlowReportSection): readonly SummaryRow[] {
+  return section.body
+    .split("\n")
+    .map(line => line.trim().match(/^-\s*([^:]+):\s*(.*)$/))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map(match => ({
+      label: stripMarkdownInline(match[1] ?? ""),
+      value: stripMarkdownInline(match[2] ?? ""),
+    }))
+}
+
+function reportSectionPreview(section: StateFlowReportSection): string | undefined {
+  const line = section.body.split("\n").find(line => line.trim().length > 0)
+  return line ? stripMarkdownInline(line.trim()) : undefined
+}
+
+function stripMarkdownInline(value: string): string {
+  return value.replaceAll("`", "").trim()
+}
+
+function nonEmptyLineCount(lines: readonly string[]): number {
+  return lines.filter(line => line.trim().length > 0).length
 }
 
 function snapshotRow(label: string, snapshot: ShardAccountSnapshot): SummaryRow {
