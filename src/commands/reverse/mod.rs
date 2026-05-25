@@ -5278,7 +5278,15 @@ fn validate_replay_mutation_matches_observations(
     let tx_hash = &replay.source_query_hash;
     let baseline_body_bits = replay.baseline.inbound.body.bits;
     match &replay.mutation {
-        ReplayMutation::None => {}
+        ReplayMutation::None => {
+            if replay.baseline.inbound.body.hash != replay.replay.inbound.body.hash
+                || replay.baseline.inbound.message_boc64 != replay.replay.inbound.message_boc64
+            {
+                gate_failures.push(format!(
+                    "replay none mutation for {tx_hash} must not change input"
+                ));
+            }
+        }
         ReplayMutation::FlipBodyBit { bit } => {
             if *bit >= baseline_body_bits {
                 gate_failures.push(format!(
@@ -9223,6 +9231,54 @@ mod tests {
                 )
             }),
             "expected replay replaceBody mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_none_replay_with_input_change() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "none"},
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                }
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: replay none mutation for tx-a must not change input")
+            }),
+            "expected replay none mutation input change failure, got {:?}",
             validation.gate_failures
         );
     }
