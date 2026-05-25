@@ -210,6 +210,7 @@ const runSummary = {
       schema: "out/target-a/schema.json",
       transaction: "out/target-a/transaction-0.json",
       replay: "out/target-a/replay.json",
+      replays: ["out/target-a/replay.json", "out/target-a/replay-probe-query-id-32-64.json"],
       report: "out/target-a/report.md",
     },
     {
@@ -232,6 +233,7 @@ const runSummary = {
       schema: "out/target-b/schema.json",
       transaction: undefined,
       replay: undefined,
+      replays: [],
       report: "out/target-b/report.md",
     },
   ],
@@ -248,6 +250,7 @@ const artifactManifest = {
     {kind: "schema", path: "out/target-a/schema.json", targetId: "target-a"},
     {kind: "transaction", path: "out/target-a/transaction-0.json", targetId: "target-a"},
     {kind: "replay", path: "out/target-a/replay.json", targetId: "target-a"},
+    {kind: "replay", path: "out/target-a/replay-probe-query-id-32-64.json", targetId: "target-a"},
     {kind: "report", path: "out/target-a/report.md", targetId: "target-a"},
   ],
 }
@@ -363,6 +366,10 @@ const targetRows = sectionRows(runSummaryView, "Targets")
 assert(targetRows[0]?.label === "target-a", "expected first target row")
 assert(targetRows[0]?.value === "passed", "expected passed target value")
 assert(targetRows[0]?.detail?.includes("opcodes 1") === true, "expected target artifact detail")
+assert(
+  targetRows[0]?.detail?.includes("2 replay artifacts") === true,
+  "expected target detail to include replay artifact count",
+)
 assert(targetRows[1]?.value === "failed", "expected failed target value")
 const gateRows = sectionRows(runSummaryView, "Gate Failures")
 assert(gateRows[0]?.label === "target-b", "expected target id on gate failure row")
@@ -373,7 +380,7 @@ assert(manifestArtifact.kind === "artifactManifest", "expected artifact manifest
 const manifestSummary = summarizeStateFlowArtifact(manifestArtifact)
 assert(manifestSummary.title === "State Flow Artifact Manifest", "expected manifest title")
 assert(
-  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "6"),
+  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "7"),
   "expected manifest artifact count metric",
 )
 const manifestRows = sectionRows(manifestSummary, "Artifacts")

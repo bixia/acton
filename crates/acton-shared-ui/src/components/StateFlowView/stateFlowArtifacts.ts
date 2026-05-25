@@ -141,6 +141,7 @@ export interface StateFlowRunTargetSummary {
   readonly schema: string
   readonly transaction?: string | null
   readonly replay?: string | null
+  readonly replays?: readonly string[] | null
   readonly report: string
 }
 
@@ -678,6 +679,7 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
             `state edges ${target.stateEdgeCount}`,
             `audit signals ${target.auditSignalCount}`,
             `replay ${target.replayCount}`,
+            `${targetReplayArtifactCount(target)} ${plural(targetReplayArtifactCount(target), "replay artifact")}`,
           ].join(" · "),
         })),
       },
@@ -724,6 +726,10 @@ function formatGateFailureRow(failure: string): SummaryRow {
     label: failure.slice(0, separator),
     value: failure.slice(separator + 2),
   }
+}
+
+function targetReplayArtifactCount(target: StateFlowRunTargetSummary): number {
+  return target.replays?.length ?? (target.replay ? 1 : 0)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
