@@ -1,8 +1,8 @@
 use crate::Network;
 use crate::remote::{DtonClient, TonCenterClient, TonHubClient};
 use crate::types::{
-    AccountFromAPI, BaseTxInfo, Block, BlockInfo, ComputeInfo, RawTransaction, StateFromAPI,
-    StorageStat, StorageUsed, TraceMoneyResult,
+    AccountFromAPI, AccountTxRef, BaseTxInfo, Block, BlockInfo, ComputeInfo, RawTransaction,
+    StateFromAPI, StorageStat, StorageUsed, TraceMoneyResult,
 };
 use base64::Engine;
 use base64::engine::general_purpose;
@@ -14,8 +14,8 @@ use tycho_types::cell::Lazy;
 use tycho_types::dict::Dict;
 use tycho_types::models::{
     Account, AccountState, CurrencyCollection, ExtraCurrencyCollection, IntAddr, MsgInfo,
-    OptionalAccount, OutAction, OutActionsRevIter, ShardAccount, StdAddr, StorageExtra,
-    StorageInfo, TxInfo,
+    OptionalAccount, OutAction, OutActionsRevIter, ShardAccount, StdAddr, StdAddrFormat,
+    StorageExtra, StorageInfo, TxInfo,
 };
 use tycho_types::num::{Tokens, VarUint56};
 use tycho_types::prelude::{Cell, HashBytes};
@@ -58,6 +58,52 @@ pub async fn find_base_tx_by_hash(net: Network, hash: &str) -> anyhow::Result<Ba
         hash: hash_bytes,
         address,
     })
+}
+
+/// Returns recent transaction references for an account.
+///
+/// Returned hashes are hex-encoded so callers can pass them directly to
+/// [`crate::retrace`] without knowing TonCenter's base64 hash format.
+pub async fn collect_account_transaction_refs(
+    net: Network,
+    address: &str,
+    limit: u32,
+) -> anyhow::Result<Vec<AccountTxRef>> {
+    if limit == 0 {
+        anyhow::bail!("limit must be greater than zero");
+    }
+
+    let (address, _) = StdAddr::from_str_ext(address, StdAddrFormat::any())?;
+    let account = address.to_string();
+    let client = TonCenterClient::new(net)?;
+    let resp = client.get_account_transactions_v3(&account, limit).await?;
+
+    resp.transactions
+        .into_iter()
+        .map(|tx| {
+            Ok(AccountTxRef {
+                account: tx.account,
+                hash: toncenter_hash_to_hex(&tx.hash)?,
+                hash_b64: tx.hash,
+                lt: tx.lt.parse::<u64>()?,
+                utime: tx.now,
+                mc_seqno: tx.mc_block_seqno,
+                trace_id: tx.trace_id,
+                orig_status: tx.orig_status,
+                end_status: tx.end_status,
+            })
+        })
+        .collect()
+}
+
+fn toncenter_hash_to_hex(hash: &str) -> anyhow::Result<String> {
+    let decoded = general_purpose::STANDARD
+        .decode(hash)
+        .or_else(|_| general_purpose::URL_SAFE.decode(hash))?;
+    if decoded.len() != 32 {
+        anyhow::bail!("Invalid hash length: {}", decoded.len());
+    }
+    Ok(hex::encode(decoded))
 }
 
 /// Returns full on-chain transaction information using a base handle.
@@ -664,5 +710,24 @@ pub(crate) mod boc_ext {
         }
 
         Ok(final_cells)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toncenter_hash_to_hex;
+
+    #[test]
+    fn toncenter_hash_to_hex_decodes_standard_base64_hash() {
+        let hash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+        assert_eq!(toncenter_hash_to_hex(hash).unwrap(), "00".repeat(32));
+    }
+
+    #[test]
+    fn toncenter_hash_to_hex_rejects_wrong_length() {
+        let err = toncenter_hash_to_hex("AA==").unwrap_err();
+
+        assert!(err.to_string().contains("Invalid hash length"));
     }
 }

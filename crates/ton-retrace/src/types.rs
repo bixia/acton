@@ -21,6 +21,33 @@ pub struct BaseTxInfo {
     pub address: StdAddr,
 }
 
+/// Transaction reference collected from an account history query.
+///
+/// The `hash` field is hex-encoded so it can be passed directly to
+/// [`crate::retrace`] and [`crate::find_base_tx_by_hash`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountTxRef {
+    /// Contract address that owns the transaction.
+    pub account: String,
+    /// Hex-encoded 256-bit transaction hash.
+    pub hash: String,
+    /// Original TonCenter base64 hash.
+    pub hash_b64: String,
+    /// Logical-time of the transaction.
+    pub lt: u64,
+    /// Unix time of the transaction.
+    pub utime: u64,
+    /// Masterchain block sequence number from TonCenter V3.
+    pub mc_seqno: u64,
+    /// Trace id returned by TonCenter V3.
+    pub trace_id: String,
+    /// Account status before the transaction.
+    pub orig_status: String,
+    /// Account status after the transaction.
+    pub end_status: String,
+}
+
 // --- TonCenter v3 API Types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -124,6 +124,43 @@ impl TonCenterClient {
         Ok(response_data)
     }
 
+    /// Fetches recent transaction metadata for an account using V3 API.
+    pub(crate) async fn get_account_transactions_v3(
+        &self,
+        account: &str,
+        limit: u32,
+    ) -> anyhow::Result<TransactionData> {
+        let mut request = self
+            .client
+            .get(format!("{}/transactions", self.base_url))
+            .header(USER_AGENT, user_agent())
+            .query(&[
+                ("account", account.to_owned()),
+                ("limit", limit.to_string()),
+                ("sort", "desc".to_owned()),
+            ]);
+
+        if let Some(key) = &self.api_key {
+            request = request.header("X-API-Key", key);
+        }
+
+        self.maybe_wait_for_rate_limit().await;
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("TonCenter V3 returned status: {}", response.status());
+        }
+
+        let result: serde_json::Value = response.json().await?;
+
+        if let Some(error) = result.get("error") {
+            anyhow::bail!("TonCenter V3 error: {error}");
+        }
+
+        let response_data: TransactionData = serde_json::from_value(result)
+            .map_err(|e| anyhow::anyhow!("Failed to decode TonCenter V3 response: {e}"))?;
+        Ok(response_data)
+    }
+
     /// Fetches block information by workchain, shard, and seqno using V3 API.
     pub(crate) async fn get_blocks(
         &self,

@@ -323,6 +323,38 @@ fn test_acton_reverse_retrace_help() {
 }
 
 #[test]
+fn test_acton_reverse_collect_help() {
+    let output = snapbox::cmd::Command::acton_ui()
+        .arg("reverse")
+        .arg("collect")
+        .arg("--help")
+        .output()
+        .expect("failed to run acton reverse collect --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse collect --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Collect account history into a state-flow corpus",
+        "Usage: acton reverse collect",
+        "--limit <LIMIT>",
+        "--output <OUTPUT>",
+        "[aliases: --out]",
+        "--pretty",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse collect --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_help_retrace() {
     snapbox::cmd::Command::acton_ui()
         .arg("help")

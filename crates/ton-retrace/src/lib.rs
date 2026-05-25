@@ -123,7 +123,7 @@ pub mod trace;
 
 pub use crate::runner::{Network, retrace, retrace_base_tx};
 pub use crate::types::{
-    BaseTxInfo, ComputeInfo, TraceEmulatedTx, TraceInMessage, TraceMoneyResult,
+    AccountTxRef, BaseTxInfo, ComputeInfo, TraceEmulatedTx, TraceInMessage, TraceMoneyResult,
     TraceReplayArtifacts, TraceResult,
 };
-pub use methods::find_base_tx_by_hash;
+pub use methods::{collect_account_transaction_refs, find_base_tx_by_hash};

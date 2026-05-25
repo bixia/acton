@@ -1,7 +1,7 @@
 use anyhow::Context;
 use serde::Serialize;
-use std::collections::HashMap;
-use ton_retrace::{ComputeInfo, Network, TraceResult};
+use std::collections::{BTreeMap, HashMap};
+use ton_retrace::{AccountTxRef, ComputeInfo, Network, TraceResult};
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, HashBytes, Store};
 use tycho_types::models::{
@@ -27,6 +27,37 @@ pub struct StateFlowTx {
     pub out_actions: Vec<ActionEffect>,
     pub vm_trace: LogArtifact,
     pub executor_trace: LogArtifact,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateFlowCorpus {
+    pub schema_version: u32,
+    pub network: String,
+    pub address: String,
+    pub requested_limit: u32,
+    pub source_tx_count: usize,
+    pub retraced_count: usize,
+    pub failure_count: usize,
+    pub opcode_summary: Vec<OpcodeSummary>,
+    pub transactions: Vec<StateFlowTx>,
+    pub failures: Vec<StateFlowFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpcodeSummary {
+    pub opcode: Option<String>,
+    pub count: usize,
+    pub tx_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateFlowFailure {
+    pub hash: String,
+    pub lt: u64,
+    pub error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,6 +189,40 @@ pub async fn retrace_with_state_flow(
     StateFlowTx::from_retrace_result(network.to_string(), hash, &result)
 }
 
+pub async fn collect_state_flow_corpus(
+    network: Network,
+    address: &str,
+    limit: u32,
+    additional_libs: HashMap<HashBytes, Cell>,
+) -> anyhow::Result<StateFlowCorpus> {
+    let tx_refs = ton_retrace::collect_account_transaction_refs(network.clone(), address, limit)
+        .await
+        .with_context(|| format!("failed to collect transactions for {address}"))?;
+
+    let mut transactions = Vec::new();
+    let mut failures = Vec::new();
+    for tx_ref in &tx_refs {
+        match retrace_with_state_flow(network.clone(), &tx_ref.hash, additional_libs.clone()).await
+        {
+            Ok(flow) => transactions.push(flow),
+            Err(err) => failures.push(StateFlowFailure::from_error(tx_ref, err)),
+        }
+    }
+
+    Ok(StateFlowCorpus {
+        schema_version: STATE_FLOW_SCHEMA_VERSION,
+        network: network.to_string(),
+        address: address.to_owned(),
+        requested_limit: limit,
+        source_tx_count: tx_refs.len(),
+        retraced_count: transactions.len(),
+        failure_count: failures.len(),
+        opcode_summary: opcode_summary(&transactions),
+        transactions,
+        failures,
+    })
+}
+
 impl StateFlowTx {
     pub fn from_retrace_result(
         network: impl Into<String>,
@@ -222,6 +287,16 @@ impl StateFlowTx {
     }
 }
 
+impl StateFlowFailure {
+    fn from_error(tx_ref: &AccountTxRef, err: anyhow::Error) -> Self {
+        Self {
+            hash: tx_ref.hash.clone(),
+            lt: tx_ref.lt,
+            error: err.to_string(),
+        }
+    }
+}
+
 impl From<&ComputeInfo> for StateFlowCompute {
     fn from(value: &ComputeInfo) -> Self {
         match value {
@@ -249,6 +324,25 @@ impl From<&ComputeInfo> for StateFlowCompute {
             },
         }
     }
+}
+
+fn opcode_summary(transactions: &[StateFlowTx]) -> Vec<OpcodeSummary> {
+    let mut by_opcode = BTreeMap::<Option<String>, Vec<String>>::new();
+    for tx in transactions {
+        by_opcode
+            .entry(tx.inbound.opcode.clone())
+            .or_default()
+            .push(tx.query_hash.clone());
+    }
+
+    by_opcode
+        .into_iter()
+        .map(|(opcode, tx_hashes)| OpcodeSummary {
+            opcode,
+            count: tx_hashes.len(),
+            tx_hashes,
+        })
+        .collect()
 }
 
 impl From<&str> for LogArtifact {
@@ -546,10 +640,41 @@ mod tests {
 
     #[test]
     fn state_flow_tx_serializes_camel_case_schema_version() {
-        let flow = StateFlowTx {
+        let flow = sample_flow("abc", Some("0x00000001"));
+
+        let json = serde_json::to_value(&flow).expect("state flow should serialize");
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["transaction"]["stateUpdateHashOk"], true);
+        assert_eq!(json["inbound"]["direction"], "inbound");
+    }
+
+    #[test]
+    fn opcode_summary_groups_transactions_by_inbound_opcode() {
+        let flows = vec![
+            sample_flow("tx-a", Some("0x00000001")),
+            sample_flow("tx-b", Some("0x00000001")),
+            sample_flow("tx-c", None),
+        ];
+
+        let summary = super::opcode_summary(&flows);
+
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].opcode, None);
+        assert_eq!(summary[0].count, 1);
+        assert_eq!(summary[0].tx_hashes, vec!["tx-c".to_owned()]);
+        assert_eq!(summary[1].opcode.as_deref(), Some("0x00000001"));
+        assert_eq!(summary[1].count, 2);
+        assert_eq!(
+            summary[1].tx_hashes,
+            vec!["tx-a".to_owned(), "tx-b".to_owned()]
+        );
+    }
+
+    fn sample_flow(query_hash: &str, opcode: Option<&str>) -> StateFlowTx {
+        StateFlowTx {
             schema_version: 1,
             network: "mainnet".to_owned(),
-            query_hash: "abc".to_owned(),
+            query_hash: query_hash.to_owned(),
             transaction: TransactionIdentity {
                 lt: 42,
                 utime: 1,
@@ -596,7 +721,7 @@ mod tests {
                 value_nanotons: Some("1".to_owned()),
                 bounced: Some(false),
                 bounce: Some(true),
-                opcode: Some("0x00000001".to_owned()),
+                opcode: opcode.map(ToOwned::to_owned),
                 message_boc64: "msg".to_owned(),
                 body: CellArtifact {
                     boc64: "body".to_owned(),
@@ -630,11 +755,6 @@ mod tests {
                 line_count: 0,
                 text: String::new(),
             },
-        };
-
-        let json = serde_json::to_value(&flow).expect("state flow should serialize");
-        assert_eq!(json["schemaVersion"], 1);
-        assert_eq!(json["transaction"]["stateUpdateHashOk"], true);
-        assert_eq!(json["inbound"]["direction"], "inbound");
+        }
     }
 }

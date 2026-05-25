@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::Subcommand;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -26,6 +27,30 @@ pub enum ReverseCommand {
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
     },
+    #[command(about = "Collect account history into a state-flow corpus")]
+    Collect {
+        #[arg(help = "Account address in friendly or raw format")]
+        address: String,
+        #[arg(long, help = "Network to use")]
+        net: String,
+        #[arg(
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..),
+            help = "Maximum number of recent account transactions to collect"
+        )]
+        limit: u32,
+        #[arg(
+            short,
+            long,
+            alias = "out",
+            visible_alias = "out",
+            help = "Write state-flow corpus JSON to a file"
+        )]
+        output: Option<PathBuf>,
+        #[arg(long, help = "Pretty-print JSON output")]
+        pretty: bool,
+    },
 }
 
 pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
@@ -36,6 +61,13 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             output,
             pretty,
         } => reverse_retrace_cmd(&hash, net.as_deref(), output, pretty),
+        ReverseCommand::Collect {
+            address,
+            net,
+            limit,
+            output,
+            pretty,
+        } => reverse_collect_cmd(&address, &net, limit, output, pretty),
     }
 }
 
@@ -74,15 +106,45 @@ fn reverse_retrace_cmd(
     anyhow::bail!("Failed to retrace transaction");
 }
 
+fn reverse_collect_cmd(
+    address: &str,
+    net: &str,
+    limit: u32,
+    output: Option<PathBuf>,
+    pretty: bool,
+) -> anyhow::Result<()> {
+    let network = Network::from_str(net)?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    let corpus = rt.block_on(ton_stateflow::collect_state_flow_corpus(
+        network,
+        address,
+        limit,
+        HashMap::new(),
+    ))?;
+    write_json(&corpus, output, pretty, "State-flow corpus JSON")
+}
+
 fn write_state_flow(
     flow: &StateFlowTx,
     output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
+    write_json(flow, output, pretty, "State-flow JSON")
+}
+
+fn write_json<T: Serialize>(
+    value: &T,
+    output: Option<PathBuf>,
+    pretty: bool,
+    label: &str,
+) -> anyhow::Result<()> {
     let json = if pretty {
-        serde_json::to_string_pretty(flow)?
+        serde_json::to_string_pretty(value)?
     } else {
-        serde_json::to_string(flow)?
+        serde_json::to_string(value)?
     };
 
     if let Some(output) = output {
@@ -95,7 +157,7 @@ fn write_state_flow(
         }
         fs::write(&output, json)
             .with_context(|| format!("failed to write {}", output.display()))?;
-        println!("State-flow JSON written to {}", output.display());
+        println!("{label} written to {}", output.display());
     } else {
         println!("{json}");
     }
