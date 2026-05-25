@@ -494,6 +494,20 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## State Machine").ok();
+    let state_machine = render_state_machine(schema);
+    if state_machine.is_empty() {
+        writeln!(report, "- No state transitions were inferred.").ok();
+    } else {
+        writeln!(report, "```mermaid").ok();
+        writeln!(report, "stateDiagram-v2").ok();
+        for line in state_machine {
+            writeln!(report, "    {line}").ok();
+        }
+        writeln!(report, "```").ok();
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## Unknown Fields").ok();
     if schema.opcode_candidates.is_empty() {
         writeln!(report, "- No opcode candidates were inferred.").ok();
@@ -549,6 +563,21 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## Risk Points").ok();
+    let risk_points = infer_risk_points(corpus, schema, replays);
+    if risk_points.is_empty() {
+        writeln!(
+            report,
+            "- No risk points were inferred from the provided artifacts."
+        )
+        .ok();
+    } else {
+        for risk in risk_points {
+            writeln!(report, "- {risk}").ok();
+        }
+    }
+    writeln!(report).ok();
+
     if !corpus.failures.is_empty() {
         writeln!(report, "## Collection Failures").ok();
         for failure in &corpus.failures {
@@ -563,6 +592,129 @@ pub fn render_state_flow_report(
     }
 
     report
+}
+
+fn render_state_machine(schema: &StateFlowSchemaReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for candidate in &schema.opcode_candidates {
+        let opcode = candidate.opcode.as_deref().unwrap_or("<none>");
+        for transition in &candidate.state_transitions {
+            lines.push(format!(
+                "{} --> {}: {} ({})",
+                mermaid_state_id(&transition.from_status),
+                mermaid_state_id(&transition.to_status),
+                mermaid_label(opcode),
+                transition.count,
+            ));
+        }
+    }
+    lines.sort();
+    lines.dedup();
+    lines
+}
+
+fn infer_risk_points(
+    corpus: &StateFlowCorpus,
+    schema: &StateFlowSchemaReport,
+    replays: &[StateFlowReplayDiff],
+) -> Vec<String> {
+    let mut risks = Vec::new();
+    if corpus.failure_count > 0 {
+        risks.push(format!(
+            "{} transaction(s) failed during collection and are absent from inference.",
+            corpus.failure_count
+        ));
+    }
+
+    for candidate in &schema.opcode_candidates {
+        let opcode = markdown_code_opt(candidate.opcode.as_deref());
+        if candidate.confidence == "low" {
+            risks.push(format!(
+                "Low-confidence schema candidate for opcode {opcode}; body shape varied or evidence is sparse."
+            ));
+        }
+        if !candidate.unknown_fields.is_empty() {
+            risks.push(format!(
+                "Unknown fields remain for opcode {opcode}: {}.",
+                markdown_escape(&candidate.unknown_fields.join("; "))
+            ));
+        }
+        if candidate.storage.data_hash_changed_count > 0 {
+            risks.push(format!(
+                "Opcode {opcode} changed storage data hash in {} observed transaction(s).",
+                candidate.storage.data_hash_changed_count
+            ));
+        }
+        if candidate.storage.code_hash_changed_count > 0 {
+            risks.push(format!(
+                "Opcode {opcode} changed code hash in {} observed transaction(s).",
+                candidate.storage.code_hash_changed_count
+            ));
+        }
+        if !candidate.outbound_effects.is_empty() || !candidate.out_actions.is_empty() {
+            risks.push(format!(
+                "Opcode {opcode} produced outbound effects or c5 actions; payload fields still require TL-B recovery."
+            ));
+        }
+    }
+
+    for replay in replays {
+        let mutation = markdown_escape(&mutation_label(&replay.mutation));
+        if replay.diff.input_changed && replay.diff.replay_accepted {
+            if replay.diff.state_changed == Some(true) {
+                risks.push(format!(
+                    "Mutation `{mutation}` changed state for `{}`.",
+                    replay.source_query_hash
+                ));
+            }
+            if replay.diff.outbound_count_delta.unwrap_or_default() != 0
+                || replay.diff.action_count_delta.unwrap_or_default() != 0
+            {
+                risks.push(format!(
+                    "Mutation `{mutation}` changed outbound/action counts for `{}`.",
+                    replay.source_query_hash
+                ));
+            }
+        } else if replay.diff.input_changed && !replay.diff.replay_accepted {
+            risks.push(format!(
+                "Mutation `{mutation}` was rejected for `{}`.",
+                replay.source_query_hash
+            ));
+        }
+    }
+
+    risks.sort();
+    risks.dedup();
+    risks
+}
+
+fn mermaid_state_id(value: &str) -> String {
+    let mut id = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch);
+        } else {
+            id.push('_');
+        }
+    }
+    if id.is_empty() {
+        "unknown".to_owned()
+    } else {
+        id
+    }
+}
+
+fn mermaid_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            ':' | '`' | '"' | '\n' | '\r' => ' ',
+            _ => ch,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn format_range<T>(min: T, max: T) -> String
@@ -1377,8 +1529,9 @@ fn format_int_addr(addr: &IntAddr) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CellArtifact, LogArtifact, MessageDirection, MoneyFlow, ReplaySummary, StateFlowCompute,
-        StateFlowCorpus, StateFlowTx, StateTransition, TransactionIdentity,
+        CellArtifact, LogArtifact, MessageDirection, MoneyFlow, ReplayDiffSummary, ReplayMutation,
+        ReplayObservation, ReplaySummary, StateFlowCompute, StateFlowCorpus, StateFlowReplayDiff,
+        StateFlowTx, StateTransition, TransactionIdentity,
     };
     use tycho_types::boc::Boc;
     use tycho_types::cell::CellBuilder;
@@ -1471,11 +1624,9 @@ mod tests {
         };
         let message_boc64 = Boc::encode_base64(super::to_cell(&message).unwrap());
 
-        let mutated = super::apply_replay_mutation(
-            &message_boc64,
-            &super::ReplayMutation::FlipBodyBit { bit: 0 },
-        )
-        .unwrap();
+        let mutated =
+            super::apply_replay_mutation(&message_boc64, &ReplayMutation::FlipBodyBit { bit: 0 })
+                .unwrap();
         let mutated_cell = Boc::decode_base64(mutated).unwrap();
         let mutated_message = mutated_cell
             .parse::<tycho_types::models::Message<'_>>()
@@ -1518,10 +1669,43 @@ mod tests {
         assert!(report.contains("## Opcode Candidates"));
         assert!(report.contains("Storage"));
         assert!(report.contains("balance -3"));
+        assert!(report.contains("## State Machine"));
+        assert!(report.contains("```mermaid"));
+        assert!(report.contains("stateDiagram-v2"));
+        assert!(report.contains("none --> active: 0x00000001 (1)"));
         assert!(report.contains("medium"));
         assert!(report.contains("tx-a"));
         assert!(report.contains("## Unknown Fields"));
         assert!(report.contains("TL-B"));
+    }
+
+    #[test]
+    fn report_renderer_includes_risk_points_from_schema_and_replay_diffs() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow("tx-a", Some("0x00000001"))],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+        let replays = vec![sample_replay_diff(
+            "tx-a",
+            ReplayMutation::FlipBodyBit { bit: 32 },
+            true,
+            Some(true),
+        )];
+
+        let report = super::render_state_flow_report(&corpus, &schema, &replays);
+
+        assert!(report.contains("## Risk Points"));
+        assert!(report.contains("Unknown fields remain for opcode `0x00000001`"));
+        assert!(report.contains("Mutation `flip body bit 32` changed state for `tx-a`"));
     }
 
     #[test]
@@ -1644,6 +1828,58 @@ mod tests {
             executor_trace: LogArtifact {
                 line_count: 0,
                 text: String::new(),
+            },
+        }
+    }
+
+    fn sample_replay_diff(
+        source_query_hash: &str,
+        mutation: ReplayMutation,
+        replay_accepted: bool,
+        state_changed: Option<bool>,
+    ) -> StateFlowReplayDiff {
+        StateFlowReplayDiff {
+            schema_version: 1,
+            source_query_hash: source_query_hash.to_owned(),
+            mutation,
+            ignore_chksig: false,
+            baseline: ReplayObservation {
+                accepted: true,
+                state: None,
+                inbound: sample_flow(source_query_hash, Some("0x00000001")).inbound,
+                outbound: Vec::new(),
+                compute: None,
+                money: None,
+                c5: None,
+                out_actions: Vec::new(),
+                vm_trace: None,
+                executor_trace: None,
+                error: None,
+            },
+            replay: ReplayObservation {
+                accepted: replay_accepted,
+                state: None,
+                inbound: sample_flow(source_query_hash, Some("0x00000001")).inbound,
+                outbound: Vec::new(),
+                compute: None,
+                money: None,
+                c5: None,
+                out_actions: Vec::new(),
+                vm_trace: None,
+                executor_trace: None,
+                error: None,
+            },
+            diff: ReplayDiffSummary {
+                replay_accepted,
+                input_changed: true,
+                state_changed,
+                code_hash_changed: Some(false),
+                data_hash_changed: Some(false),
+                balance_delta_diff: Some(0),
+                exit_code_changed: Some(false),
+                outbound_count_delta: Some(0),
+                action_count_delta: Some(0),
+                c5_changed: Some(false),
             },
         }
     }
