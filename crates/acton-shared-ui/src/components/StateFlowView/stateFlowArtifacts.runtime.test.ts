@@ -66,6 +66,21 @@ const schema = {
         codeHashChangedCount: 0,
         postDataShape: {minBits: 16, maxBits: 16, minRefs: 1, maxRefs: 1},
         postCodeShape: {minBits: 8, maxBits: 8, minRefs: 0, maxRefs: 0},
+        fields: [
+          {
+            name: "data_word_0",
+            cellPath: "data",
+            bitOffset: 0,
+            minBits: 32,
+            maxBits: 32,
+            minRefs: 0,
+            maxRefs: 0,
+            kind: "uint32",
+            presentCount: 2,
+            valueSamples: ["0xcafebabe", "0xdeadbeef"],
+            confidence: "high",
+          },
+        ],
         postDataHashes: ["data-a", "data-b"],
         postCodeHashes: ["code-a"],
       },
@@ -121,6 +136,59 @@ const replay = {
   },
 }
 
+const runSummary = {
+  schemaVersion: 1,
+  targetCount: 2,
+  passed: false,
+  gateFailures: ["target-b: replays 0"],
+  targets: [
+    {
+      id: "target-a",
+      network: "mainnet",
+      address: "addr-a",
+      sourceUrl: undefined,
+      collectLimit: 2,
+      sourceTxCount: 2,
+      retracedCount: 2,
+      failureCount: 0,
+      opcodeCandidateCount: 1,
+      stateEdgeCount: 1,
+      auditSignalCount: 3,
+      replayCount: 1,
+      passed: true,
+      gateFailures: [],
+      outputDir: "out/target-a",
+      corpus: "out/target-a/corpus.json",
+      schema: "out/target-a/schema.json",
+      transaction: "out/target-a/transaction-0.json",
+      replay: "out/target-a/replay.json",
+      report: "out/target-a/report.md",
+    },
+    {
+      id: "target-b",
+      network: "mainnet",
+      address: "addr-b",
+      sourceUrl: "https://tonviewer.com/addr-b",
+      collectLimit: 2,
+      sourceTxCount: 2,
+      retracedCount: 2,
+      failureCount: 0,
+      opcodeCandidateCount: 1,
+      stateEdgeCount: 1,
+      auditSignalCount: 2,
+      replayCount: 0,
+      passed: false,
+      gateFailures: ["replays 0"],
+      outputDir: "out/target-b",
+      corpus: "out/target-b/corpus.json",
+      schema: "out/target-b/schema.json",
+      transaction: undefined,
+      replay: undefined,
+      report: "out/target-b/report.md",
+    },
+  ],
+}
+
 const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("1 evidence row") === true,
@@ -129,6 +197,10 @@ assert(
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("2 body fields") === true,
   "expected candidate summary to include body field count",
+)
+assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("1 storage field") === true,
+  "expected candidate summary to include storage field count",
 )
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("data 16/1") === true,
@@ -152,6 +224,13 @@ assert(
   bodyFieldRows[1]?.detail?.includes("0x0000000000000007") === true,
   "expected query_id samples in body field row",
 )
+const storageFieldRows = sectionRows(schemaSummary, "Storage Fields")
+assert(storageFieldRows[0]?.label === "0x00000001 data_word_0", "expected storage field row")
+assert(storageFieldRows[0]?.value === "uint32 @data:0", "expected storage field offset")
+assert(
+  storageFieldRows[0]?.detail?.includes("0xdeadbeef") === true,
+  "expected storage field samples in row",
+)
 
 const schemaRiskRows = sectionRows(schemaSummary, "Risk Points")
 assert(
@@ -173,6 +252,27 @@ assert(
   replayRiskRows.some(row => row.value === "Mutation changed outbound/action counts"),
   "expected replay outbound/action risk point",
 )
+
+const runSummaryArtifact = parseStateFlowArtifact(JSON.stringify(runSummary))
+assert(runSummaryArtifact.kind === "runSummary", "expected run summary artifact kind")
+const runSummaryView = summarizeStateFlowArtifact(runSummaryArtifact)
+assert(runSummaryView.title === "State Flow Run Summary", "expected run summary title")
+assert(
+  runSummaryView.metrics.some(metric => metric.label === "Passed" && metric.value === "no"),
+  "expected failed run metric",
+)
+assert(
+  runSummaryView.metrics.some(metric => metric.label === "Targets" && metric.value === "2"),
+  "expected target count metric",
+)
+const targetRows = sectionRows(runSummaryView, "Targets")
+assert(targetRows[0]?.label === "target-a", "expected first target row")
+assert(targetRows[0]?.value === "passed", "expected passed target value")
+assert(targetRows[0]?.detail?.includes("opcodes 1") === true, "expected target artifact detail")
+assert(targetRows[1]?.value === "failed", "expected failed target value")
+const gateRows = sectionRows(runSummaryView, "Gate Failures")
+assert(gateRows[0]?.label === "target-b", "expected target id on gate failure row")
+assert(gateRows[0]?.value === "replays 0", "expected gate failure reason")
 
 function sectionRows(
   summary: ReturnType<typeof summarizeStateFlowArtifact>,

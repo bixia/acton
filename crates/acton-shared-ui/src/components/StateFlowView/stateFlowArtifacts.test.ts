@@ -149,11 +149,43 @@ const replay = {
   },
 }
 
+const runSummary = {
+  schemaVersion: 1,
+  targetCount: 1,
+  passed: true,
+  gateFailures: [],
+  targets: [
+    {
+      id: "target-a",
+      network: "mainnet",
+      address: "account",
+      sourceUrl: undefined,
+      collectLimit: 1,
+      sourceTxCount: 1,
+      retracedCount: 1,
+      failureCount: 0,
+      opcodeCandidateCount: 1,
+      stateEdgeCount: 1,
+      auditSignalCount: 1,
+      replayCount: 1,
+      passed: true,
+      gateFailures: [],
+      outputDir: "out/target-a",
+      corpus: "out/target-a/corpus.json",
+      schema: "out/target-a/schema.json",
+      transaction: "out/target-a/transaction-0.json",
+      replay: "out/target-a/replay.json",
+      report: "out/target-a/report.md",
+    },
+  ],
+}
+
 const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
   parseStateFlowArtifact(JSON.stringify(corpus)),
   parseStateFlowArtifact(JSON.stringify(schema)),
   parseStateFlowArtifact(JSON.stringify(replay)),
+  parseStateFlowArtifact(JSON.stringify(runSummary)),
 ]
 
 const artifactKinds: Array<StateFlowArtifact["kind"]> = [
@@ -161,6 +193,7 @@ const artifactKinds: Array<StateFlowArtifact["kind"]> = [
   "corpus",
   "schema",
   "replay",
+  "runSummary",
 ]
 
 for (const [index, kind] of artifactKinds.entries()) {
@@ -188,6 +221,14 @@ assert(
 assert(
   schemaSummary.sections.some(section => section.title === "Risk Points"),
   "expected schema summary to include risk points",
+)
+const runSummaryView = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(runSummary)),
+)
+assert(runSummaryView.title === "State Flow Run Summary", "expected run summary title")
+assert(
+  runSummaryView.sections[0]?.rows[0]?.detail?.includes("opcodes 1") === true,
+  "expected run summary target detail",
 )
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")

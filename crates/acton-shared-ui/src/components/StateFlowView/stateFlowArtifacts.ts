@@ -3,6 +3,7 @@ export type StateFlowArtifact =
   | {readonly kind: "corpus"; readonly data: StateFlowCorpus}
   | {readonly kind: "schema"; readonly data: StateFlowSchemaReport}
   | {readonly kind: "replay"; readonly data: StateFlowReplayDiff}
+  | {readonly kind: "runSummary"; readonly data: StateFlowRunSummary}
 
 export interface ArtifactSummary {
   readonly title: string
@@ -111,6 +112,37 @@ export interface StateFlowReplayDiff {
   readonly diff: ReplayDiffSummary
 }
 
+export interface StateFlowRunSummary {
+  readonly schemaVersion: number
+  readonly targetCount: number
+  readonly passed: boolean
+  readonly gateFailures: readonly string[]
+  readonly targets: readonly StateFlowRunTargetSummary[]
+}
+
+export interface StateFlowRunTargetSummary {
+  readonly id: string
+  readonly network: string
+  readonly address: string
+  readonly sourceUrl?: string | null
+  readonly collectLimit: number
+  readonly sourceTxCount: number
+  readonly retracedCount: number
+  readonly failureCount: number
+  readonly opcodeCandidateCount: number
+  readonly stateEdgeCount: number
+  readonly auditSignalCount: number
+  readonly replayCount: number
+  readonly passed: boolean
+  readonly gateFailures: readonly string[]
+  readonly outputDir: string
+  readonly corpus: string
+  readonly schema: string
+  readonly transaction?: string | null
+  readonly replay?: string | null
+  readonly report: string
+}
+
 export interface ShardAccountSnapshot {
   readonly shardAccountBoc64: string
   readonly lastTransLt: number
@@ -147,6 +179,7 @@ export interface CellArtifact {
 }
 
 export interface CellShape {
+  readonly boc64?: string | null
   readonly hash: string
   readonly bits: number
   readonly refs: number
@@ -252,8 +285,23 @@ export interface StorageShapeCandidate {
   readonly codeHashChangedCount: number
   readonly postDataShape?: CellShapeRange | null
   readonly postCodeShape?: CellShapeRange | null
+  readonly fields?: readonly StorageFieldCandidate[] | null
   readonly postDataHashes: readonly string[]
   readonly postCodeHashes: readonly string[]
+}
+
+export interface StorageFieldCandidate {
+  readonly name: string
+  readonly cellPath: string
+  readonly bitOffset: number
+  readonly minBits: number
+  readonly maxBits: number
+  readonly minRefs: number
+  readonly maxRefs: number
+  readonly kind: string
+  readonly presentCount: number
+  readonly valueSamples: readonly string[]
+  readonly confidence: string
 }
 
 export interface CellShapeRange {
@@ -328,6 +376,14 @@ export function parseStateFlowArtifact(raw: string): StateFlowArtifact {
     return {kind: "replay", data: parsed as unknown as StateFlowReplayDiff}
   }
   if (
+    typeof parsed.targetCount === "number" &&
+    typeof parsed.passed === "boolean" &&
+    Array.isArray(parsed.gateFailures) &&
+    Array.isArray(parsed.targets)
+  ) {
+    return {kind: "runSummary", data: parsed as unknown as StateFlowRunSummary}
+  }
+  if (
     typeof parsed.queryHash === "string" &&
     isRecord(parsed.transaction) &&
     isRecord(parsed.state)
@@ -351,6 +407,9 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
     }
     case "replay": {
       return summarizeReplay(artifact.data)
+    }
+    case "runSummary": {
+      return summarizeRunSummary(artifact.data)
     }
   }
 }
@@ -416,6 +475,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const stateEdges = stateMachineEdges(schema)
   const auditSignals = schemaAuditSignals(schema)
   const bodyFieldRows = schemaBodyFieldRows(schema)
+  const storageFieldRows = schemaStorageFieldRows(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -424,6 +484,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Transactions", value: schema.transactionCount.toString()},
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
+      {label: "Storage Fields", value: storageFieldRows.length.toString()},
       {label: "State Edges", value: stateEdges.length.toString()},
       {label: "Audit Signals", value: auditSignals.length.toString()},
     ],
@@ -439,6 +500,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             `storage ${storageLabel(candidate.storage)}`,
             `${candidateEvidenceCount(candidate)} ${plural(candidateEvidenceCount(candidate), "evidence row")}`,
             `${candidateBodyFieldCount(candidate)} ${plural(candidateBodyFieldCount(candidate), "body field")}`,
+            `${candidateStorageFieldCount(candidate)} ${plural(candidateStorageFieldCount(candidate), "storage field")}`,
             `${candidate.unknownFields.length} unknowns`,
           ].join(" · "),
         })),
@@ -448,6 +510,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Message Body Fields",
               rows: bodyFieldRows,
+            },
+          ]
+        : []),
+      ...(storageFieldRows.length > 0
+        ? [
+            {
+              title: "Storage Fields",
+              rows: storageFieldRows,
             },
           ]
         : []),
@@ -508,6 +578,59 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
   }
 }
 
+function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
+  return {
+    title: "State Flow Run Summary",
+    metrics: [
+      {label: "Passed", value: yesNo(summary.passed)},
+      {label: "Targets", value: summary.targetCount.toString()},
+      {label: "Gate Failures", value: summary.gateFailures.length.toString()},
+      {
+        label: "Replays",
+        value: summary.targets.reduce((count, target) => count + target.replayCount, 0).toString(),
+      },
+    ],
+    sections: [
+      {
+        title: "Targets",
+        rows: summary.targets.map(target => ({
+          label: target.id,
+          value: target.passed ? "passed" : "failed",
+          detail: [
+            target.network,
+            `${target.retracedCount}/${target.sourceTxCount} retraced`,
+            `${target.failureCount} failures`,
+            `opcodes ${target.opcodeCandidateCount}`,
+            `state edges ${target.stateEdgeCount}`,
+            `audit signals ${target.auditSignalCount}`,
+            `replay ${target.replayCount}`,
+          ].join(" · "),
+        })),
+      },
+      ...(summary.gateFailures.length > 0
+        ? [
+            {
+              title: "Gate Failures",
+              rows: summary.gateFailures.map(failure => formatGateFailureRow(failure)),
+            },
+          ]
+        : []),
+    ],
+  }
+}
+
+function formatGateFailureRow(failure: string): SummaryRow {
+  const separator = failure.indexOf(": ")
+  if (separator === -1) {
+    return {label: "run", value: failure}
+  }
+
+  return {
+    label: failure.slice(0, separator),
+    value: failure.slice(separator + 2),
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -557,12 +680,35 @@ function candidateBodyFieldCount(candidate: OpcodeSchemaCandidate): number {
   return candidate.inboundBody.fieldCandidates?.length ?? 0
 }
 
+function candidateStorageFieldCount(candidate: OpcodeSchemaCandidate): number {
+  return candidate.storage?.fields?.length ?? 0
+}
+
 function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
   return schema.opcodeCandidates.flatMap(candidate => {
     const opcode = candidate.opcode ?? "<none>"
     return (candidate.inboundBody.fieldCandidates ?? []).map(field => ({
       label: `${opcode} ${field.name}`,
       value: `${field.kind} @${field.bitOffset}`,
+      detail: [
+        `${formatFieldRange(field.minBits, field.maxBits)} bits`,
+        `${formatFieldRange(field.minRefs, field.maxRefs)} refs`,
+        `${field.presentCount} ${plural(field.presentCount, "observation")}`,
+        field.confidence,
+        field.valueSamples.join(", "),
+      ]
+        .filter(value => value.length > 0)
+        .join(" · "),
+    }))
+  })
+}
+
+function schemaStorageFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const opcode = candidate.opcode ?? "<none>"
+    return (candidate.storage?.fields ?? []).map(field => ({
+      label: `${opcode} ${field.name}`,
+      value: `${field.kind} @${field.cellPath}:${field.bitOffset}`,
       detail: [
         `${formatFieldRange(field.minBits, field.maxBits)} bits`,
         `${formatFieldRange(field.minRefs, field.maxRefs)} refs`,

@@ -208,8 +208,26 @@ pub struct StorageShapeCandidate {
     pub post_data_shape: Option<CellShapeRange>,
     #[serde(default)]
     pub post_code_shape: Option<CellShapeRange>,
+    #[serde(default)]
+    pub fields: Vec<StorageFieldCandidate>,
     pub post_data_hashes: Vec<String>,
     pub post_code_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageFieldCandidate {
+    pub name: String,
+    pub cell_path: String,
+    pub bit_offset: u16,
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
+    pub kind: String,
+    pub present_count: usize,
+    pub value_samples: Vec<String>,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +330,8 @@ pub struct ShardAccountSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellShape {
+    #[serde(default, skip_serializing)]
+    pub boc64: Option<String>,
     pub hash: String,
     pub bits: u16,
     pub refs: u8,
@@ -649,6 +669,45 @@ pub fn render_state_flow_report(
                     "| {} | `{}` | {} | {} | {} | {} | {} | {} |",
                     markdown_code_opt(candidate.opcode.as_deref()),
                     markdown_escape(&field.name),
+                    field.bit_offset,
+                    format_field_range(field.min_bits, field.max_bits),
+                    format_field_range(field.min_refs, field.max_refs),
+                    markdown_escape(&field.kind),
+                    markdown_code_list(&field.value_samples),
+                    markdown_escape(&field.confidence),
+                )
+                .ok();
+            }
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Storage Fields").ok();
+    let mut storage_field_rows = 0;
+    for candidate in &schema.opcode_candidates {
+        storage_field_rows += candidate.storage.fields.len();
+    }
+    if storage_field_rows == 0 {
+        writeln!(report, "- No storage field candidates were inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |"
+        )
+        .ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | ---: | --- | --- | --- | --- | --- |"
+        )
+        .ok();
+        for candidate in &schema.opcode_candidates {
+            for field in &candidate.storage.fields {
+                writeln!(
+                    report,
+                    "| {} | `{}` | {} | {} | {} | {} | {} | {} | {} |",
+                    markdown_code_opt(candidate.opcode.as_deref()),
+                    markdown_escape(&field.name),
+                    markdown_escape(&field.cell_path),
                     field.bit_offset,
                     format_field_range(field.min_bits, field.max_bits),
                     format_field_range(field.min_refs, field.max_refs),
@@ -1412,6 +1471,7 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
     let mut post_code_hashes = BTreeSet::new();
     let mut post_data_shapes = Vec::new();
     let mut post_code_shapes = Vec::new();
+    let fields = storage_field_candidates(transactions);
 
     for tx in transactions {
         let balance_delta = tx.money.balance_after as i128 - tx.money.balance_before as i128;
@@ -1452,8 +1512,109 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
         code_hash_changed_count,
         post_data_shape: cell_shape_range(&post_data_shapes),
         post_code_shape: cell_shape_range(&post_code_shapes),
+        fields,
         post_data_hashes: post_data_hashes.into_iter().collect(),
         post_code_hashes: post_code_hashes.into_iter().collect(),
+    }
+}
+
+fn storage_field_candidates(transactions: &[&StateFlowTx]) -> Vec<StorageFieldCandidate> {
+    if transactions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut data_word_samples = BTreeSet::new();
+    let mut data_word_present_count = 0;
+    let mut tail_min_bits = u16::MAX;
+    let mut tail_max_bits = 0;
+    let mut tail_min_refs = u8::MAX;
+    let mut tail_max_refs = 0;
+    let mut tail_present_count = 0;
+    let mut tail_samples = BTreeSet::new();
+
+    for tx in transactions {
+        let Some(data_cell) = post_data_cell(&tx.state.post) else {
+            continue;
+        };
+        let slice = data_cell.as_slice_allow_exotic();
+        let bits = slice.size_bits();
+        let refs = slice.size_refs();
+
+        if bits >= 32 {
+            if let Some(word) = read_cell_u32_at(&data_cell, 0) {
+                data_word_present_count += 1;
+                data_word_samples.insert(format_u32_hex(word));
+            }
+        }
+
+        if bits > 32 || refs > 0 {
+            let tail_bits = bits.saturating_sub(32);
+            tail_min_bits = tail_min_bits.min(tail_bits);
+            tail_max_bits = tail_max_bits.max(tail_bits);
+            tail_min_refs = tail_min_refs.min(refs);
+            tail_max_refs = tail_max_refs.max(refs);
+            tail_present_count += 1;
+            tail_samples.insert(format!("{tail_bits} bits, {refs} refs"));
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if data_word_present_count > 0 {
+        candidates.push(StorageFieldCandidate {
+            name: "data_word_0".to_owned(),
+            cell_path: "data".to_owned(),
+            bit_offset: 0,
+            min_bits: 32,
+            max_bits: 32,
+            min_refs: 0,
+            max_refs: 0,
+            kind: "uint32".to_owned(),
+            present_count: data_word_present_count,
+            value_samples: limited_samples(data_word_samples),
+            confidence: field_confidence(data_word_present_count, transactions.len()),
+        });
+    }
+
+    if tail_present_count > 0 {
+        candidates.push(StorageFieldCandidate {
+            name: "data_tail".to_owned(),
+            cell_path: "data".to_owned(),
+            bit_offset: 32,
+            min_bits: tail_min_bits,
+            max_bits: tail_max_bits,
+            min_refs: if tail_min_refs == u8::MAX {
+                0
+            } else {
+                tail_min_refs
+            },
+            max_refs: tail_max_refs,
+            kind: "raw".to_owned(),
+            present_count: tail_present_count,
+            value_samples: limited_samples(tail_samples),
+            confidence: "low".to_owned(),
+        });
+    }
+
+    candidates
+}
+
+fn post_data_cell(snapshot: &ShardAccountSnapshot) -> Option<Cell> {
+    if let Some(boc64) = snapshot
+        .data_cell
+        .as_ref()
+        .and_then(|shape| shape.boc64.as_ref())
+    {
+        return Boc::decode_base64(boc64).ok();
+    }
+
+    let shard_account = Boc::decode_base64(&snapshot.shard_account_boc64)
+        .ok()?
+        .parse::<ShardAccount>()
+        .ok()?;
+    let account = shard_account.load_account().ok()??;
+    match account.state {
+        AccountState::Active(state) => state.data,
+        _ => None,
     }
 }
 
@@ -1606,6 +1767,10 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
 
 fn read_body_u32_at(boc64: &str, bit_offset: u16) -> Option<u32> {
     let cell = Boc::decode_base64(boc64).ok()?;
+    read_cell_u32_at(&cell, bit_offset)
+}
+
+fn read_cell_u32_at(cell: &Cell, bit_offset: u16) -> Option<u32> {
     let mut slice = cell.as_slice_allow_exotic();
     slice.skip_first(bit_offset, 0).ok()?;
     slice.load_u32().ok()
@@ -1631,6 +1796,10 @@ fn limited_samples(values: BTreeSet<String>) -> Vec<String> {
 }
 
 fn body_field_confidence(present_count: usize, transaction_count: usize) -> String {
+    field_confidence(present_count, transaction_count)
+}
+
+fn field_confidence(present_count: usize, transaction_count: usize) -> String {
     if present_count == transaction_count {
         "high".to_owned()
     } else {
@@ -2083,6 +2252,7 @@ fn cell_artifact(cell: &Cell) -> anyhow::Result<CellArtifact> {
 fn cell_shape(cell: &Cell) -> CellShape {
     let slice = cell.as_slice_allow_exotic();
     CellShape {
+        boc64: Some(Boc::encode_base64(cell)),
         hash: cell_hash(cell),
         bits: slice.size_bits(),
         refs: slice.size_refs(),
@@ -2346,6 +2516,47 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_reports_storage_field_candidates() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_storage_data("tx-a", 0xdead_beef, 0xaa),
+                sample_flow_with_storage_data("tx-b", 0xcafe_babe, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let report = super::infer_schema_candidates(&corpus);
+        let candidate = &report.opcode_candidates[0];
+
+        assert_eq!(candidate.storage.fields.len(), 2);
+        assert_eq!(candidate.storage.fields[0].name, "data_word_0");
+        assert_eq!(candidate.storage.fields[0].cell_path, "data");
+        assert_eq!(candidate.storage.fields[0].bit_offset, 0);
+        assert_eq!(candidate.storage.fields[0].kind, "uint32");
+        assert_eq!(
+            candidate.storage.fields[0].value_samples,
+            vec!["0xcafebabe".to_owned(), "0xdeadbeef".to_owned()]
+        );
+        assert_eq!(candidate.storage.fields[1].name, "data_tail");
+        assert_eq!(candidate.storage.fields[1].bit_offset, 32);
+        assert_eq!(candidate.storage.fields[1].min_bits, 8);
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            json["opcodeCandidates"][0]["storage"]["fields"][0]["valueSamples"],
+            serde_json::json!(["0xcafebabe", "0xdeadbeef"])
+        );
+    }
+
+    #[test]
     fn replay_mutation_flips_message_body_bit() {
         let mut body = CellBuilder::new();
         body.store_u32(0).unwrap();
@@ -2445,6 +2656,32 @@ mod tests {
         assert!(report.contains(
             "| `0x00000001` | `payload_tail` | 96 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | low |"
         ));
+    }
+
+    #[test]
+    fn report_renderer_includes_storage_field_candidates() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow_with_storage_data("tx-a", 0xdead_beef, 0xaa)],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains("## Storage Fields"));
+        assert!(report.contains(
+            "| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |"
+        ));
+        assert!(report.contains("| `0x00000001` | `data_word_0` | data | 0 | 32..32 | 0..0 | uint32 | `0xdeadbeef` | high |"));
+        assert!(report.contains("| `0x00000001` | `data_tail` | data | 32 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | low |"));
     }
 
     #[test]
@@ -2586,11 +2823,13 @@ mod tests {
                     code_hash: Some("code".to_owned()),
                     data_hash: Some("data".to_owned()),
                     code_cell: Some(super::CellShape {
+                        boc64: None,
                         hash: "code".to_owned(),
                         bits: 8,
                         refs: 0,
                     }),
                     data_cell: Some(super::CellShape {
+                        boc64: None,
                         hash: "data".to_owned(),
                         bits: 16,
                         refs: 1,
@@ -2657,6 +2896,17 @@ mod tests {
         builder.store_raw(&[tail], 8).unwrap();
         let body = builder.build().unwrap();
         flow.inbound.body = super::cell_artifact(&body).unwrap();
+        flow
+    }
+
+    fn sample_flow_with_storage_data(query_hash: &str, word: u32, tail: u8) -> StateFlowTx {
+        let mut flow = sample_flow(query_hash, Some("0x00000001"));
+        let mut builder = CellBuilder::new();
+        builder.store_u32(word).unwrap();
+        builder.store_raw(&[tail], 8).unwrap();
+        let data = builder.build().unwrap();
+        flow.state.post.data_hash = Some(super::cell_hash(&data));
+        flow.state.post.data_cell = Some(super::cell_shape(&data));
         flow
     }
 
