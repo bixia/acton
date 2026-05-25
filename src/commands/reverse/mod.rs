@@ -425,6 +425,7 @@ fn reverse_smoke_cmd(
         target_count: target_summaries.len(),
         targets: target_summaries,
     };
+    summary.ensure_passes_gate()?;
     write_json(
         &summary,
         Some(out_dir.join("summary.json")),
@@ -574,6 +575,45 @@ struct SmokeRunSummary {
     targets: Vec<SmokeTargetRunSummary>,
 }
 
+impl SmokeRunSummary {
+    fn ensure_passes_gate(&self) -> anyhow::Result<()> {
+        for target in &self.targets {
+            let mut failures = Vec::new();
+            if target.source_tx_count == 0 {
+                failures.push("source transactions 0".to_owned());
+            }
+            if target.retraced_count == 0 {
+                failures.push("retraced transactions 0".to_owned());
+            }
+            if target.failure_count > 0 {
+                failures.push(format!("collection failures {}", target.failure_count));
+            }
+            if target.opcode_candidate_count == 0 {
+                failures.push("opcode candidates 0".to_owned());
+            }
+            if target.state_edge_count == 0 {
+                failures.push("state edges 0".to_owned());
+            }
+            if target.audit_signal_count == 0 {
+                failures.push("audit signals 0".to_owned());
+            }
+            if target.replay_count == 0 {
+                failures.push("replays 0".to_owned());
+            }
+
+            if !failures.is_empty() {
+                anyhow::bail!(
+                    "smoke target {} failed quality gate: {}",
+                    target.id,
+                    failures.join(", ")
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeTargetRunSummary {
@@ -634,5 +674,62 @@ mod tests {
                     .as_ref()
                     .is_some_and(|plan| plan.ignore_chksig)
         }));
+    }
+
+    #[test]
+    fn smoke_summary_gate_rejects_weak_artifacts() {
+        let mut summary = sample_smoke_summary();
+        summary.targets[0].failure_count = 1;
+
+        let err = summary.ensure_passes_gate().unwrap_err().to_string();
+
+        assert!(err.contains("smoke target target-a failed quality gate"));
+        assert!(err.contains("collection failures 1"));
+    }
+
+    #[test]
+    fn smoke_summary_gate_requires_replay_and_state_edges() {
+        let mut summary = sample_smoke_summary();
+        summary.targets[0].state_edge_count = 0;
+        summary.targets[0].replay_count = 0;
+
+        let err = summary.ensure_passes_gate().unwrap_err().to_string();
+
+        assert!(err.contains("state edges 0"));
+        assert!(err.contains("replays 0"));
+    }
+
+    #[test]
+    fn smoke_summary_gate_accepts_full_artifacts() {
+        let summary = sample_smoke_summary();
+
+        summary.ensure_passes_gate().unwrap();
+    }
+
+    fn sample_smoke_summary() -> super::SmokeRunSummary {
+        super::SmokeRunSummary {
+            schema_version: 1,
+            target_count: 1,
+            targets: vec![super::SmokeTargetRunSummary {
+                id: "target-a".to_owned(),
+                network: "mainnet".to_owned(),
+                address: "addr".to_owned(),
+                source_url: None,
+                collect_limit: 2,
+                source_tx_count: 2,
+                retraced_count: 2,
+                failure_count: 0,
+                opcode_candidate_count: 1,
+                state_edge_count: 1,
+                audit_signal_count: 1,
+                replay_count: 1,
+                output_dir: "out/target-a".to_owned(),
+                corpus: "out/target-a/corpus.json".to_owned(),
+                schema: "out/target-a/schema.json".to_owned(),
+                transaction: Some("out/target-a/transaction-0.json".to_owned()),
+                replay: Some("out/target-a/replay.json".to_owned()),
+                report: "out/target-a/report.md".to_owned(),
+            }],
+        }
     }
 }
