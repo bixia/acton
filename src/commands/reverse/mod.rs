@@ -1977,7 +1977,9 @@ fn validate_summary_single_artifact_path(
                 ));
             }
         }
-        [] => {}
+        [] => gate_failures.push(format!(
+            "summary {kind} path {expected_path} is missing from manifest"
+        )),
         _ => gate_failures.push(format!("multiple {kind} artifacts")),
     }
 }
@@ -4423,6 +4425,7 @@ mod tests {
                 {"kind": "runSummary", "path": "summary.json", "targetId": null},
                 {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
                 {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "transaction", "path": "target-a/transaction-0.json", "targetId": "target-a"},
                 {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
             ]
         }))
@@ -4634,6 +4637,34 @@ mod tests {
                 failure.contains("target-a: report target line \"- Address: `addr`\" is missing")
             }),
             "expected report target mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_missing_summary_transaction_artifact() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .retain(|artifact| artifact.kind != "transaction");
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: summary transaction path target-a/transaction-0.json is missing from manifest",
+                )
+            }),
+            "expected missing transaction artifact failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -6401,6 +6432,7 @@ mod tests {
                 {"kind": "runSummary", "path": "summary.json", "targetId": null},
                 {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
                 {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "transaction", "path": "target-a/transaction-0.json", "targetId": "target-a"},
                 {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
                 {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
             ]
