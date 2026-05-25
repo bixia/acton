@@ -2683,9 +2683,14 @@ fn validate_report_schema_deliverables(
 
     if let Some(section) = markdown_section(markdown, "## Replay Probes") {
         for candidate in &schema.opcode_candidates {
+            let opcode = report_opcode_label(candidate.opcode.as_deref());
             for probe in &candidate.replay_probes {
-                if !section.contains(&probe.field_name) || !section.contains(&probe.cli_arg) {
+                let probe_row = report_replay_probe_row(section, &opcode, probe);
+                if probe_row.is_none() {
                     gate_failures.push(format!("report replay probe {} is missing", probe.cli_arg));
+                }
+                if let Some(row) = probe_row {
+                    validate_report_replay_probe_values(probe, &row, gate_failures);
                 }
             }
         }
@@ -2909,6 +2914,56 @@ fn validate_report_message_body_field_cell(
     if actual.is_none_or(|actual| actual != &expected) {
         gate_failures.push(format!(
             "report message body field {label} {expected} for {field_name} is missing"
+        ));
+    }
+}
+
+fn report_replay_probe_row(
+    section: &str,
+    opcode: &str,
+    probe: &ton_stateflow::ReplayProbeCandidate,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == opcode)
+            && cells.get(1).is_some_and(|cell| cell == &probe.field_name)
+            && cells.get(2).is_some_and(|cell| cell == &probe.cli_arg))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_replay_probe_values(
+    probe: &ton_stateflow::ReplayProbeCandidate,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_replay_probe_cell(
+        "confidence",
+        probe.confidence.clone(),
+        probe,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_replay_probe_cell(
+        "evidence",
+        report_sample_list(&probe.evidence),
+        probe,
+        row.get(4),
+        gate_failures,
+    );
+}
+
+fn validate_report_replay_probe_cell(
+    label: &str,
+    expected: String,
+    probe: &ton_stateflow::ReplayProbeCandidate,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report replay probe {label} {expected} for {} is missing",
+            probe.cli_arg
         ));
     }
 }
@@ -4139,6 +4194,64 @@ mod tests {
                 )
             }),
             "expected report message body samples failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_replay_probe_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["replayProbes"] = serde_json::json!([{
+            "fieldName": "query_id",
+            "bitOffset": 32,
+            "bits": 64,
+            "value": "0x6",
+            "mutation": {"type": "flipBodyBit", "bit": 0},
+            "cliArg": "--flip-body-bit 0",
+            "confidence": "high",
+            "evidence": ["tx-a"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_probe("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report replay probe confidence high for --flip-body-bit 0 is missing",
+                )
+            }),
+            "expected report replay probe confidence failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report replay probe evidence tx-a for --flip-body-bit 0 is missing",
+                )
+            }),
+            "expected report replay probe evidence failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -5396,6 +5509,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Message Body Fields\n- No message body field candidates were inferred.",
             "## Message Body Fields\n| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `query_id` | 0 | 32..32 | 1..1 | raw | `0xff` | high |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_replay_probe(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Replay Probes\n- No replay probe candidates were inferred.",
+            "## Replay Probes\n| Opcode | Field | CLI mutation | Confidence | Evidence |\n| --- | --- | --- | --- | --- |\n| `0x00000001` | `query_id` | `--flip-body-bit 0` | low | `tx-b` |",
         )
     }
 
