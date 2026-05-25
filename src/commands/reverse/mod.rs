@@ -135,6 +135,56 @@ pub enum ReverseCommand {
         )]
         output: Option<PathBuf>,
     },
+    #[command(about = "Run collect, infer, replay, and report for one target address")]
+    Analyze {
+        #[arg(help = "Account address in friendly or raw format")]
+        address: String,
+        #[arg(long, help = "Network to use")]
+        net: String,
+        #[arg(
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..),
+            help = "Maximum number of recent account transactions to collect"
+        )]
+        limit: u32,
+        #[arg(
+            long,
+            conflicts_with = "replay_tx_hash",
+            help = "Corpus transaction index to replay"
+        )]
+        replay_tx_index: Option<usize>,
+        #[arg(
+            long,
+            conflicts_with = "replay_tx_index",
+            help = "Corpus transaction hash to replay"
+        )]
+        replay_tx_hash: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "body_boc64",
+            value_name = "FLIP_BODY_BIT",
+            help = "Flip one inbound message body bit before replay"
+        )]
+        flip_body_bit: Option<u16>,
+        #[arg(
+            long,
+            conflicts_with = "flip_body_bit",
+            value_name = "BODY_BOC64",
+            help = "Replace inbound message body with this base64 BoC before replay"
+        )]
+        body_boc64: Option<String>,
+        #[arg(long, help = "Ignore TVM signature checks during local replay")]
+        ignore_chksig: bool,
+        #[arg(
+            long,
+            default_value = "target/stateflow-analysis",
+            help = "Directory for analysis output artifacts"
+        )]
+        out_dir: PathBuf,
+        #[arg(long, help = "Pretty-print JSON output artifacts")]
+        pretty: bool,
+    },
     #[command(about = "Run state-flow smoke targets through collect, infer, replay, and report")]
     Smoke {
         #[arg(
@@ -201,6 +251,29 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             replay,
             output,
         } => reverse_report_cmd(corpus, schema, replay, output),
+        ReverseCommand::Analyze {
+            address,
+            net,
+            limit,
+            replay_tx_index,
+            replay_tx_hash,
+            flip_body_bit,
+            body_boc64,
+            ignore_chksig,
+            out_dir,
+            pretty,
+        } => reverse_analyze_cmd(
+            &address,
+            &net,
+            limit,
+            replay_tx_index,
+            replay_tx_hash,
+            flip_body_bit,
+            body_boc64,
+            ignore_chksig,
+            out_dir,
+            pretty,
+        ),
         ReverseCommand::Smoke {
             targets,
             target_id,
@@ -383,6 +456,31 @@ fn reverse_report_cmd(
     write_text(&report, output, "State-flow report")
 }
 
+fn reverse_analyze_cmd(
+    address: &str,
+    net: &str,
+    limit: u32,
+    replay_tx_index: Option<usize>,
+    replay_tx_hash: Option<String>,
+    flip_body_bit: Option<u16>,
+    body_boc64: Option<String>,
+    ignore_chksig: bool,
+    out_dir: PathBuf,
+    pretty: bool,
+) -> anyhow::Result<()> {
+    let target = analysis_target_from_args(
+        address,
+        net,
+        limit,
+        replay_tx_index,
+        replay_tx_hash,
+        flip_body_bit,
+        body_boc64,
+        ignore_chksig,
+    )?;
+    run_state_flow_targets(vec![&target], out_dir, pretty)
+}
+
 fn reverse_smoke_cmd(
     targets: PathBuf,
     target_id: Option<&str>,
@@ -394,6 +492,14 @@ fn reverse_smoke_cmd(
     let manifest = SmokeManifest::from_json(&manifest_json)
         .with_context(|| format!("failed to parse {}", targets.display()))?;
     let selected_targets = manifest.selected_targets(target_id)?;
+    run_state_flow_targets(selected_targets, out_dir, pretty)
+}
+
+fn run_state_flow_targets(
+    selected_targets: Vec<&SmokeTarget>,
+    out_dir: PathBuf,
+    pretty: bool,
+) -> anyhow::Result<()> {
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
 
@@ -436,13 +542,13 @@ fn reverse_smoke_cmd(
         let mut replay_path = None;
         let mut transaction_path = None;
         if let Some(plan) = &target.replay_mutation {
-            let flow = corpus.transactions.first().with_context(|| {
-                format!(
-                    "smoke target {} produced no retraced transactions for replay",
-                    target.id
-                )
-            })?;
-            let tx_path = target_dir.join("transaction-0.json");
+            let (flow_index, flow) = select_corpus_transaction_ref(
+                &corpus,
+                target.replay_tx_index,
+                target.replay_tx_hash.as_deref(),
+                &format!("smoke target {}", target.id),
+            )?;
+            let tx_path = target_dir.join(format!("transaction-{flow_index}.json"));
             write_json(
                 flow,
                 Some(tx_path.clone()),
@@ -609,7 +715,41 @@ struct SmokeTarget {
     address: String,
     source_url: Option<String>,
     collect_limit: u32,
+    #[serde(default)]
+    replay_tx_index: Option<usize>,
+    #[serde(default)]
+    replay_tx_hash: Option<String>,
     replay_mutation: Option<SmokeReplayMutation>,
+}
+
+fn analysis_target_from_args(
+    address: &str,
+    net: &str,
+    limit: u32,
+    replay_tx_index: Option<usize>,
+    replay_tx_hash: Option<String>,
+    flip_body_bit: Option<u16>,
+    body_boc64: Option<String>,
+    ignore_chksig: bool,
+) -> anyhow::Result<SmokeTarget> {
+    if replay_tx_index.is_some() && replay_tx_hash.is_some() {
+        anyhow::bail!("only one replay transaction selector can be provided");
+    }
+
+    Ok(SmokeTarget {
+        id: "analysis".to_owned(),
+        network: net.to_owned(),
+        address: address.to_owned(),
+        source_url: None,
+        collect_limit: limit,
+        replay_tx_index,
+        replay_tx_hash,
+        replay_mutation: Some(SmokeReplayMutation::from_args(
+            flip_body_bit,
+            body_boc64,
+            ignore_chksig,
+        )?),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -624,6 +764,34 @@ struct SmokeReplayMutation {
 }
 
 impl SmokeReplayMutation {
+    fn from_args(
+        flip_body_bit: Option<u16>,
+        body_boc64: Option<String>,
+        ignore_chksig: bool,
+    ) -> anyhow::Result<Self> {
+        match (flip_body_bit, body_boc64) {
+            (Some(bit), None) => Ok(Self {
+                mutation_type: "flipBodyBit".to_owned(),
+                bit: Some(bit),
+                body_boc64: None,
+                ignore_chksig,
+            }),
+            (None, Some(body_boc64)) => Ok(Self {
+                mutation_type: "replaceBody".to_owned(),
+                bit: None,
+                body_boc64: Some(body_boc64),
+                ignore_chksig,
+            }),
+            (None, None) => Ok(Self {
+                mutation_type: "none".to_owned(),
+                bit: None,
+                body_boc64: None,
+                ignore_chksig,
+            }),
+            (Some(_), Some(_)) => anyhow::bail!("only one replay mutation can be selected"),
+        }
+    }
+
     fn to_replay_mutation(&self) -> anyhow::Result<ReplayMutation> {
         match self.mutation_type.as_str() {
             "none" => Ok(ReplayMutation::None),
@@ -731,6 +899,37 @@ fn safe_path_segment(value: &str) -> String {
     }
 }
 
+fn select_corpus_transaction_ref<'a>(
+    corpus: &'a StateFlowCorpus,
+    tx_index: Option<usize>,
+    tx_hash: Option<&str>,
+    label: &str,
+) -> anyhow::Result<(usize, &'a StateFlowTx)> {
+    if tx_index.is_some() && tx_hash.is_some() {
+        anyhow::bail!("only one corpus transaction selector can be provided");
+    }
+    if let Some(tx_hash) = tx_hash {
+        return corpus
+            .transactions
+            .iter()
+            .enumerate()
+            .find(|(_, flow)| flow.query_hash == tx_hash)
+            .with_context(|| format!("{label} transaction hash {tx_hash:?} was not found"));
+    }
+
+    let tx_index = tx_index.unwrap_or(0);
+    corpus
+        .transactions
+        .get(tx_index)
+        .map(|flow| (tx_index, flow))
+        .with_context(|| {
+            format!(
+                "{label} transaction index {tx_index} out of range for {} transaction(s)",
+                corpus.transactions.len()
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -782,6 +981,25 @@ mod tests {
         let summary = sample_smoke_summary();
 
         summary.ensure_passes_gate().unwrap();
+    }
+
+    #[test]
+    fn analysis_target_defaults_to_baseline_replay() {
+        let target =
+            super::analysis_target_from_args("addr", "mainnet", 2, None, None, None, None, false)
+                .expect("analysis target should build");
+
+        assert_eq!(target.id, "analysis");
+        assert_eq!(target.address, "addr");
+        assert_eq!(target.network, "mainnet");
+        assert_eq!(target.collect_limit, 2);
+        assert_eq!(target.replay_tx_index, None);
+        assert_eq!(target.replay_tx_hash, None);
+        let replay = target
+            .replay_mutation
+            .expect("analysis should replay by default");
+        assert_eq!(replay.mutation_type, "none");
+        assert!(!replay.ignore_chksig);
     }
 
     #[test]

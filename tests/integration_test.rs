@@ -486,6 +486,43 @@ fn test_acton_reverse_smoke_help() {
 }
 
 #[test]
+fn test_acton_reverse_analyze_help() {
+    let output = snapbox::cmd::Command::acton_ui()
+        .arg("reverse")
+        .arg("analyze")
+        .arg("--help")
+        .output()
+        .expect("failed to run acton reverse analyze --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse analyze --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Run collect, infer, replay, and report for one target address",
+        "Usage: acton reverse analyze",
+        "--net <NET>",
+        "--limit <LIMIT>",
+        "--replay-tx-index <REPLAY_TX_INDEX>",
+        "--replay-tx-hash <REPLAY_TX_HASH>",
+        "--flip-body-bit <FLIP_BODY_BIT>",
+        "--body-boc64 <BODY_BOC64>",
+        "--ignore-chksig",
+        "--out-dir <OUT_DIR>",
+        "--pretty",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse analyze --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_help_retrace() {
     snapbox::cmd::Command::acton_ui()
         .arg("help")
