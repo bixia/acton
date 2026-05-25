@@ -873,7 +873,14 @@ pub fn render_state_flow_report(
         )
         .ok();
         for field in &candidate.unknown_fields {
-            writeln!(report, "  - {}", field).ok();
+            writeln!(
+                report,
+                "  - {} (confidence: {}; evidence: {})",
+                field,
+                markdown_escape(&candidate.confidence),
+                markdown_code_list(&candidate.examples)
+            )
+            .ok();
         }
     }
     writeln!(report).ok();
@@ -3206,6 +3213,32 @@ mod tests {
         assert!(report.contains("## State Machine Evidence"));
         assert!(report.contains("| From | To | Opcode | Count | Confidence | Evidence |"));
         assert!(report.contains("| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |"));
+    }
+
+    #[test]
+    fn report_renderer_includes_unknown_field_confidence_and_evidence() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow("tx-a", Some("0x00000001")),
+                sample_flow("tx-b", Some("0x00000001")),
+            ],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains(
+            "  - message body field names require TL-B recovery (confidence: medium; evidence: `tx-a`, `tx-b`)"
+        ));
     }
 
     #[test]

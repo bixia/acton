@@ -2715,10 +2715,20 @@ fn validate_report_schema_deliverables(
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
             for field in &candidate.unknown_fields {
-                if !report_unknown_field_exists(section, &opcode, field) {
+                let unknown_field = report_unknown_field_line_for(section, &opcode, field);
+                if unknown_field.is_none() {
                     gate_failures.push(format!(
                         "report unknown field {field} for {opcode} is missing"
                     ));
+                }
+                if let Some(line) = unknown_field {
+                    validate_report_unknown_field_values(
+                        candidate,
+                        &opcode,
+                        field,
+                        line,
+                        gate_failures,
+                    );
                 }
             }
         }
@@ -3163,18 +3173,103 @@ fn validate_report_storage_field_cell(
     }
 }
 
-fn report_unknown_field_exists(section: &str, opcode: &str, field: &str) -> bool {
+fn report_unknown_field_line_for<'a>(
+    section: &'a str,
+    opcode: &str,
+    field: &str,
+) -> Option<&'a str> {
     let mut current_opcode: Option<String> = None;
     for line in section.lines() {
         if let Some(header_opcode) = report_unknown_field_opcode_header(line) {
             current_opcode = Some(header_opcode);
         } else if current_opcode.as_deref() == Some(opcode)
-            && report_unknown_field_line(line).is_some_and(|actual| actual == field)
+            && report_unknown_field_matches(line, field)
         {
-            return true;
+            return report_unknown_field_line(line);
         }
     }
-    false
+    None
+}
+
+fn validate_report_unknown_field_values(
+    candidate: &ton_stateflow::OpcodeSchemaCandidate,
+    opcode: &str,
+    field: &str,
+    line: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(details) = report_unknown_field_details(line, field) else {
+        return;
+    };
+    validate_report_unknown_field_cell(
+        "confidence",
+        candidate.confidence.clone(),
+        opcode,
+        field,
+        details.confidence.as_deref(),
+        gate_failures,
+    );
+    validate_report_unknown_field_cell(
+        "evidence",
+        report_sample_list(&candidate.examples),
+        opcode,
+        field,
+        details.evidence.as_deref(),
+        gate_failures,
+    );
+}
+
+fn validate_report_unknown_field_cell(
+    label: &str,
+    expected: String,
+    opcode: &str,
+    field: &str,
+    actual: Option<&str>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != expected) {
+        gate_failures.push(format!(
+            "report unknown field {label} {expected} for {field} on {opcode} is missing"
+        ));
+    }
+}
+
+struct UnknownFieldDetails {
+    confidence: Option<String>,
+    evidence: Option<String>,
+}
+
+fn report_unknown_field_details(line: &str, field: &str) -> Option<UnknownFieldDetails> {
+    let suffix = line.strip_prefix(field)?;
+    if suffix.is_empty() {
+        return None;
+    }
+    let details = suffix
+        .strip_prefix(" (")
+        .and_then(|suffix| suffix.strip_suffix(')'))?;
+    let mut confidence = None;
+    let mut evidence = None;
+    for part in details.split(';') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("confidence: ") {
+            confidence = Some(value.trim().to_owned());
+        } else if let Some(value) = part.strip_prefix("evidence: ") {
+            evidence = Some(value.trim().replace('`', ""));
+        }
+    }
+    Some(UnknownFieldDetails {
+        confidence,
+        evidence,
+    })
+}
+
+fn report_unknown_field_matches(line: &str, field: &str) -> bool {
+    report_unknown_field_line(line).is_some_and(|actual| {
+        actual == field
+            || actual
+                .strip_prefix(field)
+                .is_some_and(|suffix| suffix.starts_with(" ("))
+    })
 }
 
 fn report_unknown_field_opcode_header(line: &str) -> Option<String> {
@@ -4851,6 +4946,56 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_unknown_field_evidence_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["unknownFields"] =
+            serde_json::json!(["payload tail requires TL-B recovery"]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_unknown_field_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report unknown field confidence medium for payload tail requires TL-B recovery on 0x00000001 is missing",
+                )
+            }),
+            "expected report unknown field confidence failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report unknown field evidence tx-a, tx-b for payload tail requires TL-B recovery on 0x00000001 is missing",
+                )
+            }),
+            "expected report unknown field evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_state_machine_evidence_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6247,6 +6392,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Unknown Fields\n- `0x00000001`:",
             "## Unknown Fields\n- `0x00000001`:\n- `0x00000002`:\n  - payload tail requires TL-B recovery",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_unknown_field_evidence(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Unknown Fields\n- `0x00000001`:",
+            "## Unknown Fields\n- `0x00000001`:\n  - payload tail requires TL-B recovery (confidence: low; evidence: `tx-b`)",
         )
     }
 
