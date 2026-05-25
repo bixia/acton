@@ -2285,15 +2285,41 @@ fn validate_schema_replay_probe_artifacts(
         for probe in &candidate.replay_probes {
             if !replays
                 .iter()
-                .any(|replay| replay_mutations_match(&replay.mutation, &probe.mutation))
+                .any(|replay| replay_matches_schema_probe(replay, probe))
             {
                 gate_failures.push(format!(
                     "schema replay probe {} has no matching replay artifact",
                     probe.cli_arg
                 ));
+            } else if !replays
+                .iter()
+                .any(|replay| replay_matches_schema_probe_source(replay, probe))
+            {
+                gate_failures.push(format!(
+                    "schema replay probe {} has no replay artifact for evidence source",
+                    probe.cli_arg
+                ));
             }
         }
     }
+}
+
+fn replay_matches_schema_probe(
+    replay: &StateFlowReplayDiff,
+    probe: &ton_stateflow::ReplayProbeCandidate,
+) -> bool {
+    replay_mutations_match(&replay.mutation, &probe.mutation)
+}
+
+fn replay_matches_schema_probe_source(
+    replay: &StateFlowReplayDiff,
+    probe: &ton_stateflow::ReplayProbeCandidate,
+) -> bool {
+    replay_matches_schema_probe(replay, probe)
+        && probe
+            .evidence
+            .iter()
+            .any(|tx_hash| tx_hash == &replay.source_query_hash)
 }
 
 fn replay_mutations_match(actual: &ReplayMutation, expected: &ReplayMutation) -> bool {
@@ -3559,6 +3585,133 @@ mod tests {
                 )
             }),
             "expected schema replay probe artifact failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_probe_replayed_from_wrong_source() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "transactionCount": 2,
+                "stateMachine": {
+                    "edges": [{
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "opcode": "0x00000001",
+                        "count": 2,
+                        "examples": ["tx-a", "tx-b"]
+                    }]
+                },
+                "auditSignals": [{
+                    "kind": "unknown-fields",
+                    "severity": "info",
+                    "description": "Unknown fields remain.",
+                    "evidence": ["tx-a"]
+                }],
+                "opcodeCandidates": [{
+                    "opcode": "0x00000001",
+                    "count": 2,
+                    "examples": ["tx-a", "tx-b"],
+                    "evidence": [{
+                        "txHash": "tx-a",
+                        "inboundBodyHash": "body",
+                        "inboundBodyBits": 32,
+                        "inboundBodyRefs": 0,
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "preDataHash": null,
+                        "postDataHash": null,
+                        "preCodeHash": null,
+                        "postCodeHash": null,
+                        "outboundKinds": [],
+                        "outActionKinds": []
+                    }],
+                    "inboundBody": {
+                        "minBits": 32,
+                        "maxBits": 32,
+                        "minRefs": 0,
+                        "maxRefs": 0,
+                        "bodyHashes": []
+                    },
+                    "replayProbes": [{
+                        "fieldName": "query_id",
+                        "bitOffset": 32,
+                        "bits": 64,
+                        "value": "42",
+                        "mutation": {
+                            "type": "setBodyUint",
+                            "bitOffset": 32,
+                            "bits": 64,
+                            "value": "42"
+                        },
+                        "cliArg": "--set-body-uint 32:64:42",
+                        "confidence": "high",
+                        "evidence": ["tx-b"]
+                    }],
+                    "stateTransitions": [],
+                    "outboundEffects": [],
+                    "outActions": [],
+                    "confidence": "medium",
+                    "unknownFields": []
+                }]
+            })
+            .to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {
+                    "type": "setBodyUint",
+                    "bitOffset": 32,
+                    "bits": 64,
+                    "value": "42"
+                },
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": sample_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                }
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema replay probe --set-body-uint 32:64:42 has no replay artifact for evidence source",
+                )
+            }),
+            "expected schema replay probe source failure, got {:?}",
             validation.gate_failures
         );
     }
