@@ -675,13 +675,15 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
     ],
     sections: [
       {
-        title: "Deltas",
+        title: "Replay Observations",
         rows: [
-          {label: "Outbound", value: formatNullable(replay.diff.outboundCountDelta)},
-          {label: "Actions", value: formatNullable(replay.diff.actionCountDelta)},
-          {label: "Balance", value: formatNullable(replay.diff.balanceDeltaDiff)},
-          {label: "c5", value: optionalChangedLabel(replay.diff.c5Changed)},
+          replayObservationRow("baseline", replay.baseline),
+          replayObservationRow("replay", replay.replay),
         ],
+      },
+      {
+        title: "Replay Diff",
+        rows: replayDiffRows(replay.diff),
       },
       {
         title: "Risk Points",
@@ -1080,6 +1082,39 @@ function schemaAuditSignals(schema: StateFlowSchemaReport): readonly AuditSignal
 
     return signals
   })
+}
+
+function replayObservationRow(label: string, observation: ReplayObservation): SummaryRow {
+  return {
+    label,
+    value: observation.accepted ? "accepted" : "rejected",
+    detail: [
+      `opcode ${observation.inbound.opcode ?? "<none>"}`,
+      `body ${shortHash(observation.inbound.body.hash)}`,
+      `outbound ${observation.outbound.length}`,
+      `actions ${observation.outActions.length}`,
+      `exit ${formatNullable(observation.compute?.exitCode)}`,
+      observation.c5 ? `c5 ${shortHash(observation.c5.hash)}` : undefined,
+      observation.error ? `error ${observation.error.message}` : undefined,
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }
+}
+
+function replayDiffRows(diff: ReplayDiffSummary): readonly SummaryRow[] {
+  return [
+    {label: "Input", value: changedLabel(diff.inputChanged)},
+    {label: "Replay Accepted", value: yesNo(diff.replayAccepted)},
+    {label: "State", value: optionalChangedLabel(diff.stateChanged)},
+    {label: "Code Hash", value: optionalChangedLabel(diff.codeHashChanged)},
+    {label: "Data Hash", value: optionalChangedLabel(diff.dataHashChanged)},
+    {label: "Exit Code", value: optionalChangedLabel(diff.exitCodeChanged)},
+    {label: "Balance Delta", value: formatNullable(diff.balanceDeltaDiff)},
+    {label: "Outbound Delta", value: formatNullable(diff.outboundCountDelta)},
+    {label: "Action Delta", value: formatNullable(diff.actionCountDelta)},
+    {label: "c5", value: optionalChangedLabel(diff.c5Changed)},
+  ]
 }
 
 function replayRiskRows(replay: StateFlowReplayDiff): readonly SummaryRow[] {

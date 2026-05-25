@@ -150,8 +150,23 @@ const replay = {
   sourceQueryHash: "tx-hash",
   mutation: {type: "flipBodyBit", bit: 32},
   ignoreChksig: true,
-  baseline: {accepted: true, inbound: stateFlowTx.inbound, outbound: [], outActions: []},
-  replay: {accepted: true, inbound: stateFlowTx.inbound, outbound: [], outActions: []},
+  baseline: {
+    accepted: true,
+    inbound: stateFlowTx.inbound,
+    outbound: [],
+    compute: stateFlowTx.compute,
+    outActions: [],
+  },
+  replay: {
+    accepted: true,
+    inbound: {
+      ...stateFlowTx.inbound,
+      body: {boc64: "body-b", hash: "body-b", bits: 32, refs: 0},
+    },
+    outbound: [],
+    compute: {...stateFlowTx.compute, exitCode: 1},
+    outActions: [],
+  },
   diff: {
     replayAccepted: true,
     inputChanged: true,
@@ -289,6 +304,19 @@ assert(
 assert(
   schemaSummary.sections.some(section => section.title === "Risk Points"),
   "expected schema summary to include risk points",
+)
+const replaySummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(replay)))
+assert(
+  replaySummary.sections
+    .find(section => section.title === "Replay Observations")
+    ?.rows[1]?.detail?.includes("body body-b") === true,
+  "expected replay summary to include replay observation body hash",
+)
+assert(
+  replaySummary.sections
+    .find(section => section.title === "Replay Diff")
+    ?.rows.some(row => row.label === "Input" && row.value === "changed") === true,
+  "expected replay summary to include replay diff rows",
 )
 const runSummaryView = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(runSummary)),

@@ -151,6 +151,14 @@ const replay = {
       body: {boc64: "body-a", hash: "body-a", bits: 32, refs: 0},
     },
     outbound: [],
+    compute: {
+      skipped: false,
+      success: true,
+      exitCode: 0,
+      vmSteps: 12,
+      gasUsed: 3,
+      gasFees: 4,
+    },
     outActions: [],
   },
   replay: {
@@ -163,6 +171,14 @@ const replay = {
       body: {boc64: "body-b", hash: "body-b", bits: 32, refs: 0},
     },
     outbound: [],
+    compute: {
+      skipped: false,
+      success: false,
+      exitCode: 7,
+      vmSteps: 13,
+      gasUsed: 5,
+      gasFees: 6,
+    },
     outActions: [],
   },
   diff: {
@@ -363,6 +379,39 @@ assert(
 )
 
 const replaySummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(replay)))
+const replayObservationRows = sectionRows(replaySummary, "Replay Observations")
+assert(replayObservationRows[0]?.label === "baseline", "expected baseline observation row")
+assert(replayObservationRows[0]?.value === "accepted", "expected accepted baseline row")
+assert(
+  replayObservationRows[0]?.detail?.includes("body body-a") === true,
+  "expected baseline body hash in replay observation",
+)
+assert(
+  replayObservationRows[0]?.detail?.includes("exit 0") === true,
+  "expected baseline exit code in replay observation",
+)
+assert(replayObservationRows[1]?.label === "replay", "expected replay observation row")
+assert(
+  replayObservationRows[1]?.detail?.includes("body body-b") === true,
+  "expected replay body hash in replay observation",
+)
+assert(
+  replayObservationRows[1]?.detail?.includes("exit 7") === true,
+  "expected replay exit code in replay observation",
+)
+const replayDiffRows = sectionRows(replaySummary, "Replay Diff")
+assert(
+  replayDiffRows.some(row => row.label === "Input" && row.value === "changed"),
+  "expected replay diff input row",
+)
+assert(
+  replayDiffRows.some(row => row.label === "Data Hash" && row.value === "changed"),
+  "expected replay diff data hash row",
+)
+assert(
+  replayDiffRows.some(row => row.label === "Balance Delta" && row.value === "4"),
+  "expected replay diff balance delta row",
+)
 const replayRiskRows = sectionRows(replaySummary, "Risk Points")
 assert(
   replayRiskRows.some(row => row.value === "Mutation changed state"),
