@@ -2481,6 +2481,14 @@ fn validate_schema_opcode_candidate_matches_corpus(
         let expected = corpus_storage_field_candidate(field, &matching_transactions);
         validate_schema_storage_field_matches_corpus(field, expected.as_ref(), gate_failures);
     }
+    for transition in &candidate.state_transitions {
+        validate_schema_opcode_state_transition_matches_corpus(
+            transition,
+            &opcode,
+            &matching_transactions,
+            gate_failures,
+        );
+    }
     for effect in &candidate.outbound_effects {
         let expected = corpus_outbound_effect_aggregate(effect, &matching_transactions);
         validate_schema_effect_matches_corpus("outbound", effect, expected, gate_failures);
@@ -2489,6 +2497,32 @@ fn validate_schema_opcode_candidate_matches_corpus(
         let expected = corpus_action_effect_aggregate(effect, &matching_transactions);
         validate_schema_effect_matches_corpus("action", effect, expected, gate_failures);
     }
+}
+
+fn validate_schema_opcode_state_transition_matches_corpus(
+    transition: &ton_stateflow::StateTransitionCandidate,
+    opcode: &str,
+    transactions: &[&StateFlowTx],
+    gate_failures: &mut Vec<String>,
+) {
+    let matching_count = transactions
+        .iter()
+        .filter(|tx| {
+            tx.state.pre.status == transition.from_status
+                && tx.state.post.status == transition.to_status
+        })
+        .count();
+    validate_evidence_value_field(
+        "schema opcode state transition count",
+        transition.count,
+        "corpus opcode state transition count",
+        matching_count,
+        &format!(
+            "{opcode} {} -> {}",
+            transition.from_status, transition.to_status
+        ),
+        gate_failures,
+    );
 }
 
 fn corpus_body_field_candidate(
@@ -6292,6 +6326,45 @@ mod tests {
                 )
             }),
             "expected storage balance delta mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_opcode_state_transition_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["stateTransitions"] = serde_json::json!([{
+            "fromStatus": "active",
+            "toStatus": "frozen",
+            "count": 1
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema opcode state transition count 1 for 0x00000001 active -> frozen does not match corpus opcode state transition count 0",
+                )
+            }),
+            "expected opcode state transition count mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
