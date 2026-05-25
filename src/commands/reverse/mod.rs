@@ -2805,11 +2805,23 @@ fn validate_report_state_machine_evidence_values(
         row.get(3),
         gate_failures,
     );
+    let evidence_index = if row.len() >= 6 {
+        validate_report_state_machine_evidence_cell(
+            "confidence",
+            report_state_machine_edge_confidence(edge.count).to_owned(),
+            edge,
+            row.get(4),
+            gate_failures,
+        );
+        5
+    } else {
+        4
+    };
     validate_report_state_machine_evidence_cell(
         "evidence",
         report_sample_list(&edge.examples),
         edge,
-        row.get(4),
+        row.get(evidence_index),
         gate_failures,
     );
 }
@@ -2836,6 +2848,14 @@ fn report_state_machine_evidence_label(edge: &ton_stateflow::StateMachineEdge) -
         edge.to_status,
         report_opcode_label(edge.opcode.as_deref())
     )
+}
+
+fn report_state_machine_edge_confidence(count: usize) -> &'static str {
+    match count {
+        3.. => "high",
+        2 => "medium",
+        _ => "low",
+    }
 }
 
 fn validate_report_effect_row(
@@ -4870,6 +4890,36 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_state_machine_evidence_confidence_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_state_machine_evidence_confidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report state machine evidence confidence medium for none -> active 0x00000001 is missing",
+                )
+            }),
+            "expected report state machine evidence confidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_risk_evidence_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6209,8 +6259,17 @@ mod tests {
 
     fn sample_report_markdown_with_wrong_state_machine_evidence(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |",
-            "| none | active | `0x00000001` | 9 | `tx-a` |",
+            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
+            "| none | active | `0x00000001` | 9 | medium | `tx-a` |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_state_machine_evidence_confidence(
+        address: &str,
+    ) -> String {
+        sample_report_markdown(address).replace(
+            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
+            "| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |",
         )
     }
 
@@ -6259,7 +6318,7 @@ mod tests {
             ""
         };
         let state_machine_evidence_row = if include_schema_summary_rows {
-            "| none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |\n"
+            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |\n"
         } else {
             ""
         };
@@ -6307,8 +6366,8 @@ mod tests {
              ```\n\
              \n\
              ## State Machine Evidence\n\
-             | From | To | Opcode | Count | Evidence |\n\
-             | --- | --- | --- | ---: | --- |\n\
+             | From | To | Opcode | Count | Confidence | Evidence |\n\
+             | --- | --- | --- | ---: | --- | --- |\n\
              {state_machine_evidence_row}\
              \n\
              ## Unknown Fields\n\

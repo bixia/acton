@@ -839,16 +839,21 @@ pub fn render_state_flow_report(
     if schema.state_machine.edges.is_empty() {
         writeln!(report, "- No state-machine edge evidence was inferred.").ok();
     } else {
-        writeln!(report, "| From | To | Opcode | Count | Evidence |").ok();
-        writeln!(report, "| --- | --- | --- | ---: | --- |").ok();
+        writeln!(
+            report,
+            "| From | To | Opcode | Count | Confidence | Evidence |"
+        )
+        .ok();
+        writeln!(report, "| --- | --- | --- | ---: | --- | --- |").ok();
         for edge in &schema.state_machine.edges {
             writeln!(
                 report,
-                "| {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} |",
                 markdown_escape(&edge.from_status),
                 markdown_escape(&edge.to_status),
                 markdown_code_opt(edge.opcode.as_deref()),
                 edge.count,
+                state_machine_edge_confidence(edge.count),
                 markdown_code_list(&edge.examples),
             )
             .ok();
@@ -972,6 +977,14 @@ fn render_state_machine(schema: &StateFlowSchemaReport) -> Vec<String> {
     lines.sort();
     lines.dedup();
     lines
+}
+
+fn state_machine_edge_confidence(count: usize) -> &'static str {
+    match count {
+        3.. => "high",
+        2 => "medium",
+        _ => "low",
+    }
 }
 
 fn infer_risk_points(
@@ -3191,8 +3204,8 @@ mod tests {
         let report = super::render_state_flow_report(&corpus, &schema, &[]);
 
         assert!(report.contains("## State Machine Evidence"));
-        assert!(report.contains("| From | To | Opcode | Count | Evidence |"));
-        assert!(report.contains("| none | active | `0x00000001` | 2 | `tx-a`, `tx-b` |"));
+        assert!(report.contains("| From | To | Opcode | Count | Confidence | Evidence |"));
+        assert!(report.contains("| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |"));
     }
 
     #[test]
