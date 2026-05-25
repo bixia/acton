@@ -5025,9 +5025,7 @@ fn validate_manifest_transaction_membership(
     let Some(corpus) = corpus else {
         return;
     };
-    if let Some(flow) =
-        read_single_target_json_artifact::<StateFlowTx>(manifest_path, artifacts, "transaction")
-    {
+    for flow in read_target_json_artifacts::<StateFlowTx>(manifest_path, artifacts, "transaction") {
         let corpus_flow = corpus
             .transactions
             .iter()
@@ -6876,6 +6874,43 @@ mod tests {
                 )
             }),
             "expected missing transaction artifact failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_extra_transaction_outside_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-1.json",
+            &sample_state_flow_json("foreign-tx").to_string(),
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .push(super::SmokeArtifactManifestEntry::new(
+                "transaction",
+                "target-a/transaction-1.json",
+                Some("target-a".to_owned()),
+            ));
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction query hash foreign-tx is not present in corpus transactions",
+                )
+            }),
+            "expected transaction corpus membership failure, got {:?}",
             validation.gate_failures
         );
     }
