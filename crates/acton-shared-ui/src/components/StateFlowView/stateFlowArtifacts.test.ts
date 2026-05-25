@@ -351,6 +351,12 @@ assert(
   "expected schema summary to include state machine edge count",
 )
 assert(
+  schemaSummary.sections
+    .find(section => section.title === "State Machine")
+    ?.rows[0]?.detail?.includes("examples tx-hash") === true,
+  "expected schema state machine row to include evidence examples",
+)
+assert(
   schemaSummary.metrics.some(metric => metric.label === "Replay Probes" && metric.value === "1"),
   "expected schema summary to include replay probe count",
 )

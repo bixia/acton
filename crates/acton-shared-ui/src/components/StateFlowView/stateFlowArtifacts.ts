@@ -670,7 +670,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
               rows: stateEdges.map(edge => ({
                 label: edge.opcode ?? "<none>",
                 value: `${edge.fromStatus} -> ${edge.toStatus}`,
-                detail: `${edge.count} ${plural(edge.count, "observed transition")}`,
+                detail: stateMachineEdgeDetail(edge),
               })),
             },
           ]
@@ -1157,6 +1157,17 @@ function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachine
       examples: candidate.examples,
     })),
   )
+}
+
+function stateMachineEdgeDetail(edge: StateMachineEdge): string {
+  return [
+    `${edge.count} ${plural(edge.count, "observed transition")}`,
+    edge.examples.length > 0
+      ? `examples ${edge.examples.map(hash => shortHash(hash)).join(", ")}`
+      : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" · ")
 }
 
 function schemaAuditSignals(schema: StateFlowSchemaReport): readonly AuditSignal[] {
