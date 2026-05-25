@@ -627,6 +627,10 @@
   align-items: start;
 }
 
+.stateFlowLayout {
+  width: min(1280px, 100%);
+}
+
 .homeMainColumn,
 .homeSideColumn {
   min-width: 0;

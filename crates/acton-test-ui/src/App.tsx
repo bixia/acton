@@ -2,7 +2,7 @@ import * as React from "react"
 import {useCallback, useEffect, useRef, useState} from "react"
 import {FiChevronRight, FiWifiOff} from "react-icons/fi"
 
-import type {TestReport, Trace} from "@acton/shared-ui"
+import {StateFlowArtifactWorkbench, type TestReport, type Trace} from "@acton/shared-ui"
 
 import styles from "./App.module.css"
 import {Coverage} from "./components/Coverage/Coverage"
@@ -10,6 +10,7 @@ import {Sidebar} from "./components/Sidebar/Sidebar"
 import {TestDetails} from "./components/TestDetails/TestDetails"
 
 const RUNNER_HEALTH_POLL_INTERVAL_MS = 1500
+type MainView = "tests" | "coverage" | "stateFlow"
 
 const formatResponseError = (response: Response, body: string): string => {
   const status = `${response.status} ${response.statusText}`.trim()
@@ -74,9 +75,9 @@ export const App: React.FC = () => {
   const [coverageLcov, setCoverageLcov] = useState<string | undefined>()
   const [coverageLoaded, setCoverageLoaded] = useState(false)
   const [connectionLost, setConnectionLost] = useState(false)
-  const [activeView, setActiveView] = useState<"tests" | "coverage">(() => {
+  const [activeView, setActiveView] = useState<MainView>(() => {
     const saved = localStorage.getItem("activeMainView")
-    return saved === "coverage" ? "coverage" : "tests"
+    return saved === "coverage" || saved === "stateFlow" ? saved : "tests"
   })
 
   useEffect(() => {
@@ -87,7 +88,7 @@ export const App: React.FC = () => {
   const toggleTheme = useCallback(() => {
     setTheme(prev => (prev === "light" ? "dark" : "light"))
   }, [])
-  const handleActiveViewChange = useCallback((view: "tests" | "coverage") => {
+  const handleActiveViewChange = useCallback((view: MainView) => {
     setActiveView(view)
     localStorage.setItem("activeMainView", view)
   }, [])
@@ -391,15 +392,15 @@ export const App: React.FC = () => {
       />
 
       <div className={styles.mainContent}>
-        {coverageLcov !== undefined && (
-          <div className={styles.viewTabs}>
-            <button
-              type="button"
-              className={`${styles.viewTab} ${activeView === "tests" ? styles.viewTabActive : ""}`}
-              onClick={() => handleActiveViewChange("tests")}
-            >
-              Tests
-            </button>
+        <div className={styles.viewTabs}>
+          <button
+            type="button"
+            className={`${styles.viewTab} ${activeView === "tests" ? styles.viewTabActive : ""}`}
+            onClick={() => handleActiveViewChange("tests")}
+          >
+            Tests
+          </button>
+          {coverageLcov !== undefined && (
             <button
               type="button"
               className={`${styles.viewTab} ${activeView === "coverage" ? styles.viewTabActive : ""}`}
@@ -407,11 +408,22 @@ export const App: React.FC = () => {
             >
               Coverage
             </button>
-          </div>
-        )}
+          )}
+          <button
+            type="button"
+            className={`${styles.viewTab} ${activeView === "stateFlow" ? styles.viewTabActive : ""}`}
+            onClick={() => handleActiveViewChange("stateFlow")}
+          >
+            State Flow
+          </button>
+        </div>
 
         <div className={styles.mainPanel}>
-          {activeView === "coverage" && coverageLcov !== undefined ? (
+          {activeView === "stateFlow" ? (
+            <div className={styles.stateFlowPanel}>
+              <StateFlowArtifactWorkbench storageKey="acton-test-ui-state-flow-artifact" />
+            </div>
+          ) : activeView === "coverage" && coverageLcov !== undefined ? (
             <Coverage lcov={coverageLcov} projectRoot={projectRoot} />
           ) : selectedTest ? (
             <TestDetails

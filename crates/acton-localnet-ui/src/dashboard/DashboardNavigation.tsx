@@ -10,6 +10,7 @@ import {
   Search as SearchIcon,
   Sun,
   Wallet,
+  Workflow,
 } from "lucide-react"
 import type {LucideIcon} from "lucide-react"
 import * as React from "react"
@@ -42,6 +43,7 @@ const mainItems: SidebarItem[] = [
   {label: "Faucet", icon: Wallet, path: "/faucet"},
   {label: "Tokens", icon: Boxes, path: "/tokens"},
   {label: "NFTs", icon: Image, path: "/nfts"},
+  {label: "State Flow", icon: Workflow, path: "/state-flow"},
 ]
 
 const footerItems: SidebarItem[] = [

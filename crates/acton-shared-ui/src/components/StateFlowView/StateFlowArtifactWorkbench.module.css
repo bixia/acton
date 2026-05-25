@@ -1,0 +1,100 @@
+.workbench {
+  min-width: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  color: var(--litenode-text, var(--text-primary));
+}
+
+.controlPanel,
+.resultPanel {
+  min-width: 0;
+  border: 1px solid var(--litenode-border, var(--border-color));
+  border-radius: 8px;
+  background: var(--litenode-surface, var(--bg-secondary-color));
+  box-shadow: var(--litenode-shadow-sm, var(--shadow));
+}
+
+.controlPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.resultPanel {
+  padding: 16px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.label {
+  color: var(--litenode-text, var(--text-primary));
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 360px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--litenode-border-control, var(--border-color));
+  border-radius: 8px;
+  background: var(--litenode-surface-subtle, var(--bg-color));
+  color: var(--litenode-text, var(--text-primary));
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  outline: none;
+}
+
+.textarea:focus {
+  border-color: var(--litenode-focus, var(--text-secondary));
+  box-shadow: 0 0 0 2px
+    var(--litenode-focus-soft, color-mix(in srgb, currentColor 10%, transparent));
+}
+
+.fileInput {
+  display: none;
+}
+
+.error {
+  border: 1px solid var(--litenode-danger-border, color-mix(in srgb, #dc2626 32%, transparent));
+  border-radius: 8px;
+  background: var(--litenode-danger-bg, color-mix(in srgb, #dc2626 8%, transparent));
+  color: var(--litenode-danger, #b91c1c);
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.placeholder {
+  min-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--litenode-border-control, var(--border-color));
+  border-radius: 8px;
+  color: var(--litenode-text-muted, var(--text-secondary));
+  font-size: 0.9rem;
+}
+
+@media (max-width: 980px) {
+  .workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .textarea {
+    min-height: 260px;
+  }
+}

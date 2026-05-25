@@ -93,6 +93,13 @@
   min-height: 0;
 }
 
+.stateFlowPanel {
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: var(--spacing-md);
+}
+
 .noSelection {
   display: flex;
   justify-content: center;
