@@ -3819,6 +3819,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Storage Fields",
         "## Outbound Effects",
         "## State Machine",
+        "## State Machine Evidence",
         "## Unknown Fields",
         "## Replay Diffs",
         "## Risk Points",
@@ -8520,6 +8521,35 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_missing_report_state_machine_evidence_section() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_state_machine_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("target-a: report section \"## State Machine Evidence\" is missing")
+            }),
+            "expected missing state machine evidence section failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_state_machine_evidence_confidence_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10693,6 +10723,22 @@ mod tests {
         sample_report_markdown(address).replace(
             "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
             "| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |",
+        )
+    }
+
+    fn sample_report_markdown_without_state_machine_evidence(address: &str) -> String {
+        let markdown = sample_report_markdown(address);
+        let section_start = markdown
+            .find("## State Machine Evidence")
+            .expect("sample report should include state machine evidence section");
+        let next_section_start = section_start
+            + markdown[section_start..]
+                .find("## Unknown Fields")
+                .expect("sample report should include unknown fields section");
+        format!(
+            "{}{}",
+            &markdown[..section_start],
+            &markdown[next_section_start..]
         )
     }
 
