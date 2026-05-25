@@ -610,6 +610,19 @@ pub fn render_state_flow_report(
     )
     .ok();
     writeln!(report, "- Replay diffs: {}", replays.len()).ok();
+    writeln!(
+        report,
+        "- Opcode candidates: {}",
+        schema.opcode_candidates.len()
+    )
+    .ok();
+    writeln!(
+        report,
+        "- State machine edges: {}",
+        schema.state_machine.edges.len()
+    )
+    .ok();
+    writeln!(report, "- Audit signals: {}", schema.audit_signals.len()).ok();
     writeln!(report).ok();
 
     writeln!(report, "## Opcode Candidates").ok();
@@ -3172,6 +3185,15 @@ mod tests {
         let report = super::render_state_flow_report(&corpus, &schema, &[]);
 
         assert!(report.contains("# TON State Flow Reverse Report"));
+        assert!(report.contains(&format!(
+            "- Opcode candidates: {}",
+            schema.opcode_candidates.len()
+        )));
+        assert!(report.contains(&format!(
+            "- State machine edges: {}",
+            schema.state_machine.edges.len()
+        )));
+        assert!(report.contains(&format!("- Audit signals: {}", schema.audit_signals.len())));
         assert!(report.contains("## Opcode Candidates"));
         assert!(report.contains("Storage"));
         assert!(report.contains("balance -3"));

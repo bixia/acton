@@ -2387,6 +2387,27 @@ fn validate_manifest_report_content_matches_summary(
         target.replay_count,
         gate_failures,
     );
+    validate_optional_report_target_count(
+        &markdown,
+        "opcode candidate count",
+        "- Opcode candidates:",
+        target.opcode_candidate_count,
+        gate_failures,
+    );
+    validate_optional_report_target_count(
+        &markdown,
+        "state edge count",
+        "- State machine edges:",
+        target.state_edge_count,
+        gate_failures,
+    );
+    validate_optional_report_target_count(
+        &markdown,
+        "audit signal count",
+        "- Audit signals:",
+        target.audit_signal_count,
+        gate_failures,
+    );
 
     for section in [
         "# TON State Flow Reverse Report",
@@ -4610,6 +4631,49 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_schema_count_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_schema_counts("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report opcode candidate count 1 is missing")
+            }),
+            "expected report opcode candidate count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation
+                .gate_failures
+                .iter()
+                .any(|failure| failure.contains("target-a: report state edge count 1 is missing")),
+            "expected report state edge count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report audit signal count 1 is missing")
+            }),
+            "expected report audit signal count failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_opcode_candidate_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6411,6 +6475,13 @@ mod tests {
         sample_report_markdown(address).replace("- Replay diffs: 1", "- Replay diffs: 9")
     }
 
+    fn sample_report_markdown_with_wrong_schema_counts(address: &str) -> String {
+        sample_report_markdown(address)
+            .replace("- Opcode candidates: 1", "- Opcode candidates: 9")
+            .replace("- State machine edges: 1", "- State machine edges: 9")
+            .replace("- Audit signals: 1", "- Audit signals: 9")
+    }
+
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
         sample_report_markdown(address).replace(
             "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
@@ -6547,6 +6618,9 @@ mod tests {
              - Retraced transactions: 2\n\
              - Replay failures while collecting: 0\n\
              - Replay diffs: 1\n\
+             - Opcode candidates: 1\n\
+             - State machine edges: 1\n\
+             - Audit signals: 1\n\
              \n\
              ## Opcode Candidates\n\
              | Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |\n\
