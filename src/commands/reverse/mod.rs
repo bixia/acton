@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use ton_retrace::Network;
 use ton_stateflow::{
-    ReplayMutation, StateFlowCorpus, StateFlowReplayDiff, StateFlowSchemaReport, StateFlowTx,
+    LogArtifact, ReplayMutation, ShardAccountSnapshot, StateFlowCorpus, StateFlowReplayDiff,
+    StateFlowSchemaReport, StateFlowTx,
 };
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
@@ -3737,7 +3738,7 @@ fn validate_transaction_artifact_matches_corpus(
     gate_failures: &mut Vec<String>,
 ) {
     let tx_hash = &flow.query_hash;
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction network",
         &flow.network,
         "corpus network",
@@ -3745,7 +3746,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_value_field(
+    validate_evidence_value_field(
         "transaction lt",
         flow.transaction.lt,
         "corpus lt",
@@ -3753,7 +3754,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction account",
         &flow.transaction.account,
         "corpus account",
@@ -3761,7 +3762,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction pre state status",
         &flow.state.pre.status,
         "corpus pre state status",
@@ -3769,7 +3770,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction post state status",
         &flow.state.post.status,
         "corpus post state status",
@@ -3779,7 +3780,7 @@ fn validate_transaction_artifact_matches_corpus(
     );
     let actual_opcode = option_text_label(flow.inbound.opcode.as_deref());
     let expected_opcode = option_text_label(corpus_flow.inbound.opcode.as_deref());
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction inbound opcode",
         &actual_opcode,
         "corpus inbound opcode",
@@ -3787,7 +3788,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction inbound body hash",
         &flow.inbound.body.hash,
         "corpus inbound body hash",
@@ -3795,7 +3796,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_value_field(
+    validate_evidence_value_field(
         "transaction inbound body bits",
         flow.inbound.body.bits,
         "corpus inbound body bits",
@@ -3803,7 +3804,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_value_field(
+    validate_evidence_value_field(
         "transaction inbound body refs",
         flow.inbound.body.refs,
         "corpus inbound body refs",
@@ -3811,7 +3812,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_value_field(
+    validate_evidence_value_field(
         "transaction VM trace line count",
         flow.vm_trace.line_count,
         "corpus VM trace line count",
@@ -3819,7 +3820,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_value_field(
+    validate_evidence_value_field(
         "transaction executor trace line count",
         flow.executor_trace.line_count,
         "corpus executor trace line count",
@@ -3827,7 +3828,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_transaction_value_field(
+    validate_evidence_value_field(
         "transaction out-action count",
         flow.out_actions.len(),
         "corpus out-action count",
@@ -3838,7 +3839,7 @@ fn validate_transaction_artifact_matches_corpus(
     let actual_c5_hash = option_text_label(flow.c5.as_ref().map(|cell| cell.hash.as_str()));
     let expected_c5_hash =
         option_text_label(corpus_flow.c5.as_ref().map(|cell| cell.hash.as_str()));
-    validate_transaction_text_field(
+    validate_evidence_text_field(
         "transaction c5 hash",
         &actual_c5_hash,
         "corpus c5 hash",
@@ -3848,7 +3849,7 @@ fn validate_transaction_artifact_matches_corpus(
     );
 }
 
-fn validate_transaction_text_field(
+fn validate_evidence_text_field(
     actual_label: &str,
     actual: &str,
     expected_label: &str,
@@ -3863,7 +3864,7 @@ fn validate_transaction_text_field(
     }
 }
 
-fn validate_transaction_value_field<T>(
+fn validate_evidence_value_field<T>(
     actual_label: &str,
     actual: T,
     expected_label: &str,
@@ -3893,7 +3894,6 @@ fn validate_manifest_replay_membership(
     let Some(corpus) = corpus else {
         return;
     };
-    let corpus_hashes = corpus_transaction_hashes(corpus);
     let replays =
         read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay");
     if !replays.is_empty()
@@ -3917,16 +3917,202 @@ fn validate_manifest_replay_membership(
                 replay.source_query_hash
             ));
         }
-        if !corpus_hashes
+        let corpus_flow = corpus
+            .transactions
             .iter()
-            .any(|hash| hash == &replay.source_query_hash)
-        {
+            .find(|tx| tx.query_hash == replay.source_query_hash);
+        if corpus_flow.is_none() {
             gate_failures.push(format!(
                 "replay source query hash {} is not present in corpus transactions",
                 replay.source_query_hash
             ));
+        } else if let Some(corpus_flow) = corpus_flow {
+            validate_replay_baseline_matches_corpus(&replay, corpus_flow, gate_failures);
         }
     }
+}
+
+fn validate_replay_baseline_matches_corpus(
+    replay: &StateFlowReplayDiff,
+    corpus_flow: &StateFlowTx,
+    gate_failures: &mut Vec<String>,
+) {
+    let tx_hash = &replay.source_query_hash;
+    validate_evidence_value_field(
+        "replay baseline accepted",
+        replay.baseline.accepted,
+        "expected accepted",
+        true,
+        tx_hash,
+        gate_failures,
+    );
+    validate_replay_baseline_state_matches_corpus(
+        replay.baseline.state.as_ref(),
+        &corpus_flow.state.post,
+        tx_hash,
+        gate_failures,
+    );
+    let actual_opcode = option_text_label(replay.baseline.inbound.opcode.as_deref());
+    let expected_opcode = option_text_label(corpus_flow.inbound.opcode.as_deref());
+    validate_evidence_text_field(
+        "replay baseline inbound opcode",
+        &actual_opcode,
+        "corpus inbound opcode",
+        &expected_opcode,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "replay baseline inbound body hash",
+        &replay.baseline.inbound.body.hash,
+        "corpus inbound body hash",
+        &corpus_flow.inbound.body.hash,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "replay baseline inbound body bits",
+        replay.baseline.inbound.body.bits,
+        "corpus inbound body bits",
+        corpus_flow.inbound.body.bits,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "replay baseline inbound body refs",
+        replay.baseline.inbound.body.refs,
+        "corpus inbound body refs",
+        corpus_flow.inbound.body.refs,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "replay baseline outbound count",
+        replay.baseline.outbound.len(),
+        "corpus outbound count",
+        corpus_flow.outbound.len(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "replay baseline out-action count",
+        replay.baseline.out_actions.len(),
+        "corpus out-action count",
+        corpus_flow.out_actions.len(),
+        tx_hash,
+        gate_failures,
+    );
+    let actual_c5_hash =
+        option_text_label(replay.baseline.c5.as_ref().map(|cell| cell.hash.as_str()));
+    let expected_c5_hash =
+        option_text_label(corpus_flow.c5.as_ref().map(|cell| cell.hash.as_str()));
+    validate_evidence_text_field(
+        "replay baseline c5 hash",
+        &actual_c5_hash,
+        "corpus c5 hash",
+        &expected_c5_hash,
+        tx_hash,
+        gate_failures,
+    );
+    validate_replay_baseline_log_matches_corpus(
+        "VM trace",
+        replay.baseline.vm_trace.as_ref(),
+        &corpus_flow.vm_trace,
+        tx_hash,
+        gate_failures,
+    );
+    validate_replay_baseline_log_matches_corpus(
+        "executor trace",
+        replay.baseline.executor_trace.as_ref(),
+        &corpus_flow.executor_trace,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_replay_baseline_state_matches_corpus(
+    baseline_state: Option<&ShardAccountSnapshot>,
+    corpus_state: &ShardAccountSnapshot,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(baseline_state) = baseline_state else {
+        gate_failures.push(format!("replay baseline state for {tx_hash} is missing"));
+        return;
+    };
+    validate_evidence_text_field(
+        "replay baseline state status",
+        &baseline_state.status,
+        "corpus post state status",
+        &corpus_state.status,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "replay baseline state balance",
+        &baseline_state.balance_nanotons,
+        "corpus post state balance",
+        &corpus_state.balance_nanotons,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "replay baseline state last tx lt",
+        baseline_state.last_trans_lt,
+        "corpus post state last tx lt",
+        corpus_state.last_trans_lt,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "replay baseline state last tx hash",
+        &baseline_state.last_trans_hash,
+        "corpus post state last tx hash",
+        &corpus_state.last_trans_hash,
+        tx_hash,
+        gate_failures,
+    );
+    let actual_code_hash = option_text_label(baseline_state.code_hash.as_deref());
+    let expected_code_hash = option_text_label(corpus_state.code_hash.as_deref());
+    validate_evidence_text_field(
+        "replay baseline state code hash",
+        &actual_code_hash,
+        "corpus post state code hash",
+        &expected_code_hash,
+        tx_hash,
+        gate_failures,
+    );
+    let actual_data_hash = option_text_label(baseline_state.data_hash.as_deref());
+    let expected_data_hash = option_text_label(corpus_state.data_hash.as_deref());
+    validate_evidence_text_field(
+        "replay baseline state data hash",
+        &actual_data_hash,
+        "corpus post state data hash",
+        &expected_data_hash,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_replay_baseline_log_matches_corpus(
+    label: &str,
+    actual: Option<&LogArtifact>,
+    expected: &LogArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(actual) = actual else {
+        gate_failures.push(format!("replay baseline {label} for {tx_hash} is missing"));
+        return;
+    };
+    validate_evidence_value_field(
+        &format!("replay baseline {label} line count"),
+        actual.line_count,
+        &format!("corpus {label} line count"),
+        expected.line_count,
+        tx_hash,
+        gate_failures,
+    );
 }
 
 fn replay_has_observable_diff(replay: &StateFlowReplayDiff) -> bool {
@@ -6371,6 +6557,42 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_replay_baseline_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["baseline"]["inbound"]["body"]["hash"] = serde_json::json!("wrong-baseline-body");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline inbound body hash wrong-baseline-body for tx-a does not match corpus inbound body hash hash",
+                )
+            }),
+            "expected replay baseline body hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_unmutated_replay_bundle() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -7077,17 +7299,18 @@ mod tests {
     }
 
     fn sample_replay_observation_json(accepted: bool) -> serde_json::Value {
+        let flow = sample_state_flow_json("tx-a");
         serde_json::json!({
             "accepted": accepted,
-            "state": null,
-            "inbound": sample_state_flow_json("tx-a")["inbound"].clone(),
-            "outbound": [],
-            "compute": null,
-            "money": null,
-            "c5": null,
-            "outActions": [],
-            "vmTrace": null,
-            "executorTrace": null,
+            "state": flow["state"]["post"].clone(),
+            "inbound": flow["inbound"].clone(),
+            "outbound": flow["outbound"].clone(),
+            "compute": flow["compute"].clone(),
+            "money": flow["money"].clone(),
+            "c5": flow["c5"].clone(),
+            "outActions": flow["outActions"].clone(),
+            "vmTrace": flow["vmTrace"].clone(),
+            "executorTrace": flow["executorTrace"].clone(),
             "error": null
         })
     }
