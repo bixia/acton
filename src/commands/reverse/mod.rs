@@ -1682,6 +1682,9 @@ fn validate_manifest_summary_artifact(
             return None;
         }
     };
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&summary_json) {
+        validate_smoke_run_summary_evidence_keys(&value, &manifest.summary, gate_failures);
+    }
     match serde_json::from_str::<SmokeRunSummary>(&summary_json) {
         Ok(summary) => Some(summary),
         Err(err) => {
@@ -2197,6 +2200,71 @@ fn validate_artifact_manifest_target(
             .count(),
         passed: gate_failures.is_empty(),
         gate_failures,
+    }
+}
+
+fn validate_smoke_run_summary_evidence_keys(
+    value: &serde_json::Value,
+    summary_path: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    for (label, path) in [
+        ("schema version", &["schemaVersion"][..]),
+        ("target count", &["targetCount"][..]),
+        ("passed", &["passed"][..]),
+        ("absolute path count", &["absolutePathCount"][..]),
+        ("gate failures", &["gateFailures"][..]),
+        ("targets", &["targets"][..]),
+    ] {
+        if !json_path_exists(value, path) {
+            gate_failures.push(format!(
+                "run summary artifact {summary_path} missing {label} evidence key"
+            ));
+        }
+    }
+
+    let Some(targets) = value.get("targets").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, target) in targets.iter().enumerate() {
+        validate_smoke_target_summary_evidence_keys(target, summary_path, index, gate_failures);
+    }
+}
+
+fn validate_smoke_target_summary_evidence_keys(
+    value: &serde_json::Value,
+    summary_path: &str,
+    index: usize,
+    gate_failures: &mut Vec<String>,
+) {
+    for (label, path) in [
+        ("id", &["id"][..]),
+        ("network", &["network"][..]),
+        ("address", &["address"][..]),
+        ("source URL", &["sourceUrl"][..]),
+        ("collect limit", &["collectLimit"][..]),
+        ("source transaction count", &["sourceTxCount"][..]),
+        ("retraced count", &["retracedCount"][..]),
+        ("failure count", &["failureCount"][..]),
+        ("opcode candidate count", &["opcodeCandidateCount"][..]),
+        ("state edge count", &["stateEdgeCount"][..]),
+        ("audit signal count", &["auditSignalCount"][..]),
+        ("replay count", &["replayCount"][..]),
+        ("passed", &["passed"][..]),
+        ("gate failures", &["gateFailures"][..]),
+        ("output dir", &["outputDir"][..]),
+        ("corpus", &["corpus"][..]),
+        ("schema", &["schema"][..]),
+        ("transaction", &["transaction"][..]),
+        ("replay", &["replay"][..]),
+        ("replays", &["replays"][..]),
+        ("report", &["report"][..]),
+    ] {
+        if !json_path_exists(value, path) {
+            gate_failures.push(format!(
+                "run summary artifact {summary_path} target[{index}] missing {label} evidence key"
+            ));
+        }
     }
 }
 
@@ -10656,6 +10724,41 @@ mod tests {
                 )
             }),
             "expected run summary entry mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_summary_missing_transaction_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let summary_path = temp_dir.path().join("summary.json");
+        let mut summary: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("summary artifact should be readable"),
+        )
+        .expect("summary artifact should parse");
+        summary["targets"][0]
+            .as_object_mut()
+            .expect("summary target should be an object")
+            .remove("transaction");
+        write_sample_validation_artifact(temp_dir.path(), "summary.json", &summary.to_string());
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "run summary artifact summary.json target[0] missing transaction evidence key",
+                )
+            }),
+            "expected missing summary transaction key failure, got {:?}",
             validation.gate_failures
         );
     }
