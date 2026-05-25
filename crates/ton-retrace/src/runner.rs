@@ -3,7 +3,9 @@ use crate::methods::{
     compute_final_data, compute_min_lt, find_all_transactions_between, find_full_block_for_seqno,
     find_raw_tx_by_hash, find_shard_block_for_tx, get_block_account, get_block_config, tx_opcode,
 };
-use crate::types::{BaseTxInfo, TraceEmulatedTx, TraceInMessage, TraceResult};
+use crate::types::{
+    BaseTxInfo, TraceEmulatedTx, TraceInMessage, TraceReplayArtifacts, TraceResult,
+};
 use crate::{ComputeInfo, find_base_tx_by_hash, methods};
 use base64::Engine;
 use base64::engine::general_purpose;
@@ -261,6 +263,12 @@ pub async fn retrace_base_tx(
         &block_config,
         rand_seed,
     )?;
+    let replayed_prev_tx_count = prev_txs_in_block.len();
+    let shard_account_before_boc64 = Boc::encode_base64(to_cell(&shard_account));
+    let Some(in_msg_cell) = &our_tx.in_msg else {
+        anyhow::bail!("No in_message was found in transaction")
+    };
+    let in_msg_boc64 = Boc::encode_base64(in_msg_cell);
 
     // finally emulate the target transaction
     let (tx_res, executor_logs) = emulate(
@@ -309,6 +317,17 @@ pub async fn retrace_base_tx(
             actions: final_actions,
             c5,
             vm_logs: res.vm_log,
+        },
+        replay: TraceReplayArtifacts {
+            shard_account_before_boc64,
+            shard_account_after_boc64: res.shard_account.to_string(),
+            in_msg_boc64,
+            transaction_boc64: res.transaction.to_string(),
+            c5_boc64: res.actions.as_ref().map(ToString::to_string),
+            block_config_boc64: block_config,
+            mc_seqno,
+            rand_seed_hex: hex::encode(rand_seed),
+            replayed_prev_tx_count,
         },
     })
 }

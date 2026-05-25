@@ -239,6 +239,32 @@ pub struct TraceEmulatedTx {
     pub vm_logs: Arc<str>,
 }
 
+/// Raw replay artifacts captured while reconstructing and emulating a transaction.
+///
+/// These fields are intentionally BoC/base64-oriented so higher-level tools can
+/// decode with their own TL-B schemas without changing retrace internals.
+#[derive(Debug, Clone)]
+pub struct TraceReplayArtifacts {
+    /// Account shard state immediately before the target transaction replay.
+    pub shard_account_before_boc64: String,
+    /// Account shard state produced by local replay.
+    pub shard_account_after_boc64: String,
+    /// Original inbound message cell used as executor input.
+    pub in_msg_boc64: String,
+    /// Locally emulated transaction cell.
+    pub transaction_boc64: String,
+    /// Final c5 action-list cell returned by the executor, if present.
+    pub c5_boc64: Option<String>,
+    /// Block config cell passed to the executor.
+    pub block_config_boc64: String,
+    /// Masterchain sequence number that supplied config and random seed.
+    pub mc_seqno: u32,
+    /// Master-block random seed passed to the executor.
+    pub rand_seed_hex: String,
+    /// Number of same-account transactions replayed before the target tx.
+    pub replayed_prev_tx_count: usize,
+}
+
 /// Breakdown of money movements and fees within the transaction.
 ///
 /// All values are in nanoton (10^-9 TON).
@@ -289,6 +315,8 @@ pub struct TraceResult {
     pub money: TraceMoneyResult,
     /// Full details of the emulated transaction execution results.
     pub emulated_tx: TraceEmulatedTx,
+    /// Raw replay inputs and outputs for state-flow reconstruction.
+    pub replay: TraceReplayArtifacts,
 }
 
 // --- API State Types ---

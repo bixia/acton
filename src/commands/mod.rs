@@ -18,6 +18,7 @@ pub mod ls;
 pub mod meta;
 pub mod new;
 pub mod retrace;
+pub mod reverse;
 pub mod rpc;
 pub mod run;
 pub mod script;

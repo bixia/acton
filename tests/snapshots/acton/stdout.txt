@@ -17,6 +17,7 @@ Commands:
   verify           [CONTRACT_NAME]     Verify contract source on TON Verifier
   library          <COMMAND>           Publish and manage on-chain libraries
   retrace          <TX_HASH>           Replay a transaction trace by hash
+  reverse          <COMMAND>           Reverse-engineer TON transaction state flows
 
   run              <SCRIPT> [ARGS...]  Run a named script from Acton.toml
   compile          <PATH>              Compile one Tolk source into TVM code

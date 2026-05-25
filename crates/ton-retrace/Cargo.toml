@@ -21,6 +21,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
+hex = { workspace = true }
 ton-networks = { workspace = true }
 toncenter-keys = { workspace = true }
 log = { workspace = true }

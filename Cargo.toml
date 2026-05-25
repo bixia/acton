@@ -60,6 +60,7 @@ tasm-core = { path = "crates/tasm-core" }
 dap-client = { path = "crates/dap-client" }
 ton-api = { path = "crates/ton-api" }
 ton-retrace = { path = "crates/ton-retrace" }
+ton-stateflow = { path = "crates/ton-stateflow" }
 ton-source-map = { path = "crates/ton-source-map" }
 tolk-fmt = { path = "crates/tolk-fmt" }
 ton-networks = { path = "crates/ton-networks" }
@@ -213,6 +214,7 @@ tvm-logs = { workspace = true }
 tasm-core = { workspace = true }
 ton-api = { workspace = true }
 ton-retrace = { workspace = true }
+ton-stateflow = { workspace = true }
 ton-source-map = { workspace = true }
 tolk-fmt = { workspace = true }
 ton-localnet = { workspace = true }

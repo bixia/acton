@@ -16,6 +16,13 @@ This plan implements Phase 1 only:
 
 - Add `acton reverse retrace <tx-hash> --net mainnet --out tx.json`.
 - Define the `StateFlowTx` JSON artifact and keep it stable enough for later `collect`, `infer`, `replay`, `report`, and Test UI work.
+- Reserve first-class JSON sections for the state-machine evidence we need to recover:
+  - how `recv_internal` parsed the inbound message body;
+  - per-opcode TL-B/ABI sketches;
+  - pre/post storage changes;
+  - VM trace evidence for which body/storage fields were actually read;
+  - c5/action/out-message effects;
+  - same-pre-state replay results for constructed or mutated messages.
 - Reuse existing `ton-retrace`, VM log parsing, executor action parsing ideas, and trace bundle conventions.
 - Do not modify `acton-test-ui` in this phase.
 
@@ -99,7 +106,9 @@ pub mod model;
 pub use convert::{StateFlowConvertError, state_flow_from_retrace};
 pub use model::{
     AbiDecodeInfo, AccountStateSnapshot, ActionSummary, BodySchemaCandidate, CellRef,
-    InboundMessageFlow, MessageBodyInfo, StateFlowTx, StateFlowVersion, TxIdentity, VmTraceInfo,
+    FieldReadEvidence, InboundMessageFlow, MessageBodyInfo, OpcodeFieldSketch,
+    OpcodeSchemaSketch, RecvInternalEvidence, ReplayValidation, StateFlowTx, StateFlowVersion,
+    StorageDiff, StorageFieldChange, TxIdentity, VmTraceInfo,
 };
 ```
 
@@ -166,7 +175,9 @@ pub struct StateFlowTx {
     pub inbound: InboundMessageFlow,
     pub pre: AccountStateSnapshot,
     pub post: AccountStateSnapshot,
+    pub storage_diff: StorageDiff,
     pub vm_trace: VmTraceInfo,
+    pub recv_internal: RecvInternalEvidence,
     pub executor_logs: String,
     pub c5: Option<CellRef>,
     pub installed_actions: Vec<ActionSummary>,
@@ -214,10 +225,62 @@ pub struct AccountStateSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageDiff {
+    pub data_hash_changed: bool,
+    pub balance_delta: String,
+    pub changed_fields: Vec<StorageFieldChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageFieldChange {
+    pub path: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VmTraceInfo {
     pub raw_log: String,
     pub steps: usize,
     pub final_c5: Option<CellRef>,
+    pub field_reads: Vec<FieldReadEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FieldReadEvidence {
+    pub source: String,
+    pub op: String,
+    pub bit_offset: Option<u32>,
+    pub ref_index: Option<u32>,
+    pub instruction: String,
+    pub confidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecvInternalEvidence {
+    pub entrypoint: String,
+    pub opcode: Option<String>,
+    pub body_parse: Vec<FieldReadEvidence>,
+    pub schema_sketch: Option<OpcodeSchemaSketch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpcodeSchemaSketch {
+    pub opcode: Option<String>,
+    pub name: Option<String>,
+    pub tlb: String,
+    pub fields: Vec<OpcodeFieldSketch>,
+    pub constraints: Vec<String>,
+    pub confidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpcodeFieldSketch {
+    pub name: String,
+    pub kind: String,
+    pub source: String,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -226,6 +289,7 @@ pub struct ActionSummary {
     pub index: usize,
     pub hash: Option<String>,
     pub body: Option<CellRef>,
+    pub effect: String,
     pub failure_code: Option<i32>,
 }
 
@@ -241,13 +305,25 @@ pub struct BodySchemaCandidate {
     pub opcode: Option<String>,
     pub confidence: String,
     pub source: String,
-    pub fields: Vec<String>,
+    pub tlb: String,
+    pub fields: Vec<OpcodeFieldSketch>,
+    pub constraints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CellRef {
     pub boc64: String,
     pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplayValidation {
+    pub same_pre_state: bool,
+    pub message_mutation: String,
+    pub exit_code: Option<i32>,
+    pub storage_diff: StorageDiff,
+    pub action_effects: Vec<ActionSummary>,
+    pub verdict: String,
 }
 ```
 
@@ -307,10 +383,22 @@ mod tests {
                 data_hash: None,
                 code_hash: None,
             },
+            storage_diff: StorageDiff {
+                data_hash_changed: false,
+                balance_delta: "0".to_owned(),
+                changed_fields: vec![],
+            },
             vm_trace: VmTraceInfo {
                 raw_log: String::new(),
                 steps: 0,
                 final_c5: None,
+                field_reads: vec![],
+            },
+            recv_internal: RecvInternalEvidence {
+                entrypoint: "recv_internal".to_owned(),
+                opcode: Some("0x00000000".to_owned()),
+                body_parse: vec![],
+                schema_sketch: None,
             },
             executor_logs: String::new(),
             c5: None,
@@ -367,10 +455,22 @@ mod tests {
     "data_hash": null,
     "code_hash": null
   },
+  "storage_diff": {
+    "data_hash_changed": false,
+    "balance_delta": "0",
+    "changed_fields": []
+  },
   "vm_trace": {
     "raw_log": "",
     "steps": 0,
-    "final_c5": null
+    "final_c5": null,
+    "field_reads": []
+  },
+  "recv_internal": {
+    "entrypoint": "recv_internal",
+    "opcode": "0x00000000",
+    "body_parse": [],
+    "schema_sketch": null
   },
   "executor_logs": "",
   "c5": null,
@@ -615,7 +715,7 @@ Create `crates/ton-stateflow/src/convert.rs`:
 ```rust
 use crate::model::{
     AccountStateSnapshot, ActionSummary, CellRef, InboundMessageFlow, MessageBodyInfo,
-    StateFlowTx, StateFlowVersion, TxIdentity, VmTraceInfo,
+    RecvInternalEvidence, StateFlowTx, StateFlowVersion, StorageDiff, TxIdentity, VmTraceInfo,
 };
 use thiserror::Error;
 use ton_retrace::StateReplayResult;
@@ -642,6 +742,7 @@ pub fn state_flow_from_retrace(
     let inbound = inbound_message_flow(&trace, replay.inbound_message.as_ref());
     let pre = account_snapshot(&replay.pre_shard_account)?;
     let post = account_snapshot(&replay.post_shard_account)?;
+    let storage_diff = storage_diff(&pre, &post);
 
     Ok(StateFlowTx {
         schema_version: StateFlowVersion::V1,
@@ -656,10 +757,18 @@ pub fn state_flow_from_retrace(
         inbound,
         pre,
         post,
+        storage_diff,
         vm_trace: VmTraceInfo {
             raw_log: trace.emulated_tx.vm_logs.to_string(),
             steps: vm_trace.steps.len(),
             final_c5: trace.emulated_tx.c5.as_ref().map(cell_ref),
+            field_reads: vec![],
+        },
+        recv_internal: RecvInternalEvidence {
+            entrypoint: "recv_internal".to_owned(),
+            opcode: trace.in_msg.opcode.map(|opcode| format!("0x{opcode:08x}")),
+            body_parse: vec![],
+            schema_sketch: None,
         },
         executor_logs: trace.emulated_tx.executor_logs.to_string(),
         c5: trace.emulated_tx.c5.as_ref().map(cell_ref),
@@ -673,6 +782,7 @@ pub fn state_flow_from_retrace(
                 index,
                 hash: None,
                 body: None,
+                effect: "executor_action".to_owned(),
                 failure_code: None,
             })
             .collect(),
@@ -680,6 +790,16 @@ pub fn state_flow_from_retrace(
         abi_decode: None,
         schema_candidates: vec![],
     })
+}
+
+fn storage_diff(pre: &AccountStateSnapshot, post: &AccountStateSnapshot) -> StorageDiff {
+    let before = pre.balance.parse::<i128>().unwrap_or(0);
+    let after = post.balance.parse::<i128>().unwrap_or(0);
+    StorageDiff {
+        data_hash_changed: pre.data_hash != post.data_hash,
+        balance_delta: (after - before).to_string(),
+        changed_fields: vec![],
+    }
 }
 
 fn inbound_message_flow(

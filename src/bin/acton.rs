@@ -17,6 +17,7 @@ use acton::commands::ls::ls_cmd;
 use acton::commands::meta::{BuiltinSchema, print_schema_cmd};
 use acton::commands::new::{ProjectTemplate, new_cmd};
 use acton::commands::retrace::retrace_cmd;
+use acton::commands::reverse::{ReverseCommand, reverse_cmd};
 use acton::commands::rpc::{RpcCommand, rpc_cmd};
 use acton::commands::run::run_cmd;
 use acton::commands::script::script_cmd;
@@ -877,6 +878,11 @@ enum Commands {
         #[arg(long, help = "Debug server port", help_heading = "Debugging")]
         debug_port: Option<u16>,
     },
+    #[command(about = "Reverse-engineer TON transaction state flows")]
+    Reverse {
+        #[command(subcommand)]
+        command: ReverseCommand,
+    },
     #[command(
         about = "Publish and manage on-chain libraries",
         after_help = detailed_help_pointer("library")
@@ -1427,6 +1433,7 @@ fn root_help(show_global_options: bool) -> StyledStr {
         ("library", "<COMMAND>"),
         // ("localnet", "<COMMAND>"),
         ("retrace", "<TX_HASH>"),
+        ("reverse", "<COMMAND>"),
     ];
     let tooling_commands = vec![
         ("run", "<SCRIPT> [ARGS...]"),
@@ -1973,6 +1980,7 @@ fn main() {
             debug,
             debug_port,
         } => retrace_cmd(hash, net, verbose, logs_dir, contract, debug, debug_port),
+        Commands::Reverse { command } => reverse_cmd(command),
         Commands::Wrapper {
             contract_id,
             all,

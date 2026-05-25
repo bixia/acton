@@ -294,6 +294,34 @@ fn test_acton_retrace_help() {
 }
 
 #[test]
+fn test_acton_reverse_retrace_help() {
+    let output = Command::new(common::acton_exe())
+        .args(["--color", "never", "reverse", "retrace", "--help"])
+        .output()
+        .expect("failed to run acton reverse retrace --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse retrace --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Replay a transaction and emit state-flow JSON",
+        "Usage: acton reverse retrace",
+        "--output <OUTPUT>",
+        "--pretty",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse retrace --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_help_retrace() {
     snapbox::cmd::Command::acton_ui()
         .arg("help")
