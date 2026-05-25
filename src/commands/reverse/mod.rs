@@ -2665,12 +2665,17 @@ fn validate_report_schema_deliverables(
 
     if let Some(section) = markdown_section(markdown, "## Message Body Fields") {
         for candidate in &schema.opcode_candidates {
+            let opcode = report_opcode_label(candidate.opcode.as_deref());
             for field in &candidate.inbound_body.field_candidates {
-                if !section.contains(&field.name) || !section.contains(&field.confidence) {
+                let field_row = report_message_body_field_row(section, &opcode, field);
+                if field_row.is_none() {
                     gate_failures.push(format!(
                         "report message body field {} is missing",
                         field.name
                     ));
+                }
+                if let Some(row) = field_row {
+                    validate_report_message_body_field_values(field, &row, gate_failures);
                 }
             }
         }
@@ -2832,6 +2837,82 @@ fn validate_report_opcode_candidate_cell(
     }
 }
 
+fn report_message_body_field_row(
+    section: &str,
+    opcode: &str,
+    field: &ton_stateflow::BodyFieldCandidate,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == opcode)
+            && cells.get(1).is_some_and(|cell| cell == &field.name))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_message_body_field_values(
+    field: &ton_stateflow::BodyFieldCandidate,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_message_body_field_cell(
+        "offset",
+        field.bit_offset.to_string(),
+        &field.name,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_message_body_field_cell(
+        "bits",
+        report_field_range(field.min_bits, field.max_bits),
+        &field.name,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_message_body_field_cell(
+        "refs",
+        report_field_range(field.min_refs, field.max_refs),
+        &field.name,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_message_body_field_cell(
+        "kind",
+        field.kind.clone(),
+        &field.name,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_message_body_field_cell(
+        "samples",
+        report_sample_list(&field.value_samples),
+        &field.name,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_message_body_field_cell(
+        "confidence",
+        field.confidence.clone(),
+        &field.name,
+        row.get(7),
+        gate_failures,
+    );
+}
+
+fn validate_report_message_body_field_cell(
+    label: &str,
+    expected: String,
+    field_name: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report message body field {label} {expected} for {field_name} is missing"
+        ));
+    }
+}
+
 fn report_range<T>(min: T, max: T) -> String
 where
     T: Eq + std::fmt::Display,
@@ -2841,6 +2922,20 @@ where
     } else {
         format!("{min}-{max}")
     }
+}
+
+fn report_field_range<T>(min: T, max: T) -> String
+where
+    T: std::fmt::Display,
+{
+    format!("{min}..{max}")
+}
+
+fn report_sample_list(samples: &[String]) -> String {
+    if samples.is_empty() {
+        return "<none>".to_owned();
+    }
+    samples.join(", ")
 }
 
 fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
@@ -3975,6 +4070,75 @@ mod tests {
         assert!(
             validation.passed,
             "expected renderer range format to pass, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_message_body_field_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"] = serde_json::json!([{
+            "name": "query_id",
+            "bitOffset": 32,
+            "minBits": 64,
+            "maxBits": 64,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint64",
+            "presentCount": 2,
+            "valueSamples": ["0x7"],
+            "confidence": "high"
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_message_body_field("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report message body field offset 32 for query_id is missing",
+                )
+            }),
+            "expected report message body offset failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report message body field bits 64..64 for query_id is missing",
+                )
+            }),
+            "expected report message body bits failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report message body field samples 0x7 for query_id is missing",
+                )
+            }),
+            "expected report message body samples failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -5225,6 +5389,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
             "| `0x00000001` | 2 | medium | 32-40 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_message_body_field(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Message Body Fields\n- No message body field candidates were inferred.",
+            "## Message Body Fields\n| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `query_id` | 0 | 32..32 | 1..1 | raw | `0xff` | high |",
         )
     }
 
