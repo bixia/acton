@@ -2713,9 +2713,12 @@ fn validate_report_schema_deliverables(
 
     if let Some(section) = markdown_section(markdown, "## Unknown Fields") {
         for candidate in &schema.opcode_candidates {
+            let opcode = report_opcode_label(candidate.opcode.as_deref());
             for field in &candidate.unknown_fields {
-                if !section.contains(field) {
-                    gate_failures.push(format!("report unknown field {field} is missing"));
+                if !report_unknown_field_exists(section, &opcode, field) {
+                    gate_failures.push(format!(
+                        "report unknown field {field} for {opcode} is missing"
+                    ));
                 }
             }
         }
@@ -3060,6 +3063,36 @@ fn validate_report_storage_field_cell(
             "report storage field {label} {expected} for {field_name} is missing"
         ));
     }
+}
+
+fn report_unknown_field_exists(section: &str, opcode: &str, field: &str) -> bool {
+    let mut current_opcode: Option<String> = None;
+    for line in section.lines() {
+        if let Some(header_opcode) = report_unknown_field_opcode_header(line) {
+            current_opcode = Some(header_opcode);
+        } else if current_opcode.as_deref() == Some(opcode)
+            && report_unknown_field_line(line).is_some_and(|actual| actual == field)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn report_unknown_field_opcode_header(line: &str) -> Option<String> {
+    if line.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let line = line.trim();
+    if !line.starts_with("- ") || !line.ends_with(':') {
+        return None;
+    }
+    Some(line[2..line.len() - 1].trim().replace('`', ""))
+}
+
+fn report_unknown_field_line(line: &str) -> Option<&str> {
+    let line = line.strip_prefix("  - ")?;
+    Some(line.trim())
 }
 
 fn report_effect_row(
@@ -4647,6 +4680,47 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_unknown_field_opcode_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["unknownFields"] =
+            serde_json::json!(["payload tail requires TL-B recovery"]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_unknown_field_under_wrong_opcode("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report unknown field payload tail requires TL-B recovery for 0x00000001 is missing",
+                )
+            }),
+            "expected report unknown field opcode failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn markdown_table_cells_preserve_escaped_pipes_inside_cells() {
         let cells = super::markdown_table_cells(
             "| action | `SendMsgFlags(IGNORE_ERROR \\| WITH_REMAINING_BALANCE)` | tx-a |",
@@ -5010,7 +5084,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: report unknown field message body field names require TL-B recovery is missing",
+                    "target-a: report unknown field message body field names require TL-B recovery for 0x00000001 is missing",
                 )
             }),
             "expected report unknown field failure, got {:?}",
@@ -5937,6 +6011,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Outbound Effects\n- No outbound effect candidates were inferred.",
             "## Outbound Effects\n| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |\n| `0x00000001` | outbound | internal | 9 | 99 | none | other | n/a | n/a | none | `tx-b` |",
+        )
+    }
+
+    fn sample_report_markdown_with_unknown_field_under_wrong_opcode(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Unknown Fields\n- `0x00000001`:",
+            "## Unknown Fields\n- `0x00000001`:\n- `0x00000002`:\n  - payload tail requires TL-B recovery",
         )
     }
 
