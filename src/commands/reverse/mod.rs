@@ -2489,6 +2489,9 @@ fn validate_schema_opcode_candidate_matches_corpus(
             gate_failures,
         );
     }
+    for probe in &candidate.replay_probes {
+        validate_schema_replay_probe_matches_candidate(probe, candidate, gate_failures);
+    }
     for effect in &candidate.outbound_effects {
         let expected = corpus_outbound_effect_aggregate(effect, &matching_transactions);
         validate_schema_effect_matches_corpus("outbound", effect, expected, gate_failures);
@@ -2523,6 +2526,133 @@ fn validate_schema_opcode_state_transition_matches_corpus(
         ),
         gate_failures,
     );
+}
+
+fn validate_schema_replay_probe_matches_candidate(
+    probe: &ton_stateflow::ReplayProbeCandidate,
+    candidate: &ton_stateflow::OpcodeSchemaCandidate,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(field) = candidate
+        .inbound_body
+        .field_candidates
+        .iter()
+        .find(|field| field.name == probe.field_name)
+    else {
+        gate_failures.push(format!(
+            "schema replay probe field {} for {} has no matching message body field candidate",
+            probe.field_name, probe.cli_arg
+        ));
+        return;
+    };
+
+    let Some(expected_bits) = exact_uint_body_field_bits(field) else {
+        gate_failures.push(format!(
+            "schema replay probe field {} for {} is not backed by an exact uint message body field",
+            probe.field_name, probe.cli_arg
+        ));
+        return;
+    };
+    let expected_value = replay_probe_value(field, expected_bits);
+    let expected_cli_arg = format!(
+        "--set-body-uint {}:{}:{}",
+        field.bit_offset, expected_bits, expected_value
+    );
+
+    validate_evidence_value_field(
+        "schema replay probe bit offset",
+        probe.bit_offset,
+        "message body field bit offset",
+        field.bit_offset,
+        &probe.cli_arg,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "schema replay probe bits",
+        probe.bits,
+        "message body field bits",
+        expected_bits,
+        &probe.cli_arg,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema replay probe value",
+        &probe.value,
+        "message body field mutation value",
+        &expected_value,
+        &probe.cli_arg,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema replay probe cli arg",
+        &probe.cli_arg,
+        "message body field cli arg",
+        &expected_cli_arg,
+        &probe.cli_arg,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema replay probe confidence",
+        &probe.confidence,
+        "message body field confidence",
+        &field.confidence,
+        &probe.cli_arg,
+        gate_failures,
+    );
+    let expected_evidence = candidate
+        .examples
+        .iter()
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    validate_evidence_text_field(
+        "schema replay probe evidence",
+        &report_sample_list(&probe.evidence),
+        "candidate examples",
+        &report_sample_list(&expected_evidence),
+        &probe.cli_arg,
+        gate_failures,
+    );
+
+    let expected_mutation = ReplayMutation::SetBodyUint {
+        bit_offset: field.bit_offset,
+        bits: expected_bits,
+        value: expected_value,
+    };
+    if !replay_mutations_match(&probe.mutation, &expected_mutation) {
+        gate_failures.push(format!(
+            "schema replay probe mutation {} for {} does not match message body field mutation {}",
+            report_replay_mutation_label(&probe.mutation),
+            probe.cli_arg,
+            report_replay_mutation_label(&expected_mutation)
+        ));
+    }
+}
+
+fn exact_uint_body_field_bits(field: &ton_stateflow::BodyFieldCandidate) -> Option<u16> {
+    let bits = field.min_bits;
+    (bits == field.max_bits
+        && bits > 0
+        && bits <= 64
+        && field.min_refs == 0
+        && field.max_refs == 0
+        && field.kind.starts_with("uint"))
+    .then_some(bits)
+}
+
+fn replay_probe_value(field: &ton_stateflow::BodyFieldCandidate, bits: u16) -> String {
+    let sample = field
+        .value_samples
+        .first()
+        .and_then(|value| parse_uint_value(value).ok())
+        .unwrap_or(0);
+    let mask = if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    let value = (sample ^ 1) & mask;
+    format_uint_for_bits(value, bits)
 }
 
 fn corpus_body_field_candidate(
@@ -3103,6 +3233,24 @@ fn format_u32_hex(value: u32) -> String {
 
 fn format_u64_hex(value: u64) -> String {
     format!("0x{value:016x}")
+}
+
+fn format_uint_for_bits(value: u64, bits: u16) -> String {
+    let digits = usize::from(bits).div_ceil(4);
+    format!("0x{value:0digits$x}")
+}
+
+fn parse_uint_value(value: &str) -> anyhow::Result<u64> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).with_context(|| format!("invalid hex uint value {value:?}"))
+    } else {
+        value
+            .parse::<u64>()
+            .with_context(|| format!("invalid uint value {value:?}"))
+    }
 }
 
 fn field_confidence_label(present_count: usize, transaction_count: usize) -> String {
@@ -6850,6 +6998,55 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_replay_probe_without_field_candidate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["replayProbes"] = serde_json::json!([{
+            "fieldName": "foreign_field",
+            "bitOffset": 0,
+            "bits": 1,
+            "value": "0x0",
+            "mutation": {"type": "flipBodyBit", "bit": 0},
+            "cliArg": "--flip-body-bit 0",
+            "confidence": "medium",
+            "evidence": ["tx-a"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_schema_replay_probe("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema replay probe field foreign_field for --flip-body-bit 0 has no matching message body field candidate",
+                )
+            }),
+            "expected replay probe field candidate failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_storage_field_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -8859,6 +9056,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Replay Probes\n- No replay probe candidates were inferred.",
             "## Replay Probes\n| Opcode | Field | CLI mutation | Confidence | Evidence |\n| --- | --- | --- | --- | --- |\n| `0x00000001` | `query_id` | `--flip-body-bit 0` | low | `tx-b` |",
+        )
+    }
+
+    fn sample_report_markdown_with_schema_replay_probe(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Replay Probes\n- No replay probe candidates were inferred.",
+            "## Replay Probes\n| Opcode | Field | CLI mutation | Confidence | Evidence |\n| --- | --- | --- | --- | --- |\n| `0x00000001` | `foreign_field` | `--flip-body-bit 0` | medium | `tx-a` |",
         )
     }
 
