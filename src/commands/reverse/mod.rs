@@ -2723,11 +2723,12 @@ fn validate_report_schema_deliverables(
 
     if let Some(section) = markdown_section(markdown, "## Outbound Effects") {
         for candidate in &schema.opcode_candidates {
+            let opcode = report_opcode_label(candidate.opcode.as_deref());
             for effect in &candidate.outbound_effects {
-                validate_report_effect_row("outbound", effect, section, gate_failures);
+                validate_report_effect_row("outbound", &opcode, effect, section, gate_failures);
             }
             for effect in &candidate.out_actions {
-                validate_report_effect_row("action", effect, section, gate_failures);
+                validate_report_effect_row("action", &opcode, effect, section, gate_failures);
             }
         }
     }
@@ -2758,15 +2759,20 @@ fn validate_report_schema_deliverables(
 
 fn validate_report_effect_row(
     source: &str,
+    opcode: &str,
     effect: &ton_stateflow::EffectCandidate,
     section: &str,
     gate_failures: &mut Vec<String>,
 ) {
-    if !section.contains(source) || !section.contains(&effect.kind) {
+    let effect_row = report_effect_row(section, opcode, source, effect);
+    if effect_row.is_none() {
         gate_failures.push(format!(
             "report outbound effect {source} {} is missing",
             effect.kind
         ));
+    }
+    if let Some(row) = effect_row {
+        validate_report_effect_values(source, effect, &row, gate_failures);
     }
 }
 
@@ -3056,6 +3062,132 @@ fn validate_report_storage_field_cell(
     }
 }
 
+fn report_effect_row(
+    section: &str,
+    opcode: &str,
+    source: &str,
+    effect: &ton_stateflow::EffectCandidate,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == opcode)
+            && cells.get(1).is_some_and(|cell| cell == source)
+            && cells.get(2).is_some_and(|cell| cell == &effect.kind))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_effect_values(
+    source: &str,
+    effect: &ton_stateflow::EffectCandidate,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_effect_cell(
+        "count",
+        effect.count.to_string(),
+        source,
+        effect,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "value",
+        report_effect_value(effect),
+        source,
+        effect,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "modes",
+        report_kind_list(&effect.modes),
+        source,
+        effect,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "destinations",
+        report_kind_list(&effect.destinations),
+        source,
+        effect,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "body",
+        report_optional_shape(&effect.body_shape),
+        source,
+        effect,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "code",
+        report_optional_shape(&effect.code_shape),
+        source,
+        effect,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "libraries",
+        report_kind_list(&effect.library_hashes),
+        source,
+        effect,
+        row.get(9),
+        gate_failures,
+    );
+    validate_report_effect_cell(
+        "evidence",
+        report_kind_list(&effect.tx_hashes),
+        source,
+        effect,
+        row.get(10),
+        gate_failures,
+    );
+}
+
+fn validate_report_effect_cell(
+    label: &str,
+    expected: String,
+    source: &str,
+    effect: &ton_stateflow::EffectCandidate,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report outbound effect {label} {expected} for {source} {} is missing",
+            effect.kind
+        ));
+    }
+}
+
+fn report_effect_value(effect: &ton_stateflow::EffectCandidate) -> String {
+    match (&effect.value_nanotons_min, &effect.value_nanotons_max) {
+        (Some(min), Some(max)) if min == max => min.clone(),
+        (Some(min), Some(max)) => format!("{min}..{max}"),
+        _ => "n/a".to_owned(),
+    }
+}
+
+fn report_optional_shape(shape: &Option<ton_stateflow::CellShapeRange>) -> String {
+    shape
+        .as_ref()
+        .map(report_cell_shape_range)
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn report_cell_shape_range(shape: &ton_stateflow::CellShapeRange) -> String {
+    format!(
+        "{}/{}",
+        report_range(shape.min_bits, shape.max_bits),
+        report_range(shape.min_refs, shape.max_refs)
+    )
+}
+
 fn report_range<T>(min: T, max: T) -> String
 where
     T: Eq + std::fmt::Display,
@@ -3086,15 +3218,43 @@ fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
     if !line.starts_with('|') || !line.ends_with('|') {
         return None;
     }
-    let cells = line
-        .trim_matches('|')
-        .split('|')
+    let cells = split_markdown_table_cells(line.trim_matches('|'))
+        .into_iter()
         .map(|cell| cell.trim().replace('`', ""))
         .collect::<Vec<_>>();
     (!cells
         .iter()
         .all(|cell| cell.chars().all(|ch| ch == '-' || ch == ':')))
     .then_some(cells)
+}
+
+fn split_markdown_table_cells(row: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in row.chars() {
+        if escaped {
+            if ch == '|' {
+                current.push('|');
+            } else {
+                current.push('\\');
+                current.push(ch);
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '|' {
+            cells.push(current);
+            current = String::new();
+        } else {
+            current.push(ch);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    cells.push(current);
+    cells
 }
 
 fn markdown_line_exists(markdown: &str, expected: &str) -> bool {
@@ -4413,6 +4573,97 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_outbound_effect_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["outboundEffects"] = serde_json::json!([{
+            "kind": "internal",
+            "count": 1,
+            "txHashes": ["tx-a"],
+            "modes": [],
+            "destinations": ["dst"],
+            "valueNanotonsMin": "11",
+            "valueNanotonsMax": "11",
+            "bodyShape": {
+                "minBits": 40,
+                "maxBits": 40,
+                "minRefs": 1,
+                "maxRefs": 1
+            },
+            "codeShape": null,
+            "libraryHashes": []
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_outbound_effect("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report outbound effect count 1 for outbound internal is missing",
+                )
+            }),
+            "expected report outbound effect count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report outbound effect destinations dst for outbound internal is missing",
+                )
+            }),
+            "expected report outbound effect destination failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report outbound effect evidence tx-a for outbound internal is missing",
+                )
+            }),
+            "expected report outbound effect evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn markdown_table_cells_preserve_escaped_pipes_inside_cells() {
+        let cells = super::markdown_table_cells(
+            "| action | `SendMsgFlags(IGNORE_ERROR \\| WITH_REMAINING_BALANCE)` | tx-a |",
+        )
+        .expect("table row should parse");
+
+        assert_eq!(
+            cells,
+            vec![
+                "action".to_owned(),
+                "SendMsgFlags(IGNORE_ERROR | WITH_REMAINING_BALANCE)".to_owned(),
+                "tx-a".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_missing_schema_evidence() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -5679,6 +5930,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Storage Fields\n- No storage field candidates were inferred.",
             "## Storage Fields\n| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `data_word_0` | code | 8 | 16..16 | 1..1 | raw | `0xff` | medium |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_outbound_effect(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Outbound Effects\n- No outbound effect candidates were inferred.",
+            "## Outbound Effects\n| Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |\n| `0x00000001` | outbound | internal | 9 | 99 | none | other | n/a | n/a | none | `tx-b` |",
         )
     }
 
