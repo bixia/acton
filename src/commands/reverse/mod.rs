@@ -2005,6 +2005,19 @@ fn validate_state_flow_replay_evidence_keys(
         ("replay VM trace", &["replay", "vmTrace"][..]),
         ("replay executor trace", &["replay", "executorTrace"][..]),
         ("replay error", &["replay", "error"][..]),
+        ("diff replay accepted", &["diff", "replayAccepted"][..]),
+        ("diff input changed", &["diff", "inputChanged"][..]),
+        ("diff state changed", &["diff", "stateChanged"][..]),
+        ("diff code hash changed", &["diff", "codeHashChanged"][..]),
+        ("diff data hash changed", &["diff", "dataHashChanged"][..]),
+        ("diff balance delta", &["diff", "balanceDeltaDiff"][..]),
+        ("diff exit changed", &["diff", "exitCodeChanged"][..]),
+        (
+            "diff outbound count delta",
+            &["diff", "outboundCountDelta"][..],
+        ),
+        ("diff action count delta", &["diff", "actionCountDelta"][..]),
+        ("diff c5 changed", &["diff", "c5Changed"][..]),
     ] {
         if !json_path_exists(value, path) {
             gate_failures.push(format!(
@@ -10044,6 +10057,45 @@ mod tests {
                 )
             }),
             "expected replay diff outbound count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_diff_c5_changed_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["diff"]
+            .as_object_mut()
+            .expect("diff should be an object")
+            .remove("c5Changed");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json missing diff c5 changed evidence key",
+                )
+            }),
+            "expected missing replay diff c5 changed key failure, got {:?}",
             validation.gate_failures
         );
     }
