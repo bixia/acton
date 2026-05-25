@@ -492,6 +492,37 @@ fn test_acton_reverse_smoke_help() {
 }
 
 #[test]
+fn test_acton_reverse_verify_artifacts_help() {
+    let output = snapbox::cmd::Command::acton_ui()
+        .arg("reverse")
+        .arg("verify-artifacts")
+        .arg("--help")
+        .output()
+        .expect("failed to run acton reverse verify-artifacts --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse verify-artifacts --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Validate a state-flow artifact manifest bundle",
+        "Usage: acton reverse verify-artifacts",
+        "<ARTIFACTS>",
+        "--target-id <TARGET_ID>",
+        "--pretty",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse verify-artifacts --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_reverse_analyze_help() {
     let output = snapbox::cmd::Command::acton_ui()
         .arg("reverse")

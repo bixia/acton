@@ -194,6 +194,18 @@ pub enum ReverseCommand {
         )]
         output: Option<PathBuf>,
     },
+    #[command(about = "Validate a state-flow artifact manifest bundle")]
+    VerifyArtifacts {
+        #[arg(
+            value_name = "ARTIFACTS",
+            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+        )]
+        artifacts: PathBuf,
+        #[arg(long, help = "Only validate artifacts for this target id")]
+        target_id: Option<String>,
+        #[arg(long, help = "Pretty-print JSON output")]
+        pretty: bool,
+    },
     #[command(about = "Run collect, infer, replay, and report for one target address")]
     Analyze {
         #[arg(help = "Account address in friendly or raw format")]
@@ -327,6 +339,11 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             target_id,
             output,
         } => reverse_report_cmd(corpus, schema, replay, artifact_manifest, target_id, output),
+        ReverseCommand::VerifyArtifacts {
+            artifacts,
+            target_id,
+            pretty,
+        } => reverse_verify_artifacts_cmd(artifacts, target_id, pretty),
         ReverseCommand::Analyze {
             address,
             net,
@@ -620,6 +637,28 @@ fn reverse_report_cmd(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
     write_text(&report, output, "State-flow report")
+}
+
+fn reverse_verify_artifacts_cmd(
+    artifacts: PathBuf,
+    target_id: Option<String>,
+    pretty: bool,
+) -> anyhow::Result<()> {
+    let manifest = load_artifact_manifest(&artifacts)?;
+    let validation =
+        validate_artifact_manifest_bundle(&manifest, &artifacts, target_id.as_deref())?;
+    write_json(
+        &validation,
+        None,
+        pretty,
+        "State-flow artifact manifest validation JSON",
+    )?;
+    anyhow::ensure!(
+        validation.passed,
+        "artifact manifest validation failed: {}",
+        validation.gate_failures.join("; ")
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1376,6 +1415,129 @@ fn infer_corpus_from_manifest(
     required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtifactManifestValidation {
+    schema_version: u32,
+    kind: String,
+    manifest: String,
+    target_count: usize,
+    absolute_path_count: usize,
+    expected_absolute_path_count: usize,
+    passed: bool,
+    gate_failures: Vec<String>,
+    targets: Vec<ArtifactManifestTargetValidation>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtifactManifestTargetValidation {
+    id: String,
+    artifact_count: usize,
+    replay_count: usize,
+    passed: bool,
+    gate_failures: Vec<String>,
+}
+
+fn validate_artifact_manifest_bundle(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+) -> anyhow::Result<ArtifactManifestValidation> {
+    ensure_supported_artifact_manifest(manifest, manifest_path)?;
+    let target_ids = manifest_target_ids(manifest);
+    let selected_target_ids = if let Some(target_id) = target_id {
+        anyhow::ensure!(
+            target_ids.iter().any(|id| id == target_id),
+            "artifact manifest {} does not contain target id {:?}",
+            manifest_path.display(),
+            target_id
+        );
+        vec![target_id.to_owned()]
+    } else {
+        target_ids.clone()
+    };
+
+    let expected_absolute_path_count =
+        smoke_manifest_absolute_path_count(&manifest.summary, &manifest.artifacts);
+    let mut gate_failures = Vec::new();
+    if manifest.absolute_path_count != expected_absolute_path_count {
+        gate_failures.push(format!(
+            "absolute path count mismatch: manifest {}, actual {}",
+            manifest.absolute_path_count, expected_absolute_path_count
+        ));
+    }
+    if manifest.target_count != target_ids.len() {
+        gate_failures.push(format!(
+            "target count mismatch: manifest {}, actual {}",
+            manifest.target_count,
+            target_ids.len()
+        ));
+    }
+
+    let summary_path = resolve_manifest_artifact_path(manifest_path, &manifest.summary);
+    if !summary_path.exists() {
+        gate_failures.push(format!("missing summary artifact {}", manifest.summary));
+    }
+    for artifact in &manifest.artifacts {
+        let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
+        if !path.exists() {
+            gate_failures.push(format!("missing artifact {}", artifact.path));
+        }
+    }
+
+    let targets = selected_target_ids
+        .iter()
+        .map(|target_id| validate_artifact_manifest_target(manifest, target_id))
+        .collect::<Vec<_>>();
+    gate_failures.extend(targets.iter().flat_map(|target| {
+        target
+            .gate_failures
+            .iter()
+            .map(|failure| format!("{}: {failure}", target.id))
+    }));
+
+    Ok(ArtifactManifestValidation {
+        schema_version: 1,
+        kind: "stateFlowArtifactManifestValidation".to_owned(),
+        manifest: manifest_path.display().to_string(),
+        target_count: selected_target_ids.len(),
+        absolute_path_count: manifest.absolute_path_count,
+        expected_absolute_path_count,
+        passed: gate_failures.is_empty(),
+        gate_failures,
+        targets,
+    })
+}
+
+fn validate_artifact_manifest_target(
+    manifest: &SmokeArtifactManifest,
+    target_id: &str,
+) -> ArtifactManifestTargetValidation {
+    let artifacts = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.target_id.as_deref() == Some(target_id))
+        .collect::<Vec<_>>();
+    let mut gate_failures = Vec::new();
+    for kind in ["corpus", "schema", "replay", "report"] {
+        if !artifacts.iter().any(|artifact| artifact.kind == kind) {
+            gate_failures.push(format!("missing {kind} artifact"));
+        }
+    }
+
+    ArtifactManifestTargetValidation {
+        id: target_id.to_owned(),
+        artifact_count: artifacts.len(),
+        replay_count: artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == "replay")
+            .count(),
+        passed: gate_failures.is_empty(),
+        gate_failures,
+    }
+}
+
 fn ensure_supported_artifact_manifest(
     manifest: &SmokeArtifactManifest,
     manifest_path: &Path,
@@ -1936,6 +2098,92 @@ mod tests {
         .expect("target infer input should resolve");
 
         assert_eq!(corpus, PathBuf::from("out/target-b/corpus.json"));
+    }
+
+    #[test]
+    fn artifact_manifest_validation_accepts_portable_bundle() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        for path in [
+            "summary.json",
+            "target-a/corpus.json",
+            "target-a/schema.json",
+            "target-a/replay.json",
+            "target-a/report.md",
+        ] {
+            let path = temp_dir.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).expect("parent dir should be created");
+            fs::write(path, "{}").expect("artifact should be written");
+        }
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "summary.json",
+            "targetCount": 1,
+            "absolutePathCount": 0,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "target-a/replay.json", "targetId": "target-a"},
+                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(validation.passed);
+        assert_eq!(validation.absolute_path_count, 0);
+        assert_eq!(validation.gate_failures, Vec::<String>::new());
+        assert_eq!(validation.targets[0].id, "target-a");
+        assert!(validation.targets[0].passed);
+    }
+
+    #[test]
+    fn artifact_manifest_validation_reports_missing_replay() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        for path in [
+            "summary.json",
+            "target-a/corpus.json",
+            "target-a/schema.json",
+            "target-a/report.md",
+        ] {
+            let path = temp_dir.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).expect("parent dir should be created");
+            fs::write(path, "{}").expect("artifact should be written");
+        }
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "summary.json",
+            "targetCount": 1,
+            "absolutePathCount": 0,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert_eq!(
+            validation.gate_failures,
+            vec!["target-a: missing replay artifact"]
+        );
     }
 
     #[test]
