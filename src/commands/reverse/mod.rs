@@ -1521,9 +1521,9 @@ fn validate_artifact_manifest_bundle(
         ));
     }
 
-    let summary_path = resolve_manifest_artifact_path(manifest_path, &manifest.summary);
-    if !summary_path.exists() {
-        gate_failures.push(format!("missing summary artifact {}", manifest.summary));
+    let summary = validate_manifest_summary_artifact(manifest, manifest_path, &mut gate_failures);
+    if let Some(summary) = &summary {
+        validate_manifest_summary_targets(manifest, &target_ids, summary, &mut gate_failures);
     }
     for artifact in &manifest.artifacts {
         let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
@@ -1536,7 +1536,9 @@ fn validate_artifact_manifest_bundle(
 
     let targets = selected_target_ids
         .iter()
-        .map(|target_id| validate_artifact_manifest_target(manifest, target_id))
+        .map(|target_id| {
+            validate_artifact_manifest_target(manifest, manifest_path, target_id, summary.as_ref())
+        })
         .collect::<Vec<_>>();
     gate_failures.extend(targets.iter().flat_map(|target| {
         target
@@ -1556,6 +1558,76 @@ fn validate_artifact_manifest_bundle(
         gate_failures,
         targets,
     })
+}
+
+fn validate_manifest_summary_artifact(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    gate_failures: &mut Vec<String>,
+) -> Option<SmokeRunSummary> {
+    let summary_path = resolve_manifest_artifact_path(manifest_path, &manifest.summary);
+    if !summary_path.exists() {
+        gate_failures.push(format!("missing summary artifact {}", manifest.summary));
+        return None;
+    }
+
+    let summary_json = match fs::read_to_string(&summary_path) {
+        Ok(summary_json) => summary_json,
+        Err(err) => {
+            gate_failures.push(format!(
+                "failed to read summary artifact {}: {err}",
+                manifest.summary
+            ));
+            return None;
+        }
+    };
+    match serde_json::from_str::<SmokeRunSummary>(&summary_json) {
+        Ok(summary) => Some(summary),
+        Err(err) => {
+            gate_failures.push(format!(
+                "invalid summary artifact {}: {err}",
+                manifest.summary
+            ));
+            None
+        }
+    }
+}
+
+fn validate_manifest_summary_targets(
+    manifest: &SmokeArtifactManifest,
+    manifest_target_ids: &[String],
+    summary: &SmokeRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    if summary.target_count != summary.targets.len() {
+        gate_failures.push(format!(
+            "summary target count mismatch: summary {}, actual {}",
+            summary.target_count,
+            summary.targets.len()
+        ));
+    }
+
+    for target in &summary.targets {
+        if !manifest_target_ids.iter().any(|id| id == &target.id) {
+            gate_failures.push(format!(
+                "summary target {} has no manifest artifacts",
+                target.id
+            ));
+        }
+    }
+    for target_id in manifest_target_ids {
+        if !summary.targets.iter().any(|target| &target.id == target_id) {
+            gate_failures.push(format!("manifest target {target_id} has no summary target"));
+        }
+    }
+
+    if manifest.target_count != summary.targets.len() {
+        gate_failures.push(format!(
+            "manifest target count {} does not match summary target count {}",
+            manifest.target_count,
+            summary.targets.len()
+        ));
+    }
 }
 
 fn pending_artifact_manifest_validation(
@@ -1639,7 +1711,9 @@ fn validate_report_artifact(
 
 fn validate_artifact_manifest_target(
     manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
     target_id: &str,
+    summary: Option<&SmokeRunSummary>,
 ) -> ArtifactManifestTargetValidation {
     let artifacts = manifest
         .artifacts
@@ -1652,6 +1726,15 @@ fn validate_artifact_manifest_target(
             gate_failures.push(format!("missing {kind} artifact"));
         }
     }
+    if let Some(summary) = summary {
+        validate_manifest_target_matches_summary(
+            manifest_path,
+            target_id,
+            &artifacts,
+            summary,
+            &mut gate_failures,
+        );
+    }
 
     ArtifactManifestTargetValidation {
         id: target_id.to_owned(),
@@ -1663,6 +1746,155 @@ fn validate_artifact_manifest_target(
         passed: gate_failures.is_empty(),
         gate_failures,
     }
+}
+
+fn validate_manifest_target_matches_summary(
+    manifest_path: &Path,
+    target_id: &str,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    summary: &SmokeRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(target) = summary.targets.iter().find(|target| target.id == target_id) else {
+        gate_failures.push("missing summary target".to_owned());
+        return;
+    };
+
+    validate_summary_single_artifact_path(
+        manifest_path,
+        artifacts,
+        "corpus",
+        &target.corpus,
+        gate_failures,
+    );
+    validate_summary_single_artifact_path(
+        manifest_path,
+        artifacts,
+        "schema",
+        &target.schema,
+        gate_failures,
+    );
+    validate_summary_optional_artifact_path(
+        manifest_path,
+        artifacts,
+        "transaction",
+        target.transaction.as_deref(),
+        gate_failures,
+    );
+    validate_summary_replay_artifact_paths(manifest_path, artifacts, target, gate_failures);
+    validate_summary_single_artifact_path(
+        manifest_path,
+        artifacts,
+        "report",
+        &target.report,
+        gate_failures,
+    );
+}
+
+fn validate_summary_single_artifact_path(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    kind: &str,
+    expected_path: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let matches = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == kind)
+        .copied()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [artifact] => {
+            if !manifest_artifact_path_matches_summary(manifest_path, &artifact.path, expected_path)
+            {
+                gate_failures.push(format!(
+                    "{kind} artifact path {} does not match summary path {expected_path}",
+                    artifact.path
+                ));
+            }
+        }
+        [] => {}
+        _ => gate_failures.push(format!("multiple {kind} artifacts")),
+    }
+}
+
+fn validate_summary_optional_artifact_path(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    kind: &str,
+    expected_path: Option<&str>,
+    gate_failures: &mut Vec<String>,
+) {
+    if let Some(expected_path) = expected_path {
+        validate_summary_single_artifact_path(
+            manifest_path,
+            artifacts,
+            kind,
+            expected_path,
+            gate_failures,
+        );
+        return;
+    }
+
+    for artifact in artifacts.iter().filter(|artifact| artifact.kind == kind) {
+        gate_failures.push(format!(
+            "{kind} artifact path {} is not listed in summary",
+            artifact.path
+        ));
+    }
+}
+
+fn validate_summary_replay_artifact_paths(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    target: &SmokeTargetRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    let manifest_replays = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "replay")
+        .copied()
+        .collect::<Vec<_>>();
+    let summary_replays = replay_artifact_paths(target);
+    if manifest_replays.is_empty() {
+        return;
+    }
+    if manifest_replays.len() != summary_replays.len() {
+        gate_failures.push(format!(
+            "replay artifact count mismatch: manifest {}, summary {}",
+            manifest_replays.len(),
+            summary_replays.len()
+        ));
+    }
+
+    for artifact in &manifest_replays {
+        if !summary_replays.iter().any(|summary_path| {
+            manifest_artifact_path_matches_summary(manifest_path, &artifact.path, summary_path)
+        }) {
+            gate_failures.push(format!(
+                "replay artifact path {} is not listed in summary",
+                artifact.path
+            ));
+        }
+    }
+    for summary_path in &summary_replays {
+        if !manifest_replays.iter().any(|artifact| {
+            manifest_artifact_path_matches_summary(manifest_path, &artifact.path, summary_path)
+        }) {
+            gate_failures.push(format!(
+                "summary replay path {summary_path} is missing from manifest"
+            ));
+        }
+    }
+}
+
+fn manifest_artifact_path_matches_summary(
+    manifest_path: &Path,
+    artifact_path: &str,
+    summary_path: &str,
+) -> bool {
+    resolve_manifest_artifact_path(manifest_path, artifact_path)
+        == resolve_manifest_artifact_path(manifest_path, summary_path)
 }
 
 fn ensure_supported_artifact_manifest(
@@ -2318,6 +2550,44 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_summary_path_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        fs::copy(
+            temp_dir.path().join("target-a/corpus.json"),
+            temp_dir.path().join("target-a/alternate-corpus.json"),
+        )
+        .expect("alternate corpus should be written");
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| {
+                artifact.target_id.as_deref() == Some("target-a") && artifact.kind == "corpus"
+            })
+            .expect("corpus artifact should exist")
+            .path = "target-a/alternate-corpus.json".to_owned();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: corpus artifact path target-a/alternate-corpus.json does not match summary path target-a/corpus.json",
+                )
+            }),
+            "expected summary path mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn analysis_target_defaults_to_baseline_replay() {
         let target = super::analysis_target_from_args(
             "addr", "mainnet", 2, None, None, None, None, None, false,
@@ -2479,10 +2749,11 @@ mod tests {
     }
 
     fn write_sample_validation_artifacts(out_dir: &Path) {
+        let summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
         write_sample_validation_artifact(
             out_dir,
             "summary.json",
-            &serde_json::to_string(&sample_smoke_summary()).expect("summary should serialize"),
+            &serde_json::to_string(&summary).expect("summary should serialize"),
         );
         write_sample_validation_artifact(
             out_dir,
