@@ -1,5 +1,97 @@
 import {parseStateFlowArtifact, summarizeStateFlowArtifact} from "./stateFlowArtifacts.ts"
 
+const stateFlowTx = {
+  schemaVersion: 1,
+  network: "mainnet",
+  queryHash: "tx-a",
+  transaction: {
+    lt: 42,
+    utime: 1,
+    account: "account",
+    stateUpdateHashOk: true,
+    transactionBoc64: "tx",
+  },
+  replay: {
+    mcSeqno: 7,
+    randSeedHex: "00",
+    replayedPrevTxCount: 1,
+    blockConfigBoc64: "config",
+    libsBoc64: "libs",
+  },
+  state: {
+    pre: {
+      shardAccountBoc64: "pre",
+      lastTransLt: 1,
+      lastTransHash: "pre-hash",
+      accountAddress: "account",
+      status: "active",
+      balanceNanotons: "100",
+      codeHash: "code-a",
+      dataHash: "data-a",
+    },
+    post: {
+      shardAccountBoc64: "post",
+      lastTransLt: 42,
+      lastTransHash: "post-hash",
+      accountAddress: "account",
+      status: "frozen",
+      balanceNanotons: "75",
+      codeHash: "code-a",
+      dataHash: "data-b",
+    },
+  },
+  inbound: {
+    direction: "inbound",
+    kind: "internal",
+    src: "sender",
+    dst: "account",
+    valueNanotons: "25",
+    opcode: "0x00000001",
+    messageBoc64: "msg-a",
+    body: {boc64: "body-a", hash: "body-a", bits: 96, refs: 1},
+  },
+  outbound: [
+    {
+      direction: "outbound",
+      index: 0,
+      kind: "internal",
+      src: "account",
+      dst: "receiver",
+      valueNanotons: "7",
+      opcode: "0x00000002",
+      messageBoc64: "out-msg",
+      body: {boc64: "out-body", hash: "out-body", bits: 32, refs: 0},
+    },
+  ],
+  compute: {
+    skipped: false,
+    success: true,
+    exitCode: 0,
+    vmSteps: 12,
+    gasUsed: 3,
+    gasFees: 4,
+  },
+  money: {
+    balanceBefore: 100,
+    sentTotal: 7,
+    totalFees: 1,
+    balanceAfter: 75,
+  },
+  c5: {boc64: "c5", hash: "c5-hash", bits: 24, refs: 1},
+  outActions: [
+    {
+      index: 0,
+      kind: "send_msg",
+      mode: "64",
+      valueNanotons: "7",
+      destination: "receiver",
+      body: {boc64: "action-body", hash: "action-body", bits: 32, refs: 0},
+    },
+  ],
+  vmTrace: {lineCount: 2, text: "vm step 1\nvm step 2"},
+  executorTrace: {lineCount: 1, text: "executor accepted"},
+}
+
 const schema = {
   schemaVersion: 1,
   network: "mainnet",
@@ -302,6 +394,39 @@ const artifactValidation = {
     },
   ],
 }
+
+const transactionSummary = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
+)
+const transactionStateRows = sectionRows(transactionSummary, "State")
+assert(transactionStateRows[0]?.label === "pre", "expected pre-state row")
+assert(transactionStateRows[0]?.value === "active", "expected pre-state status")
+assert(
+  transactionStateRows[0]?.detail?.includes("balance 100") === true,
+  "expected pre-state balance",
+)
+assert(
+  transactionStateRows[1]?.detail?.includes("data data-b") === true,
+  "expected post-state data hash",
+)
+const inboundRows = sectionRows(transactionSummary, "Inbound Message")
+assert(inboundRows[0]?.label === "internal", "expected inbound kind")
+assert(inboundRows[0]?.value === "0x00000001", "expected inbound opcode")
+assert(inboundRows[0]?.detail?.includes("body body-a 96/1") === true, "expected inbound body shape")
+const outboundRows = sectionRows(transactionSummary, "Outbound Messages")
+assert(outboundRows[0]?.label === "0 internal", "expected outbound index and kind")
+assert(outboundRows[0]?.value === "0x00000002", "expected outbound opcode")
+assert(outboundRows[0]?.detail?.includes("receiver") === true, "expected outbound destination")
+const actionRows = sectionRows(transactionSummary, "Actions")
+assert(actionRows[0]?.label === "c5", "expected c5 row")
+assert(actionRows[0]?.value === "c5-hash", "expected c5 hash")
+assert(actionRows[1]?.label === "0 send_msg", "expected action row")
+assert(actionRows[1]?.detail?.includes("mode 64") === true, "expected action mode")
+const traceRows = sectionRows(transactionSummary, "Traces")
+assert(traceRows[0]?.label === "VM trace", "expected vm trace row")
+assert(traceRows[0]?.detail === "vm step 1", "expected vm trace preview")
+assert(traceRows[1]?.label === "Executor trace", "expected executor trace row")
+assert(traceRows[1]?.detail === "executor accepted", "expected executor trace preview")
 
 const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))
 assert(

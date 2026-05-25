@@ -523,9 +523,29 @@ function summarizeTransaction(tx: StateFlowTx): ArtifactSummary {
         rows: [
           {label: "Account", value: tx.transaction.account},
           {label: "LT", value: tx.transaction.lt.toString()},
-          {label: "VM trace", value: `${tx.vmTrace.lineCount} lines`},
-          {label: "Executor trace", value: `${tx.executorTrace.lineCount} lines`},
+          {label: "Masterchain seqno", value: tx.replay.mcSeqno.toString()},
+          {label: "Prev tx replayed", value: tx.replay.replayedPrevTxCount.toString()},
         ],
+      },
+      {
+        title: "State",
+        rows: [snapshotRow("pre", tx.state.pre), snapshotRow("post", tx.state.post)],
+      },
+      {
+        title: "Inbound Message",
+        rows: [messageRow(tx.inbound)],
+      },
+      {
+        title: "Outbound Messages",
+        rows: tx.outbound.map(message => messageRow(message)),
+      },
+      {
+        title: "Actions",
+        rows: transactionActionRows(tx),
+      },
+      {
+        title: "Traces",
+        rows: [traceRow("VM trace", tx.vmTrace), traceRow("Executor trace", tx.executorTrace)],
       },
     ],
   }
@@ -827,6 +847,76 @@ function artifactKindCoverage(artifacts: readonly StateFlowArtifactManifestEntry
   return [...counts.entries()].map(([kind, count]) => `${kind} x${count}`).join(" · ")
 }
 
+function snapshotRow(label: string, snapshot: ShardAccountSnapshot): SummaryRow {
+  return {
+    label,
+    value: snapshot.status,
+    detail: [
+      `balance ${snapshot.balanceNanotons}`,
+      `lt ${snapshot.lastTransLt}`,
+      `code ${formatHash(snapshot.codeHash)}`,
+      `data ${formatHash(snapshot.dataHash)}`,
+    ].join(" · "),
+  }
+}
+
+function messageRow(message: MessageArtifact): SummaryRow {
+  const indexedKind =
+    message.index === null || message.index === undefined
+      ? message.kind
+      : `${message.index} ${message.kind}`
+  return {
+    label: indexedKind,
+    value: message.opcode ?? "<none>",
+    detail: [
+      `src ${message.src ?? "n/a"}`,
+      `dst ${message.dst ?? "n/a"}`,
+      `value ${message.valueNanotons ?? "n/a"}`,
+      `body ${shortHash(message.body.hash)} ${formatCellShape(message.body)}`,
+    ].join(" · "),
+  }
+}
+
+function transactionActionRows(tx: StateFlowTx): readonly SummaryRow[] {
+  const rows: SummaryRow[] = []
+  if (tx.c5) {
+    rows.push({
+      label: "c5",
+      value: shortHash(tx.c5.hash),
+      detail: formatCellShape(tx.c5),
+    })
+  }
+
+  rows.push(
+    ...tx.outActions.map(action => ({
+      label: `${action.index} ${action.kind}`,
+      value: action.destination ?? action.valueNanotons ?? "n/a",
+      detail: [
+        action.mode ? `mode ${action.mode}` : undefined,
+        action.valueNanotons ? `value ${action.valueNanotons}` : undefined,
+        action.body
+          ? `body ${shortHash(action.body.hash)} ${formatCellShape(action.body)}`
+          : undefined,
+        action.code
+          ? `code ${shortHash(action.code.hash)} ${formatCellShape(action.code)}`
+          : undefined,
+      ]
+        .filter((value): value is string => value !== undefined)
+        .join(" · "),
+    })),
+  )
+
+  return rows
+}
+
+function traceRow(label: string, trace: LogArtifact): SummaryRow {
+  return {
+    label,
+    value: `${trace.lineCount} ${plural(trace.lineCount, "line")}`,
+    detail: firstLogLine(trace),
+  }
+}
+
 function formatGateFailureRow(failure: string): SummaryRow {
   const separator = failure.indexOf(": ")
   if (separator === -1) {
@@ -882,6 +972,18 @@ function formatCellShapeRange(shape: CellShapeRange): string {
   const bits = formatRange(shape.minBits, shape.maxBits)
   const refs = formatRange(shape.minRefs, shape.maxRefs)
   return `${bits}/${refs}`
+}
+
+function formatCellShape(cell: CellArtifact): string {
+  return `${cell.bits}/${cell.refs}`
+}
+
+function formatHash(hash: string | null | undefined): string {
+  return hash ? shortHash(hash) : "n/a"
+}
+
+function firstLogLine(trace: LogArtifact): string | undefined {
+  return trace.text.split(/\r?\n/, 1)[0] || undefined
 }
 
 function candidateEvidenceCount(candidate: OpcodeSchemaCandidate): number {

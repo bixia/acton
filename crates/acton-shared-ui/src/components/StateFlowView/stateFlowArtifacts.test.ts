@@ -31,24 +31,43 @@ const stateFlowTx = {
       accountAddress: "account",
       status: "active",
       balanceNanotons: "10",
+      codeHash: "code-a",
+      dataHash: "data-a",
     },
     post: {
       shardAccountBoc64: "post",
       lastTransLt: 42,
       lastTransHash: "post-hash",
       accountAddress: "account",
-      status: "active",
+      status: "frozen",
       balanceNanotons: "8",
+      codeHash: "code-a",
+      dataHash: "data-b",
     },
   },
   inbound: {
     direction: "inbound",
     kind: "internal",
+    src: "sender",
+    dst: "account",
+    valueNanotons: "2",
     opcode: "0x00000001",
     messageBoc64: "msg",
     body: {boc64: "body", hash: "body-hash", bits: 32, refs: 0},
   },
-  outbound: [],
+  outbound: [
+    {
+      direction: "outbound",
+      index: 0,
+      kind: "internal",
+      src: "account",
+      dst: "receiver",
+      valueNanotons: "1",
+      opcode: "0x00000002",
+      messageBoc64: "out-msg",
+      body: {boc64: "out-body", hash: "out-body", bits: 16, refs: 0},
+    },
+  ],
   compute: {
     skipped: false,
     success: true,
@@ -63,7 +82,17 @@ const stateFlowTx = {
     totalFees: 1,
     balanceAfter: 8,
   },
-  outActions: [],
+  c5: {boc64: "c5", hash: "c5-hash", bits: 8, refs: 1},
+  outActions: [
+    {
+      index: 0,
+      kind: "send_msg",
+      mode: "64",
+      valueNanotons: "1",
+      destination: "receiver",
+      body: {boc64: "action-body", hash: "action-body", bits: 16, refs: 0},
+    },
+  ],
   vmTrace: {lineCount: 2, text: "vm"},
   executorTrace: {lineCount: 1, text: "executor"},
 }
@@ -274,6 +303,28 @@ const artifactKinds: Array<StateFlowArtifact["kind"]> = [
 for (const [index, kind] of artifactKinds.entries()) {
   assert(artifacts[index]?.kind === kind, `expected artifact ${index} to be ${kind}`)
 }
+
+const transactionSummary = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
+)
+assert(
+  transactionSummary.sections
+    .find(section => section.title === "State")
+    ?.rows[1]?.detail?.includes("data data-b") === true,
+  "expected transaction summary to include post-state data hash",
+)
+assert(
+  transactionSummary.sections
+    .find(section => section.title === "Inbound Message")
+    ?.rows[0]?.detail?.includes("body body-hash 32/0") === true,
+  "expected transaction summary to include inbound body shape",
+)
+assert(
+  transactionSummary.sections
+    .find(section => section.title === "Actions")
+    ?.rows.some(row => row.label === "c5" && row.value === "c5-hash") === true,
+  "expected transaction summary to include c5 action evidence",
+)
 
 const summary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(corpus)))
 
