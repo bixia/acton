@@ -2290,6 +2290,7 @@ fn validate_schema_corpus_membership(
         }
         validate_schema_state_machine_edge_matches_corpus(edge, corpus, gate_failures);
     }
+    validate_schema_audit_signal_evidence_membership(schema, corpus, gate_failures);
     for candidate in &schema.opcode_candidates {
         for example in &candidate.examples {
             validate_corpus_hash_membership(
@@ -2342,6 +2343,30 @@ fn validate_schema_corpus_membership(
                     &corpus_hashes,
                     gate_failures,
                 );
+            }
+        }
+    }
+}
+
+fn validate_schema_audit_signal_evidence_membership(
+    schema: &StateFlowSchemaReport,
+    corpus: &StateFlowCorpus,
+    gate_failures: &mut Vec<String>,
+) {
+    for signal in &schema.audit_signals {
+        for evidence in &signal.evidence {
+            if !corpus
+                .transactions
+                .iter()
+                .any(|tx| tx.query_hash == *evidence)
+                && !corpus
+                    .failures
+                    .iter()
+                    .any(|failure| failure.hash == *evidence)
+            {
+                gate_failures.push(format!(
+                    "schema audit signal evidence {evidence} is not present in corpus transactions or failures"
+                ));
             }
         }
     }
@@ -6178,6 +6203,48 @@ mod tests {
                 )
             }),
             "expected state-machine edge status mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_audit_signal_evidence_outside_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["auditSignals"][0]["evidence"] = serde_json::json!(["foreign-tx"]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let report_path = temp_dir.path().join("target-a/report.md");
+        let report = fs::read_to_string(&report_path).expect("report artifact should be readable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &report.replace("Evidence: `tx-a`.", "Evidence: `foreign-tx`."),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema audit signal evidence foreign-tx is not present in corpus transactions or failures",
+                )
+            }),
+            "expected audit signal evidence membership failure, got {:?}",
             validation.gate_failures
         );
     }
