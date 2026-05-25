@@ -2316,10 +2316,57 @@ fn validate_manifest_report_content_matches_summary(
             gate_failures.push(format!("report section {section:?} is missing"));
         }
     }
+
+    if let Some(schema) = read_single_target_json_artifact::<StateFlowSchemaReport>(
+        manifest_path,
+        artifacts,
+        "schema",
+    ) {
+        let schema_evidence_section = markdown_section(&markdown, "## Schema Evidence");
+        for tx_hash in schema_evidence_hashes(&schema) {
+            if !schema_evidence_section.is_some_and(|section| section.contains(tx_hash)) {
+                gate_failures.push(format!(
+                    "report schema evidence tx hash {tx_hash} is missing"
+                ));
+            }
+        }
+    }
+
+    let replay_diff_section = markdown_section(&markdown, "## Replay Diffs");
+    for replay in
+        read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay")
+    {
+        if !replay_diff_section.is_some_and(|section| section.contains(&replay.source_query_hash)) {
+            gate_failures.push(format!(
+                "report replay tx hash {} is missing",
+                replay.source_query_hash
+            ));
+        }
+    }
 }
 
 fn markdown_line_exists(markdown: &str, expected: &str) -> bool {
     markdown.lines().any(|line| line.trim_end() == expected)
+}
+
+fn markdown_section<'a>(markdown: &'a str, heading: &str) -> Option<&'a str> {
+    let start = markdown.find(heading)?;
+    let after_heading = start + heading.len();
+    let remaining = &markdown[after_heading..];
+    let next_heading = remaining.find("\n## ").or_else(|| remaining.find("\n# "));
+    Some(match next_heading {
+        Some(end) => &remaining[..end],
+        None => remaining,
+    })
+}
+
+fn schema_evidence_hashes(schema: &StateFlowSchemaReport) -> Vec<&str> {
+    schema
+        .opcode_candidates
+        .iter()
+        .flat_map(|candidate| candidate.evidence.iter())
+        .map(|evidence| evidence.tx_hash.as_str())
+        .collect()
 }
 
 fn validate_corpus_hash_membership(
@@ -3335,6 +3382,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_schema_evidence() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_schema_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report schema evidence tx hash tx-a is missing")
+            }),
+            "expected report schema evidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_stale_validation_artifact() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -3960,6 +4035,19 @@ mod tests {
     }
 
     fn sample_report_markdown(address: &str) -> String {
+        sample_report_markdown_inner(address, true)
+    }
+
+    fn sample_report_markdown_without_schema_evidence(address: &str) -> String {
+        sample_report_markdown_inner(address, false)
+    }
+
+    fn sample_report_markdown_inner(address: &str, include_schema_evidence: bool) -> String {
+        let schema_evidence_row = if include_schema_evidence {
+            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | n/a | n/a | none | none |\n"
+        } else {
+            ""
+        };
         format!(
             "# TON State Flow Reverse Report\n\
              \n\
@@ -3977,6 +4065,7 @@ mod tests {
              ## Schema Evidence\n\
              | Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |\n\
              | --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n\
+             {schema_evidence_row}\
              \n\
              ## Message Body Fields\n\
              - No message body field candidates were inferred.\n\
