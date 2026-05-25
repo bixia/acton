@@ -489,8 +489,13 @@ fn reverse_replay_cmd(
     output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
-    let state_flow =
-        replay_state_flow_input_path(state_flow, artifact_manifest, target_id.as_deref())?;
+    let prefer_manifest_transaction = tx_index.is_none() && tx_hash.is_none();
+    let state_flow = replay_state_flow_input_path(
+        state_flow,
+        artifact_manifest,
+        target_id.as_deref(),
+        prefer_manifest_transaction,
+    )?;
     let json = fs::read_to_string(&state_flow)
         .with_context(|| format!("failed to read {}", state_flow.display()))?;
     let flow = parse_replay_input(&json, &state_flow, tx_index, tx_hash.as_deref())?;
@@ -503,10 +508,16 @@ fn replay_state_flow_input_path(
     state_flow: Option<PathBuf>,
     artifact_manifest: Option<PathBuf>,
     target_id: Option<&str>,
+    prefer_manifest_transaction: bool,
 ) -> anyhow::Result<PathBuf> {
     if let Some(manifest_path) = artifact_manifest {
         let manifest = load_artifact_manifest(&manifest_path)?;
-        return replay_state_flow_from_manifest(&manifest, &manifest_path, target_id);
+        return replay_state_flow_from_manifest(
+            &manifest,
+            &manifest_path,
+            target_id,
+            prefer_manifest_transaction,
+        );
     }
 
     state_flow.context("StateFlowTx JSON or corpus JSON is required")
@@ -1450,8 +1461,21 @@ fn replay_state_flow_from_manifest(
     manifest: &SmokeArtifactManifest,
     manifest_path: &Path,
     target_id: Option<&str>,
+    prefer_transaction: bool,
 ) -> anyhow::Result<PathBuf> {
-    infer_corpus_from_manifest(manifest, manifest_path, target_id)
+    ensure_supported_artifact_manifest(manifest, manifest_path)?;
+    let selected_target_id = select_manifest_target_id(manifest, manifest_path, target_id)?;
+    if prefer_transaction {
+        if let Some(transaction) = optional_manifest_artifact_path(
+            manifest,
+            manifest_path,
+            &selected_target_id,
+            "transaction",
+        )? {
+            return Ok(transaction);
+        }
+    }
+    required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")
 }
 
 fn infer_corpus_from_manifest(
@@ -5817,6 +5841,20 @@ fn required_manifest_artifact_path(
     }
 }
 
+fn optional_manifest_artifact_path(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: &str,
+    kind: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let paths = manifest_artifact_paths(manifest, manifest_path, target_id, kind);
+    match paths.as_slice() {
+        [path] => Ok(Some(path.clone())),
+        [] => Ok(None),
+        _ => anyhow::bail!("artifact manifest target {target_id:?} has multiple {kind} artifacts"),
+    }
+}
+
 fn manifest_artifact_paths(
     manifest: &SmokeArtifactManifest,
     manifest_path: &Path,
@@ -6265,7 +6303,36 @@ mod tests {
     }
 
     #[test]
-    fn replay_state_flow_from_manifest_selects_target_corpus() {
+    fn replay_state_flow_from_manifest_prefers_target_transaction_artifact() {
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "out/summary.json",
+            "targetCount": 2,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "corpus", "path": "target-b/corpus.json", "targetId": "target-b"},
+                {"kind": "schema", "path": "target-b/schema.json", "targetId": "target-b"},
+                {"kind": "transaction", "path": "target-b/transaction-3.json", "targetId": "target-b"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let state_flow = super::replay_state_flow_from_manifest(
+            &manifest,
+            Path::new("out/artifacts.json"),
+            Some("target-b"),
+            true,
+        )
+        .expect("target replay input should resolve");
+
+        assert_eq!(state_flow, PathBuf::from("out/target-b/transaction-3.json"));
+    }
+
+    #[test]
+    fn replay_state_flow_from_manifest_falls_back_to_target_corpus() {
         let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
             "kind": "stateFlowArtifactManifest",
@@ -6285,10 +6352,38 @@ mod tests {
             &manifest,
             Path::new("out/artifacts.json"),
             Some("target-b"),
+            true,
         )
         .expect("target replay input should resolve");
 
         assert_eq!(state_flow, PathBuf::from("out/target-b/corpus.json"));
+    }
+
+    #[test]
+    fn replay_state_flow_from_manifest_uses_corpus_for_explicit_selectors() {
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "out/summary.json",
+            "targetCount": 1,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "transaction", "path": "target-a/transaction-3.json", "targetId": "target-a"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let state_flow = super::replay_state_flow_from_manifest(
+            &manifest,
+            Path::new("out/artifacts.json"),
+            Some("target-a"),
+            false,
+        )
+        .expect("target replay input should resolve");
+
+        assert_eq!(state_flow, PathBuf::from("out/target-a/corpus.json"));
     }
 
     #[test]
