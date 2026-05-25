@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "mainnet-stateflow-baseline",
+      "network": "mainnet",
+      "address": "UQDDu8CeRPbV2YRuwVE6eubWs0SPynt9O0iDtdf-0uTFx8mo",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "Known full-chain smoke target used to validate collect, infer, replay, and report artifacts."
+    },
+    {
+      "id": "tonviewer-requested-target",
+      "network": "mainnet",
+      "address": "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+      "sourceUrl": "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "User-requested Tonviewer account that must remain in live state-flow smoke coverage."
+    }
+  ]
+}

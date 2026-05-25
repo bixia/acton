@@ -10,6 +10,22 @@ const schema = {
       opcode: "0x00000001",
       count: 2,
       examples: ["tx-a", "tx-b"],
+      evidence: [
+        {
+          txHash: "tx-a",
+          inboundBodyHash: "body-a",
+          inboundBodyBits: 32,
+          inboundBodyRefs: 0,
+          fromStatus: "active",
+          toStatus: "frozen",
+          preDataHash: "data-a",
+          postDataHash: "data-b",
+          preCodeHash: "code-a",
+          postCodeHash: "code-a",
+          outboundKinds: ["internal"],
+          outActionKinds: ["send_msg"],
+        },
+      ],
       inboundBody: {
         minBits: 32,
         maxBits: 96,
@@ -78,6 +94,10 @@ const replay = {
 }
 
 const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))
+assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("1 evidence row") === true,
+  "expected candidate summary to include evidence row count",
+)
 const stateMachineRows = sectionRows(schemaSummary, "State Machine")
 assert(stateMachineRows[0]?.label === "0x00000001", "expected opcode on state machine row")
 assert(stateMachineRows[0]?.value === "active -> frozen", "expected state transition row")

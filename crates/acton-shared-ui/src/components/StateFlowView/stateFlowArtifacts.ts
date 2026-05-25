@@ -192,6 +192,7 @@ export interface OpcodeSchemaCandidate {
   readonly opcode?: string | null
   readonly count: number
   readonly examples: readonly string[]
+  readonly evidence?: readonly SchemaEvidence[]
   readonly inboundBody: {
     readonly minBits: number
     readonly maxBits: number
@@ -205,6 +206,21 @@ export interface OpcodeSchemaCandidate {
   readonly outActions: readonly EffectCandidate[]
   readonly confidence: string
   readonly unknownFields: readonly string[]
+}
+
+export interface SchemaEvidence {
+  readonly txHash: string
+  readonly inboundBodyHash: string
+  readonly inboundBodyBits: number
+  readonly inboundBodyRefs: number
+  readonly fromStatus: string
+  readonly toStatus: string
+  readonly preDataHash?: string | null
+  readonly postDataHash?: string | null
+  readonly preCodeHash?: string | null
+  readonly postCodeHash?: string | null
+  readonly outboundKinds: readonly string[]
+  readonly outActionKinds: readonly string[]
 }
 
 export interface StorageShapeCandidate {
@@ -388,6 +404,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             `${candidate.count} ${plural(candidate.count, "transaction")}`,
             `body ${formatRange(candidate.inboundBody.minBits, candidate.inboundBody.maxBits)} bits`,
             `storage ${storageLabel(candidate.storage)}`,
+            `${candidateEvidenceCount(candidate)} ${plural(candidateEvidenceCount(candidate), "evidence row")}`,
             `${candidate.unknownFields.length} unknowns`,
           ].join(" · "),
         })),
@@ -470,6 +487,10 @@ function storageLabel(storage: StorageShapeCandidate | null | undefined): string
       ? storage.balanceDeltaMin.toString()
       : `${storage.balanceDeltaMin}..${storage.balanceDeltaMax}`
   return `balance ${balance}, data ${storage.dataHashChangedCount}, code ${storage.codeHashChangedCount}`
+}
+
+function candidateEvidenceCount(candidate: OpcodeSchemaCandidate): number {
+  return candidate.evidence?.length ?? candidate.examples.length
 }
 
 function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachineEdge[] {

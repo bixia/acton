@@ -168,6 +168,8 @@ pub struct OpcodeSchemaCandidate {
     pub opcode: Option<String>,
     pub count: usize,
     pub examples: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<SchemaEvidence>,
     pub inbound_body: BodyShapeCandidate,
     #[serde(default)]
     pub storage: StorageShapeCandidate,
@@ -176,6 +178,23 @@ pub struct OpcodeSchemaCandidate {
     pub out_actions: Vec<EffectCandidate>,
     pub confidence: String,
     pub unknown_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaEvidence {
+    pub tx_hash: String,
+    pub inbound_body_hash: String,
+    pub inbound_body_bits: u16,
+    pub inbound_body_refs: u8,
+    pub from_status: String,
+    pub to_status: String,
+    pub pre_data_hash: Option<String>,
+    pub post_data_hash: Option<String>,
+    pub pre_code_hash: Option<String>,
+    pub post_code_hash: Option<String>,
+    pub outbound_kinds: Vec<String>,
+    pub out_action_kinds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -523,6 +542,47 @@ pub fn render_state_flow_report(
             markdown_escape(&candidate.examples.join(", ")),
         )
         .ok();
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Schema Evidence").ok();
+    let mut evidence_rows = 0;
+    for candidate in &schema.opcode_candidates {
+        evidence_rows += candidate.evidence.len();
+    }
+    if evidence_rows == 0 {
+        writeln!(report, "- No compact schema evidence rows were inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |"
+        )
+        .ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | ---: | --- | --- | --- | --- | --- |"
+        )
+        .ok();
+        for candidate in &schema.opcode_candidates {
+            for evidence in &candidate.evidence {
+                writeln!(
+                    report,
+                    "| {} | `{}` | {} | {}/{} | {} -> {} | {} | {} | {} | {} |",
+                    markdown_code_opt(candidate.opcode.as_deref()),
+                    markdown_escape(&evidence.tx_hash),
+                    markdown_code_opt(Some(&evidence.inbound_body_hash)),
+                    evidence.inbound_body_bits,
+                    evidence.inbound_body_refs,
+                    markdown_escape(&evidence.from_status),
+                    markdown_escape(&evidence.to_status),
+                    format_hash_transition(&evidence.pre_data_hash, &evidence.post_data_hash),
+                    format_hash_transition(&evidence.pre_code_hash, &evidence.post_code_hash),
+                    markdown_escape(&format_kind_list(&evidence.outbound_kinds)),
+                    markdown_escape(&format_kind_list(&evidence.out_action_kinds)),
+                )
+                .ok();
+            }
+        }
     }
     writeln!(report).ok();
 
@@ -933,6 +993,21 @@ fn format_storage(storage: &StorageShapeCandidate) -> String {
     )
 }
 
+fn format_hash_transition(before: &Option<String>, after: &Option<String>) -> String {
+    format!(
+        "{} -> {}",
+        markdown_code_opt(before.as_deref()),
+        markdown_code_opt(after.as_deref())
+    )
+}
+
+fn format_kind_list(kinds: &[String]) -> String {
+    if kinds.is_empty() {
+        return "none".to_owned();
+    }
+    kinds.join(", ")
+}
+
 fn mutation_label(mutation: &ReplayMutation) -> String {
     match mutation {
         ReplayMutation::None => "none".to_owned(),
@@ -1182,6 +1257,7 @@ fn opcode_candidate(
             .take(5)
             .map(|tx| tx.query_hash.clone())
             .collect(),
+        evidence: schema_evidence(transactions),
         inbound_body,
         storage,
         state_transitions,
@@ -1190,6 +1266,34 @@ fn opcode_candidate(
         confidence,
         unknown_fields,
     }
+}
+
+fn schema_evidence(transactions: &[&StateFlowTx]) -> Vec<SchemaEvidence> {
+    transactions
+        .iter()
+        .map(|tx| SchemaEvidence {
+            tx_hash: tx.query_hash.clone(),
+            inbound_body_hash: tx.inbound.body.hash.clone(),
+            inbound_body_bits: tx.inbound.body.bits,
+            inbound_body_refs: tx.inbound.body.refs,
+            from_status: tx.state.pre.status.clone(),
+            to_status: tx.state.post.status.clone(),
+            pre_data_hash: tx.state.pre.data_hash.clone(),
+            post_data_hash: tx.state.post.data_hash.clone(),
+            pre_code_hash: tx.state.pre.code_hash.clone(),
+            post_code_hash: tx.state.post.code_hash.clone(),
+            outbound_kinds: tx
+                .outbound
+                .iter()
+                .map(|message| message.kind.clone())
+                .collect(),
+            out_action_kinds: tx
+                .out_actions
+                .iter()
+                .map(|action| action.kind.clone())
+                .collect(),
+        })
+        .collect()
 }
 
 fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
@@ -1799,6 +1903,55 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_records_transaction_evidence_sources() {
+        let mut flow = sample_flow("tx-a", Some("0x00000001"));
+        let mut outbound = flow.inbound.clone();
+        outbound.direction = MessageDirection::Outbound;
+        outbound.index = Some(0);
+        outbound.kind = "internal".to_owned();
+        flow.outbound.push(outbound);
+        flow.out_actions.push(super::ActionEffect {
+            index: 0,
+            kind: "send_msg".to_owned(),
+            mode: Some("64".to_owned()),
+            value_nanotons: Some("1".to_owned()),
+            destination: Some("dst".to_owned()),
+            body: None,
+            code: None,
+            library: None,
+        });
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![flow],
+            failures: Vec::new(),
+        };
+
+        let report = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&report).unwrap();
+        let evidence = &json["opcodeCandidates"][0]["evidence"][0];
+
+        assert_eq!(evidence["txHash"], "tx-a");
+        assert_eq!(evidence["inboundBodyHash"], "hash");
+        assert_eq!(evidence["inboundBodyBits"], 32);
+        assert_eq!(evidence["inboundBodyRefs"], 0);
+        assert_eq!(evidence["fromStatus"], "none");
+        assert_eq!(evidence["toStatus"], "active");
+        assert_eq!(evidence["preDataHash"], serde_json::Value::Null);
+        assert_eq!(evidence["postDataHash"], "data");
+        assert_eq!(evidence["preCodeHash"], serde_json::Value::Null);
+        assert_eq!(evidence["postCodeHash"], "code");
+        assert_eq!(evidence["outboundKinds"], serde_json::json!(["internal"]));
+        assert_eq!(evidence["outActionKinds"], serde_json::json!(["send_msg"]));
+    }
+
+    #[test]
     fn replay_mutation_flips_message_body_bit() {
         let mut body = CellBuilder::new();
         body.store_u32(0).unwrap();
@@ -1861,6 +2014,9 @@ mod tests {
         assert!(report.contains("none --> active: 0x00000001 (1)"));
         assert!(report.contains("medium"));
         assert!(report.contains("tx-a"));
+        assert!(report.contains("## Schema Evidence"));
+        assert!(report.contains("| Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |"));
+        assert!(report.contains("| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `data` | `<none>` -> `code` | none | none |"));
         assert!(report.contains("## Unknown Fields"));
         assert!(report.contains("TL-B"));
     }
@@ -1928,9 +2084,37 @@ mod tests {
             report.opcode_candidates[0].storage.post_data_hashes.len(),
             0
         );
+        assert_eq!(report.opcode_candidates[0].evidence.len(), 0);
         let serialized = serde_json::to_value(&report).unwrap();
         assert_eq!(serialized["stateMachine"]["edges"], serde_json::json!([]));
         assert_eq!(serialized["auditSignals"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn checked_in_smoke_targets_cover_named_tonviewer_account() {
+        let targets: serde_json::Value =
+            serde_json::from_str(include_str!("../smoke-targets.json")).unwrap();
+        let targets = targets["targets"]
+            .as_array()
+            .expect("smoke targets should be an array");
+
+        assert!(
+            targets.len() >= 2,
+            "state-flow smoke coverage should include multiple real-chain examples"
+        );
+        assert!(
+            targets.iter().any(|target| {
+                target["id"] == "tonviewer-requested-target"
+                    && target["network"] == "mainnet"
+                    && target["address"] == "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+                    && target["sourceUrl"]
+                        == "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+                    && target["collectLimit"]
+                        .as_u64()
+                        .is_some_and(|limit| limit >= 2)
+            }),
+            "smoke targets must keep the user-requested Tonviewer account"
+        );
     }
 
     fn sample_flow(query_hash: &str, opcode: Option<&str>) -> StateFlowTx {
