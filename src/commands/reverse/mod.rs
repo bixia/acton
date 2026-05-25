@@ -5286,7 +5286,17 @@ fn validate_replay_mutation_matches_observations(
                 ));
             }
         }
-        ReplayMutation::ReplaceBody { .. } | ReplayMutation::SetBodyUint { .. } => {}
+        ReplayMutation::SetBodyUint {
+            bit_offset, bits, ..
+        } => {
+            let mutation_end = bit_offset.checked_add(*bits);
+            if *bits == 0 || mutation_end.is_none_or(|end| end > baseline_body_bits) {
+                gate_failures.push(format!(
+                    "replay setBodyUint {bit_offset}:{bits} for {tx_hash} exceeds baseline body bits {baseline_body_bits}"
+                ));
+            }
+        }
+        ReplayMutation::ReplaceBody { .. } => {}
     }
 }
 
@@ -9124,6 +9134,47 @@ mod tests {
                 )
             }),
             "expected replay flipBodyBit bounds failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_set_body_uint_outside_baseline_body() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"] = serde_json::json!({
+            "type": "setBodyUint",
+            "bitOffset": 32,
+            "bits": 64,
+            "value": "0x01"
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay setBodyUint 32:64 for tx-a exceeds baseline body bits 32",
+                )
+            }),
+            "expected replay setBodyUint bounds failure, got {:?}",
             validation.gate_failures
         );
     }
