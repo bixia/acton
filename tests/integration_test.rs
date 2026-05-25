@@ -312,6 +312,7 @@ fn test_acton_reverse_retrace_help() {
         "Replay a transaction and emit state-flow JSON",
         "Usage: acton reverse retrace",
         "--output <OUTPUT>",
+        "[aliases: --out]",
         "--pretty",
     ] {
         assert!(

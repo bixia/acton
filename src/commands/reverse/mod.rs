@@ -15,7 +15,13 @@ pub enum ReverseCommand {
         hash: String,
         #[arg(long, help = "Network to use")]
         net: Option<String>,
-        #[arg(short, long, help = "Write state-flow JSON to a file")]
+        #[arg(
+            short,
+            long,
+            alias = "out",
+            visible_alias = "out",
+            help = "Write state-flow JSON to a file"
+        )]
         output: Option<PathBuf>,
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
