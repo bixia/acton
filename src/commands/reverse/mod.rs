@@ -2040,6 +2040,12 @@ fn validate_manifest_target_content_matches_summary(
         );
         validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
     }
+    validate_manifest_report_content_matches_summary(
+        manifest_path,
+        artifacts,
+        target,
+        gate_failures,
+    );
 }
 
 fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
@@ -2135,6 +2141,56 @@ fn validate_schema_corpus_membership(
     }
 }
 
+fn validate_manifest_report_content_matches_summary(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    target: &SmokeTargetRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(markdown) = read_single_target_text_artifact(manifest_path, artifacts, "report")
+    else {
+        return;
+    };
+    let required_target_lines = [
+        format!("- Network: `{}`", target.network),
+        format!("- Address: `{}`", target.address),
+        format!("- Source transactions: {}", target.source_tx_count),
+        format!("- Retraced transactions: {}", target.retraced_count),
+        format!(
+            "- Replay failures while collecting: {}",
+            target.failure_count
+        ),
+    ];
+    for line in &required_target_lines {
+        if !markdown_line_exists(&markdown, line) {
+            gate_failures.push(format!("report target line {line:?} is missing"));
+        }
+    }
+
+    for section in [
+        "# TON State Flow Reverse Report",
+        "## Target",
+        "## Opcode Candidates",
+        "## Schema Evidence",
+        "## Message Body Fields",
+        "## Replay Probes",
+        "## Storage Fields",
+        "## Outbound Effects",
+        "## State Machine",
+        "## Unknown Fields",
+        "## Replay Diffs",
+        "## Risk Points",
+    ] {
+        if !markdown_line_exists(&markdown, section) {
+            gate_failures.push(format!("report section {section:?} is missing"));
+        }
+    }
+}
+
+fn markdown_line_exists(markdown: &str, expected: &str) -> bool {
+    markdown.lines().any(|line| line.trim_end() == expected)
+}
+
 fn validate_corpus_hash_membership(
     label: &str,
     hash: &str,
@@ -2222,6 +2278,23 @@ where
     let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
     let json = fs::read_to_string(path).ok()?;
     serde_json::from_str(&json).ok()
+}
+
+fn read_single_target_text_artifact(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    kind: &str,
+) -> Option<String> {
+    let matches = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == kind)
+        .copied()
+        .collect::<Vec<_>>();
+    let [artifact] = matches.as_slice() else {
+        return None;
+    };
+    let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
+    fs::read_to_string(path).ok()
 }
 
 fn read_target_json_artifacts<T>(
@@ -3069,6 +3142,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_target_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown("other-addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report target line \"- Address: `addr`\" is missing")
+            }),
+            "expected report target mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_corpus_count_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -3489,13 +3590,66 @@ mod tests {
             })
             .to_string(),
         );
-        write_sample_validation_artifact(out_dir, "target-a/report.md", "# report\n");
+        write_sample_validation_artifact(
+            out_dir,
+            "target-a/report.md",
+            &sample_report_markdown("addr"),
+        );
     }
 
     fn write_sample_validation_artifact(out_dir: &Path, path: &str, contents: &str) {
         let path = out_dir.join(path);
         fs::create_dir_all(path.parent().unwrap()).expect("parent dir should be created");
         fs::write(path, contents).expect("artifact should be written");
+    }
+
+    fn sample_report_markdown(address: &str) -> String {
+        format!(
+            "# TON State Flow Reverse Report\n\
+             \n\
+             ## Target\n\
+             - Network: `mainnet`\n\
+             - Address: `{address}`\n\
+             - Source transactions: 2\n\
+             - Retraced transactions: 2\n\
+             - Replay failures while collecting: 0\n\
+             \n\
+             ## Opcode Candidates\n\
+             | Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |\n\
+             | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             \n\
+             ## Schema Evidence\n\
+             | Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |\n\
+             | --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n\
+             \n\
+             ## Message Body Fields\n\
+             - No message body field candidates were inferred.\n\
+             \n\
+             ## Replay Probes\n\
+             - No replay probe candidates were inferred.\n\
+             \n\
+             ## Storage Fields\n\
+             - No storage field candidates were inferred.\n\
+             \n\
+             ## Outbound Effects\n\
+             - No outbound effect candidates were inferred.\n\
+             \n\
+             ## State Machine\n\
+             ```mermaid\n\
+             stateDiagram-v2\n\
+             ```\n\
+             \n\
+             ## Unknown Fields\n\
+             - `0x00000001`:\n\
+             \n\
+             ## Replay Diffs\n\
+             | Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |\n\
+             | --- | --- | --- | --- | --- | --- | ---: | ---: |\n\
+             | `tx-a` | none | true | false | false | false | 0 | 0 |\n\
+             \n\
+             ## Risk Points\n\
+             - No risk points were inferred from the provided artifacts.\n"
+        )
     }
 
     fn sample_replay_observation_json(accepted: bool) -> serde_json::Value {
