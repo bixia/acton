@@ -2618,6 +2618,120 @@ fn validate_state_flow_replay_evidence_keys(
             ));
         }
     }
+    validate_replay_observation_evidence_keys(value, "baseline", artifact, gate_failures);
+    validate_replay_observation_evidence_keys(value, "replay", artifact, gate_failures);
+}
+
+fn validate_replay_observation_evidence_keys(
+    value: &serde_json::Value,
+    observation_key: &str,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(observation) = value.get(observation_key) else {
+        return;
+    };
+    let artifact_prefix = format!("replay artifact {}", artifact.path);
+    let observation_prefix = format!("{artifact_prefix} {observation_key}");
+
+    if matches!(observation.get("state"), Some(serde_json::Value::Object(_))) {
+        validate_state_flow_snapshot_evidence_keys(
+            observation,
+            &["state"],
+            &artifact_prefix,
+            &format!("{observation_key} state"),
+            gate_failures,
+        );
+    }
+    if let Some(message) = observation.get("inbound") {
+        validate_message_artifact_evidence_keys(
+            message,
+            &artifact_prefix,
+            &format!("{observation_key} inbound"),
+            gate_failures,
+        );
+    }
+    if let Some(outbound_messages) = observation
+        .get("outbound")
+        .and_then(|value| value.as_array())
+    {
+        for (index, message) in outbound_messages.iter().enumerate() {
+            validate_message_artifact_evidence_keys(
+                message,
+                &artifact_prefix,
+                &format!("{observation_key} outbound[{index}]"),
+                gate_failures,
+            );
+        }
+    }
+    if matches!(
+        observation.get("compute"),
+        Some(serde_json::Value::Object(_))
+    ) {
+        validate_compute_evidence_keys(observation, &observation_prefix, gate_failures);
+    }
+    if matches!(observation.get("money"), Some(serde_json::Value::Object(_))) {
+        validate_money_evidence_keys(observation, &observation_prefix, gate_failures);
+    }
+    if matches!(observation.get("c5"), Some(serde_json::Value::Object(_))) {
+        validate_cell_artifact_evidence_keys(
+            observation,
+            &["c5"],
+            &artifact_prefix,
+            &format!("{observation_key} c5"),
+            gate_failures,
+        );
+    }
+    if matches!(
+        observation.get("vmTrace"),
+        Some(serde_json::Value::Object(_))
+    ) {
+        validate_log_artifact_evidence_keys(
+            observation,
+            &["vmTrace"],
+            &artifact_prefix,
+            &format!("{observation_key} VM trace"),
+            gate_failures,
+        );
+    }
+    if matches!(
+        observation.get("executorTrace"),
+        Some(serde_json::Value::Object(_))
+    ) {
+        validate_log_artifact_evidence_keys(
+            observation,
+            &["executorTrace"],
+            &artifact_prefix,
+            &format!("{observation_key} executor trace"),
+            gate_failures,
+        );
+    }
+    validate_out_action_evidence_keys(observation, &observation_prefix, gate_failures);
+    validate_replay_error_evidence_keys(observation, &observation_prefix, gate_failures);
+}
+
+fn validate_replay_error_evidence_keys(
+    observation: &serde_json::Value,
+    observation_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(error) = observation.get("error") else {
+        return;
+    };
+    if error.is_null() {
+        return;
+    }
+    for (label, path) in [
+        ("message", &["message"][..]),
+        ("external not accepted", &["externalNotAccepted"][..]),
+        ("VM exit code", &["vmExitCode"][..]),
+    ] {
+        if !json_path_exists(error, path) {
+            gate_failures.push(format!(
+                "{observation_prefix} error missing {label} evidence key"
+            ));
+        }
+    }
 }
 
 fn json_path_exists(value: &serde_json::Value, path: &[&str]) -> bool {
@@ -10982,6 +11096,45 @@ mod tests {
                 )
             }),
             "expected replay baseline body hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_baseline_inbound_body_hash_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["baseline"]["inbound"]["body"]
+            .as_object_mut()
+            .expect("baseline inbound body should be an object")
+            .remove("hash");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json baseline inbound body missing hash evidence key",
+                )
+            }),
+            "expected missing replay baseline inbound body hash key failure, got {:?}",
             validation.gate_failures
         );
     }
