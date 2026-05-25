@@ -298,6 +298,13 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | Source tx | Mutation | Accepted |
 | --- | --- | --- |
 | \`tx-hash\` | flip body bit 32 | true |
+
+## Unknown Fields
+- \`0x00000001\`:
+  - message body field names require TL-B recovery
+
+## Risk Points
+- Unknown fields remain for opcode 0x00000001.
 `
 
 const artifacts: StateFlowArtifact[] = [
@@ -456,7 +463,7 @@ assert(
 const reportView = summarizeStateFlowArtifact(parseStateFlowArtifact(reportMarkdown))
 assert(reportView.title === "TON State Flow Reverse Report", "expected report summary title")
 assert(
-  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "3"),
+  reportView.metrics.some(metric => metric.label === "Sections" && metric.value === "5"),
   "expected report summary section count",
 )
 assert(
@@ -477,6 +484,22 @@ assert(
     .find(section => section.title === "Replay Diffs")
     ?.rows.some(row => row.label === "tx-hash" && row.value === "flip body bit 32") === true,
   "expected report replay diff table rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Unknown Fields")
+    ?.rows.some(
+      row =>
+        row.label === "0x00000001" &&
+        row.value === "message body field names require TL-B recovery",
+    ) === true,
+  "expected report unknown field rows",
+)
+assert(
+  reportView.sections
+    .find(section => section.title === "Risk Points")
+    ?.rows.some(row => row.value === "Unknown fields remain for opcode 0x00000001.") === true,
+  "expected report risk point rows",
 )
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")

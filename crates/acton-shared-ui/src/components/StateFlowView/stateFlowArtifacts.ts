@@ -880,6 +880,8 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
   const schemaEvidenceRows = reportSchemaEvidenceRows(report)
   const replayDiffRows = reportReplayDiffRows(report)
+  const unknownFieldRows = reportUnknownFieldRows(report)
+  const riskPointRows = reportRiskPointRows(report)
   return {
     title: report.title,
     metrics: [
@@ -908,6 +910,22 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Replay Diffs",
               rows: replayDiffRows,
+            },
+          ]
+        : []),
+      ...(unknownFieldRows.length > 0
+        ? [
+            {
+              title: "Unknown Fields",
+              rows: unknownFieldRows,
+            },
+          ]
+        : []),
+      ...(riskPointRows.length > 0
+        ? [
+            {
+              title: "Risk Points",
+              rows: riskPointRows,
             },
           ]
         : []),
@@ -1053,6 +1071,49 @@ function reportReplayDiffRows(report: StateFlowReport): readonly SummaryRow[] {
       .filter((value): value is string => value !== undefined)
       .join(" · "),
   }))
+}
+
+function reportUnknownFieldRows(report: StateFlowReport): readonly SummaryRow[] {
+  const section = report.sections.find(section => section.title === "Unknown Fields")
+  if (!section) {
+    return []
+  }
+
+  const rows: SummaryRow[] = []
+  let opcode = "n/a"
+  for (const line of section.body.split("\n")) {
+    const topLevel = line.trim().match(/^-\s*`?([^`:]+)`?:\s*$/)
+    if (topLevel) {
+      opcode = stripMarkdownInline(topLevel[1] ?? "") || "n/a"
+      continue
+    }
+
+    const nested = line.match(/^\s+-\s*(.+)$/)
+    if (nested) {
+      rows.push({
+        label: opcode,
+        value: stripMarkdownInline(nested[1] ?? ""),
+      })
+    }
+  }
+
+  return rows
+}
+
+function reportRiskPointRows(report: StateFlowReport): readonly SummaryRow[] {
+  const section = report.sections.find(section => section.title === "Risk Points")
+  if (!section) {
+    return []
+  }
+
+  return section.body
+    .split("\n")
+    .map(line => line.trim().match(/^-\s*(.+)$/))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map((match, index) => ({
+      label: `risk ${index + 1}`,
+      value: stripMarkdownInline(match[1] ?? ""),
+    }))
 }
 
 function reportTableRows(

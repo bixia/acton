@@ -419,6 +419,10 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | --- |
 | \`tx-a\` | flip body bit 32 | true |
 
+## Unknown Fields
+- \`0x00000001\`:
+  - message body field names require TL-B recovery
+
 ## Risk Points
 - Unknown fields remain for opcode 0x00000001.
 `
@@ -697,7 +701,7 @@ assert(reportArtifact.kind === "report", "expected report markdown artifact kind
 const reportSummary = summarizeStateFlowArtifact(reportArtifact)
 assert(reportSummary.title === "TON State Flow Reverse Report", "expected report title")
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "5"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "6"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -731,6 +735,18 @@ assert(reportReplayDiffRows[0]?.value === "flip body bit 32", "expected report r
 assert(
   reportReplayDiffRows[0]?.detail?.includes("accepted true") === true,
   "expected report replay accepted detail",
+)
+const reportUnknownRows = sectionRows(reportSummary, "Unknown Fields")
+assert(reportUnknownRows[0]?.label === "0x00000001", "expected report unknown opcode")
+assert(
+  reportUnknownRows[0]?.value === "message body field names require TL-B recovery",
+  "expected report unknown field value",
+)
+const reportRiskRows = sectionRows(reportSummary, "Risk Points")
+assert(reportRiskRows[0]?.label === "risk 1", "expected report risk row label")
+assert(
+  reportRiskRows[0]?.value === "Unknown fields remain for opcode 0x00000001.",
+  "expected report risk point text",
 )
 
 function sectionRows(
