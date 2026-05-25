@@ -1,6 +1,6 @@
 use anyhow::Context;
 use clap::Subcommand;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -9,6 +9,8 @@ use ton_retrace::Network;
 use ton_stateflow::{
     ReplayMutation, StateFlowCorpus, StateFlowReplayDiff, StateFlowSchemaReport, StateFlowTx,
 };
+
+const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
 
 #[derive(Subcommand, Clone)]
 pub enum ReverseCommand {
@@ -120,6 +122,25 @@ pub enum ReverseCommand {
         )]
         output: Option<PathBuf>,
     },
+    #[command(about = "Run state-flow smoke targets through collect, infer, replay, and report")]
+    Smoke {
+        #[arg(
+            long,
+            default_value = DEFAULT_SMOKE_TARGETS,
+            help = "Smoke target manifest JSON"
+        )]
+        targets: PathBuf,
+        #[arg(long, help = "Only run the smoke target with this id")]
+        target_id: Option<String>,
+        #[arg(
+            long,
+            default_value = "target/stateflow-smoke",
+            help = "Directory for smoke output artifacts"
+        )]
+        out_dir: PathBuf,
+        #[arg(long, help = "Pretty-print JSON output artifacts")]
+        pretty: bool,
+    },
 }
 
 pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
@@ -163,6 +184,12 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             replay,
             output,
         } => reverse_report_cmd(corpus, schema, replay, output),
+        ReverseCommand::Smoke {
+            targets,
+            target_id,
+            out_dir,
+            pretty,
+        } => reverse_smoke_cmd(targets, target_id.as_deref(), out_dir, pretty),
     }
 }
 
@@ -280,6 +307,132 @@ fn reverse_report_cmd(
     write_text(&report, output, "State-flow report")
 }
 
+fn reverse_smoke_cmd(
+    targets: PathBuf,
+    target_id: Option<&str>,
+    out_dir: PathBuf,
+    pretty: bool,
+) -> anyhow::Result<()> {
+    let manifest_json = fs::read_to_string(&targets)
+        .with_context(|| format!("failed to read {}", targets.display()))?;
+    let manifest = SmokeManifest::from_json(&manifest_json)
+        .with_context(|| format!("failed to parse {}", targets.display()))?;
+    let selected_targets = manifest.selected_targets(target_id)?;
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed to create {}", out_dir.display()))?;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let mut target_summaries = Vec::new();
+
+    for target in selected_targets {
+        let network = Network::from_str(&target.network)
+            .with_context(|| format!("invalid network for smoke target {}", target.id))?;
+        let target_dir = out_dir.join(safe_path_segment(&target.id));
+        fs::create_dir_all(&target_dir)
+            .with_context(|| format!("failed to create {}", target_dir.display()))?;
+
+        let corpus = rt.block_on(ton_stateflow::collect_state_flow_corpus(
+            network,
+            &target.address,
+            target.collect_limit,
+            HashMap::new(),
+        ))?;
+        let corpus_path = target_dir.join("corpus.json");
+        write_json(
+            &corpus,
+            Some(corpus_path.clone()),
+            pretty,
+            "State-flow smoke corpus JSON",
+        )?;
+
+        let schema = ton_stateflow::infer_schema_candidates(&corpus);
+        let schema_path = target_dir.join("schema.json");
+        write_json(
+            &schema,
+            Some(schema_path.clone()),
+            pretty,
+            "State-flow smoke schema JSON",
+        )?;
+
+        let mut replays = Vec::new();
+        let mut replay_path = None;
+        let mut transaction_path = None;
+        if let Some(plan) = &target.replay_mutation {
+            let flow = corpus.transactions.first().with_context(|| {
+                format!(
+                    "smoke target {} produced no retraced transactions for replay",
+                    target.id
+                )
+            })?;
+            let tx_path = target_dir.join("transaction-0.json");
+            write_json(
+                flow,
+                Some(tx_path.clone()),
+                pretty,
+                "State-flow smoke transaction JSON",
+            )?;
+            let replay = ton_stateflow::replay_state_flow_tx(
+                flow,
+                plan.to_replay_mutation()?,
+                plan.ignore_chksig,
+            )?;
+            let path = target_dir.join("replay.json");
+            write_json(
+                &replay,
+                Some(path.clone()),
+                pretty,
+                "State-flow smoke replay diff JSON",
+            )?;
+            transaction_path = Some(tx_path);
+            replay_path = Some(path);
+            replays.push(replay);
+        }
+
+        let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
+        let report_path = target_dir.join("report.md");
+        write_text(
+            &report,
+            Some(report_path.clone()),
+            "State-flow smoke report",
+        )?;
+
+        target_summaries.push(SmokeTargetRunSummary {
+            id: target.id.clone(),
+            network: target.network.clone(),
+            address: target.address.clone(),
+            source_url: target.source_url.clone(),
+            collect_limit: target.collect_limit,
+            source_tx_count: corpus.source_tx_count,
+            retraced_count: corpus.retraced_count,
+            failure_count: corpus.failure_count,
+            opcode_candidate_count: schema.opcode_candidates.len(),
+            state_edge_count: schema.state_machine.edges.len(),
+            audit_signal_count: schema.audit_signals.len(),
+            replay_count: replays.len(),
+            output_dir: target_dir.display().to_string(),
+            corpus: corpus_path.display().to_string(),
+            schema: schema_path.display().to_string(),
+            transaction: transaction_path.map(|path| path.display().to_string()),
+            replay: replay_path.map(|path| path.display().to_string()),
+            report: report_path.display().to_string(),
+        });
+    }
+
+    let summary = SmokeRunSummary {
+        schema_version: 1,
+        target_count: target_summaries.len(),
+        targets: target_summaries,
+    };
+    write_json(
+        &summary,
+        Some(out_dir.join("summary.json")),
+        pretty,
+        "State-flow smoke summary JSON",
+    )
+}
+
 fn write_state_flow(
     flow: &StateFlowTx,
     output: Option<PathBuf>,
@@ -335,4 +488,151 @@ fn write_json<T: Serialize>(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeManifest {
+    schema_version: u32,
+    targets: Vec<SmokeTarget>,
+}
+
+impl SmokeManifest {
+    fn from_json(json: &str) -> anyhow::Result<Self> {
+        let manifest: Self = serde_json::from_str(json)?;
+        anyhow::ensure!(
+            manifest.schema_version == 1,
+            "unsupported smoke manifest schema version {}",
+            manifest.schema_version
+        );
+        Ok(manifest)
+    }
+
+    fn selected_targets(&self, target_id: Option<&str>) -> anyhow::Result<Vec<&SmokeTarget>> {
+        let targets: Vec<_> = self
+            .targets
+            .iter()
+            .filter(|target| target_id.is_none_or(|target_id| target.id == target_id))
+            .collect();
+        if targets.is_empty() {
+            if let Some(target_id) = target_id {
+                anyhow::bail!("smoke target {target_id:?} was not found");
+            }
+            anyhow::bail!("smoke manifest does not contain any targets");
+        }
+        Ok(targets)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeTarget {
+    id: String,
+    network: String,
+    address: String,
+    source_url: Option<String>,
+    collect_limit: u32,
+    replay_mutation: Option<SmokeReplayMutation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeReplayMutation {
+    #[serde(rename = "type")]
+    mutation_type: String,
+    bit: Option<u16>,
+    body_boc64: Option<String>,
+    #[serde(default)]
+    ignore_chksig: bool,
+}
+
+impl SmokeReplayMutation {
+    fn to_replay_mutation(&self) -> anyhow::Result<ReplayMutation> {
+        match self.mutation_type.as_str() {
+            "none" => Ok(ReplayMutation::None),
+            "flipBodyBit" => Ok(ReplayMutation::FlipBodyBit {
+                bit: self
+                    .bit
+                    .context("flipBodyBit replay mutation requires bit")?,
+            }),
+            "replaceBody" => Ok(ReplayMutation::ReplaceBody {
+                body_boc64: self
+                    .body_boc64
+                    .clone()
+                    .context("replaceBody replay mutation requires bodyBoc64")?,
+            }),
+            mutation_type => anyhow::bail!("unsupported replay mutation type {mutation_type:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeRunSummary {
+    schema_version: u32,
+    target_count: usize,
+    targets: Vec<SmokeTargetRunSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeTargetRunSummary {
+    id: String,
+    network: String,
+    address: String,
+    source_url: Option<String>,
+    collect_limit: u32,
+    source_tx_count: usize,
+    retraced_count: usize,
+    failure_count: usize,
+    opcode_candidate_count: usize,
+    state_edge_count: usize,
+    audit_signal_count: usize,
+    replay_count: usize,
+    output_dir: String,
+    corpus: String,
+    schema: String,
+    transaction: Option<String>,
+    replay: Option<String>,
+    report: String,
+}
+
+fn safe_path_segment(value: &str) -> String {
+    let segment: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if segment.is_empty() {
+        "target".to_owned()
+    } else {
+        segment
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn smoke_manifest_deserializes_checked_in_targets() {
+        let manifest = super::SmokeManifest::from_json(include_str!(
+            "../../../crates/ton-stateflow/smoke-targets.json"
+        ))
+        .expect("checked-in smoke targets should deserialize");
+
+        assert!(manifest.targets.len() >= 2);
+        assert!(manifest.targets.iter().any(|target| {
+            target.id == "tonviewer-requested-target"
+                && target.network == "mainnet"
+                && target.address == "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+                && target
+                    .replay_mutation
+                    .as_ref()
+                    .is_some_and(|plan| plan.ignore_chksig)
+        }));
+    }
 }

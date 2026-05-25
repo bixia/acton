@@ -38,6 +38,8 @@ const schema = {
         balanceDeltaMax: 4,
         dataHashChangedCount: 1,
         codeHashChangedCount: 0,
+        postDataShape: {minBits: 16, maxBits: 16, minRefs: 1, maxRefs: 1},
+        postCodeShape: {minBits: 8, maxBits: 8, minRefs: 0, maxRefs: 0},
         postDataHashes: ["data-a", "data-b"],
         postCodeHashes: ["code-a"],
       },
@@ -97,6 +99,14 @@ const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.str
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("1 evidence row") === true,
   "expected candidate summary to include evidence row count",
+)
+assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("data 16/1") === true,
+  "expected candidate summary to include storage data shape",
+)
+assert(
+  schemaSummary.sections[0]?.rows[0]?.detail?.includes("code 8/0") === true,
+  "expected candidate summary to include storage code shape",
 )
 const stateMachineRows = sectionRows(schemaSummary, "State Machine")
 assert(stateMachineRows[0]?.label === "0x00000001", "expected opcode on state machine row")

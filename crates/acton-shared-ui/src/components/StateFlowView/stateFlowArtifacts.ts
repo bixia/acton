@@ -120,6 +120,8 @@ export interface ShardAccountSnapshot {
   readonly balanceNanotons: string
   readonly codeHash?: string | null
   readonly dataHash?: string | null
+  readonly codeCell?: CellShape | null
+  readonly dataCell?: CellShape | null
   readonly frozenHash?: string | null
 }
 
@@ -139,6 +141,12 @@ export interface MessageArtifact {
 
 export interface CellArtifact {
   readonly boc64: string
+  readonly hash: string
+  readonly bits: number
+  readonly refs: number
+}
+
+export interface CellShape {
   readonly hash: string
   readonly bits: number
   readonly refs: number
@@ -228,8 +236,17 @@ export interface StorageShapeCandidate {
   readonly balanceDeltaMax: number
   readonly dataHashChangedCount: number
   readonly codeHashChangedCount: number
+  readonly postDataShape?: CellShapeRange | null
+  readonly postCodeShape?: CellShapeRange | null
   readonly postDataHashes: readonly string[]
   readonly postCodeHashes: readonly string[]
+}
+
+export interface CellShapeRange {
+  readonly minBits: number
+  readonly maxBits: number
+  readonly minRefs: number
+  readonly maxRefs: number
 }
 
 export interface StateTransitionCandidate {
@@ -486,7 +503,21 @@ function storageLabel(storage: StorageShapeCandidate | null | undefined): string
     storage.balanceDeltaMin === storage.balanceDeltaMax
       ? storage.balanceDeltaMin.toString()
       : `${storage.balanceDeltaMin}..${storage.balanceDeltaMax}`
-  return `balance ${balance}, data ${storage.dataHashChangedCount}, code ${storage.codeHashChangedCount}`
+  return [
+    `balance ${balance}`,
+    `data ${storage.dataHashChangedCount}`,
+    `code ${storage.codeHashChangedCount}`,
+    storage.postDataShape ? `data ${formatCellShapeRange(storage.postDataShape)}` : undefined,
+    storage.postCodeShape ? `code ${formatCellShapeRange(storage.postCodeShape)}` : undefined,
+  ]
+    .filter(value => value !== undefined)
+    .join(", ")
+}
+
+function formatCellShapeRange(shape: CellShapeRange): string {
+  const bits = formatRange(shape.minBits, shape.maxBits)
+  const refs = formatRange(shape.minRefs, shape.maxRefs)
+  return `${bits}/${refs}`
 }
 
 function candidateEvidenceCount(candidate: OpcodeSchemaCandidate): number {

@@ -452,6 +452,38 @@ fn test_acton_reverse_report_help() {
 }
 
 #[test]
+fn test_acton_reverse_smoke_help() {
+    let output = snapbox::cmd::Command::acton_ui()
+        .arg("reverse")
+        .arg("smoke")
+        .arg("--help")
+        .output()
+        .expect("failed to run acton reverse smoke --help");
+
+    assert!(
+        output.status.success(),
+        "acton reverse smoke --help failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = common::strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    for expected in [
+        "Run state-flow smoke targets through collect, infer, replay, and report",
+        "Usage: acton reverse smoke",
+        "--targets <TARGETS>",
+        "--target-id <TARGET_ID>",
+        "--out-dir <OUT_DIR>",
+        "--pretty",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "acton reverse smoke --help did not contain {expected:?}.\nActual stdout:\n{stdout}",
+        );
+    }
+}
+
+#[test]
 fn test_acton_help_retrace() {
     snapbox::cmd::Command::acton_ui()
         .arg("help")

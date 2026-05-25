@@ -204,8 +204,21 @@ pub struct StorageShapeCandidate {
     pub balance_delta_max: i128,
     pub data_hash_changed_count: usize,
     pub code_hash_changed_count: usize,
+    #[serde(default)]
+    pub post_data_shape: Option<CellShapeRange>,
+    #[serde(default)]
+    pub post_code_shape: Option<CellShapeRange>,
     pub post_data_hashes: Vec<String>,
     pub post_code_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellShapeRange {
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,7 +285,19 @@ pub struct ShardAccountSnapshot {
     pub balance_nanotons: String,
     pub code_hash: Option<String>,
     pub data_hash: Option<String>,
+    #[serde(default)]
+    pub code_cell: Option<CellShape>,
+    #[serde(default)]
+    pub data_cell: Option<CellShape>,
     pub frozen_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellShape {
+    pub hash: String,
+    pub bits: u16,
+    pub refs: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -987,10 +1012,23 @@ fn format_storage(storage: &StorageShapeCandidate) -> String {
             storage.balance_delta_min, storage.balance_delta_max
         )
     };
-    format!(
+    let mut parts = vec![format!(
         "balance {balance}; data hash changes {}; code hash changes {}",
         storage.data_hash_changed_count, storage.code_hash_changed_count
-    )
+    )];
+    if let Some(shape) = &storage.post_data_shape {
+        parts.push(format!("data shape {}", format_cell_shape_range(shape)));
+    }
+    if let Some(shape) = &storage.post_code_shape {
+        parts.push(format!("code shape {}", format_cell_shape_range(shape)));
+    }
+    parts.join("; ")
+}
+
+fn format_cell_shape_range(shape: &CellShapeRange) -> String {
+    let bits = format_range(shape.min_bits, shape.max_bits);
+    let refs = format_range(shape.min_refs, shape.max_refs);
+    format!("{bits}/{refs}")
 }
 
 fn format_hash_transition(before: &Option<String>, after: &Option<String>) -> String {
@@ -1303,6 +1341,8 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
     let mut code_hash_changed_count = 0;
     let mut post_data_hashes = BTreeSet::new();
     let mut post_code_hashes = BTreeSet::new();
+    let mut post_data_shapes = Vec::new();
+    let mut post_code_shapes = Vec::new();
 
     for tx in transactions {
         let balance_delta = tx.money.balance_after as i128 - tx.money.balance_before as i128;
@@ -1320,6 +1360,12 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
         if let Some(hash) = &tx.state.post.code_hash {
             post_code_hashes.insert(hash.clone());
         }
+        if let Some(shape) = &tx.state.post.data_cell {
+            post_data_shapes.push(shape.clone());
+        }
+        if let Some(shape) = &tx.state.post.code_cell {
+            post_code_shapes.push(shape.clone());
+        }
     }
 
     StorageShapeCandidate {
@@ -1335,9 +1381,33 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
         },
         data_hash_changed_count,
         code_hash_changed_count,
+        post_data_shape: cell_shape_range(&post_data_shapes),
+        post_code_shape: cell_shape_range(&post_code_shapes),
         post_data_hashes: post_data_hashes.into_iter().collect(),
         post_code_hashes: post_code_hashes.into_iter().collect(),
     }
+}
+
+fn cell_shape_range(shapes: &[CellShape]) -> Option<CellShapeRange> {
+    let first = shapes.first()?;
+    let mut min_bits = first.bits;
+    let mut max_bits = first.bits;
+    let mut min_refs = first.refs;
+    let mut max_refs = first.refs;
+
+    for shape in &shapes[1..] {
+        min_bits = min_bits.min(shape.bits);
+        max_bits = max_bits.max(shape.bits);
+        min_refs = min_refs.min(shape.refs);
+        max_refs = max_refs.max(shape.refs);
+    }
+
+    Some(CellShapeRange {
+        min_bits,
+        max_bits,
+        min_refs,
+        max_refs,
+    })
 }
 
 fn inbound_body_shape(transactions: &[&StateFlowTx]) -> BodyShapeCandidate {
@@ -1622,38 +1692,65 @@ fn outbound_message_artifacts(
 fn shard_account_snapshot(boc64: &str) -> anyhow::Result<ShardAccountSnapshot> {
     let shard_account = Boc::decode_base64(boc64)?.parse::<ShardAccount>()?;
     let account = shard_account.load_account()?;
-    let (account_address, status, balance_nanotons, code_hash, data_hash, frozen_hash) =
-        if let Some(account) = account {
-            let balance = account.balance.tokens.to_string();
-            match account.state {
-                AccountState::Uninit => (
-                    Some(format_int_addr(&account.address)),
-                    "uninit".to_owned(),
-                    balance,
-                    None,
-                    None,
-                    None,
-                ),
-                AccountState::Active(state) => (
+    let (
+        account_address,
+        status,
+        balance_nanotons,
+        code_hash,
+        data_hash,
+        code_cell,
+        data_cell,
+        frozen_hash,
+    ) = if let Some(account) = account {
+        let balance = account.balance.tokens.to_string();
+        match account.state {
+            AccountState::Uninit => (
+                Some(format_int_addr(&account.address)),
+                "uninit".to_owned(),
+                balance,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            AccountState::Active(state) => {
+                let code_cell = state.code.as_ref().map(cell_shape);
+                let data_cell = state.data.as_ref().map(cell_shape);
+                (
                     Some(format_int_addr(&account.address)),
                     "active".to_owned(),
                     balance,
-                    state.code.as_ref().map(cell_hash),
-                    state.data.as_ref().map(cell_hash),
+                    code_cell.as_ref().map(|shape| shape.hash.clone()),
+                    data_cell.as_ref().map(|shape| shape.hash.clone()),
+                    code_cell,
+                    data_cell,
                     None,
-                ),
-                AccountState::Frozen(hash) => (
-                    Some(format_int_addr(&account.address)),
-                    "frozen".to_owned(),
-                    balance,
-                    None,
-                    None,
-                    Some(hash.to_string()),
-                ),
+                )
             }
-        } else {
-            (None, "none".to_owned(), "0".to_owned(), None, None, None)
-        };
+            AccountState::Frozen(hash) => (
+                Some(format_int_addr(&account.address)),
+                "frozen".to_owned(),
+                balance,
+                None,
+                None,
+                None,
+                None,
+                Some(hash.to_string()),
+            ),
+        }
+    } else {
+        (
+            None,
+            "none".to_owned(),
+            "0".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
 
     Ok(ShardAccountSnapshot {
         shard_account_boc64: boc64.to_owned(),
@@ -1664,6 +1761,8 @@ fn shard_account_snapshot(boc64: &str) -> anyhow::Result<ShardAccountSnapshot> {
         balance_nanotons,
         code_hash,
         data_hash,
+        code_cell,
+        data_cell,
         frozen_hash,
     })
 }
@@ -1767,13 +1866,22 @@ fn cell_from_slice(slice: &CellSlice<'_>) -> anyhow::Result<Cell> {
 }
 
 fn cell_artifact(cell: &Cell) -> anyhow::Result<CellArtifact> {
-    let slice = cell.as_slice_allow_exotic();
+    let shape = cell_shape(cell);
     Ok(CellArtifact {
         boc64: Boc::encode_base64(cell),
+        hash: shape.hash,
+        bits: shape.bits,
+        refs: shape.refs,
+    })
+}
+
+fn cell_shape(cell: &Cell) -> CellShape {
+    let slice = cell.as_slice_allow_exotic();
+    CellShape {
         hash: cell_hash(cell),
         bits: slice.size_bits(),
         refs: slice.size_refs(),
-    })
+    }
 }
 
 fn to_cell<T: Store + ?Sized>(obj: &T) -> anyhow::Result<Cell> {
@@ -1813,6 +1921,12 @@ mod tests {
         assert_eq!(json["transaction"]["stateUpdateHashOk"], true);
         assert_eq!(json["inbound"]["direction"], "inbound");
         assert_eq!(json["replay"]["libsBoc64"], "libs");
+        assert_eq!(json["state"]["post"]["dataCell"]["hash"], "data");
+        assert_eq!(json["state"]["post"]["dataCell"]["bits"], 16);
+        assert_eq!(json["state"]["post"]["dataCell"]["refs"], 1);
+        assert_eq!(json["state"]["post"]["codeCell"]["hash"], "code");
+        assert_eq!(json["state"]["post"]["codeCell"]["bits"], 8);
+        assert_eq!(json["state"]["post"]["codeCell"]["refs"], 0);
     }
 
     #[test]
@@ -1886,6 +2000,24 @@ mod tests {
         assert_eq!(
             json["stateMachine"]["edges"][0]["examples"],
             serde_json::json!(["tx-a", "tx-b"])
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["storage"]["postDataShape"],
+            serde_json::json!({
+                "minBits": 16,
+                "maxBits": 16,
+                "minRefs": 1,
+                "maxRefs": 1
+            })
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["storage"]["postCodeShape"],
+            serde_json::json!({
+                "minBits": 8,
+                "maxBits": 8,
+                "minRefs": 0,
+                "maxRefs": 0
+            })
         );
         let audit_signals = json["auditSignals"]
             .as_array()
@@ -2008,6 +2140,8 @@ mod tests {
         assert!(report.contains("## Opcode Candidates"));
         assert!(report.contains("Storage"));
         assert!(report.contains("balance -3"));
+        assert!(report.contains("data shape 16/1"));
+        assert!(report.contains("code shape 8/0"));
         assert!(report.contains("## State Machine"));
         assert!(report.contains("```mermaid"));
         assert!(report.contains("stateDiagram-v2"));
@@ -2146,6 +2280,8 @@ mod tests {
                     balance_nanotons: "0".to_owned(),
                     code_hash: None,
                     data_hash: None,
+                    code_cell: None,
+                    data_cell: None,
                     frozen_hash: None,
                 },
                 post: super::ShardAccountSnapshot {
@@ -2157,6 +2293,16 @@ mod tests {
                     balance_nanotons: "1".to_owned(),
                     code_hash: Some("code".to_owned()),
                     data_hash: Some("data".to_owned()),
+                    code_cell: Some(super::CellShape {
+                        hash: "code".to_owned(),
+                        bits: 8,
+                        refs: 0,
+                    }),
+                    data_cell: Some(super::CellShape {
+                        hash: "data".to_owned(),
+                        bits: 16,
+                        refs: 1,
+                    }),
                     frozen_hash: None,
                 },
             },
