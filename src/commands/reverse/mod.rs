@@ -2424,6 +2424,52 @@ fn validate_schema_opcode_candidate_matches_corpus(
         &opcode,
         gate_failures,
     );
+
+    let expected_min_balance_delta = matching_transactions
+        .iter()
+        .map(|tx| tx.money.balance_after as i128 - tx.money.balance_before as i128)
+        .min()
+        .unwrap_or_default();
+    let expected_max_balance_delta = matching_transactions
+        .iter()
+        .map(|tx| tx.money.balance_after as i128 - tx.money.balance_before as i128)
+        .max()
+        .unwrap_or_default();
+    validate_evidence_text_field(
+        "schema storage balance delta",
+        &report_range(
+            candidate.storage.balance_delta_min,
+            candidate.storage.balance_delta_max,
+        ),
+        "corpus balance delta",
+        &report_range(expected_min_balance_delta, expected_max_balance_delta),
+        &opcode,
+        gate_failures,
+    );
+    let expected_data_hash_changed_count = matching_transactions
+        .iter()
+        .filter(|tx| tx.state.pre.data_hash != tx.state.post.data_hash)
+        .count();
+    validate_evidence_value_field(
+        "schema storage data hash change count",
+        candidate.storage.data_hash_changed_count,
+        "corpus data hash change count",
+        expected_data_hash_changed_count,
+        &opcode,
+        gate_failures,
+    );
+    let expected_code_hash_changed_count = matching_transactions
+        .iter()
+        .filter(|tx| tx.state.pre.code_hash != tx.state.post.code_hash)
+        .count();
+    validate_evidence_value_field(
+        "schema storage code hash change count",
+        candidate.storage.code_hash_changed_count,
+        "corpus code hash change count",
+        expected_code_hash_changed_count,
+        &opcode,
+        gate_failures,
+    );
 }
 
 fn validate_schema_audit_signal_evidence_membership(
@@ -5428,6 +5474,15 @@ mod tests {
                         "maxRefs": 0,
                         "bodyHashes": []
                     },
+                    "storage": {
+                        "balanceDeltaMin": -3,
+                        "balanceDeltaMax": -3,
+                        "dataHashChangedCount": 0,
+                        "codeHashChangedCount": 0,
+                        "fields": [],
+                        "postDataHashes": [],
+                        "postCodeHashes": []
+                    },
                     "stateTransitions": [],
                     "outboundEffects": [],
                     "outActions": [],
@@ -5536,8 +5591,8 @@ mod tests {
             temp_dir.path(),
             "target-a/report.md",
             &report.replace(
-                "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
-                "| `0x00000001` | 1 | medium | 32-64 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a |",
+                "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+                "| `0x00000001` | 1 | medium | 32-64 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a |",
             ),
         );
         let manifest = sample_validation_manifest();
@@ -5566,6 +5621,59 @@ mod tests {
                 )
             }),
             "expected opcode candidate body range mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_storage_candidate_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["storage"] = serde_json::json!({
+            "balanceDeltaMin": 99,
+            "balanceDeltaMax": 99,
+            "dataHashChangedCount": 0,
+            "codeHashChangedCount": 0,
+            "fields": [],
+            "postDataHashes": [],
+            "postCodeHashes": []
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let report_path = temp_dir.path().join("target-a/report.md");
+        let report = fs::read_to_string(&report_path).expect("report artifact should be readable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &report.replace(
+                "balance -3; data hash changes 0; code hash changes 0",
+                "balance 99; data hash changes 0; code hash changes 0",
+            ),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema storage balance delta 99 for 0x00000001 does not match corpus balance delta -3",
+                )
+            }),
+            "expected storage balance delta mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -6008,9 +6116,9 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
                 .expect("schema should parse");
         schema["opcodeCandidates"][0]["storage"] = serde_json::json!({
-            "balanceDeltaMin": 0,
-            "balanceDeltaMax": 0,
-            "dataHashChangedCount": 1,
+            "balanceDeltaMin": -3,
+            "balanceDeltaMax": -3,
+            "dataHashChangedCount": 0,
             "codeHashChangedCount": 0,
             "fields": [{
                 "name": "data_word_0",
@@ -6717,9 +6825,9 @@ mod tests {
                         "evidence": ["tx-a"]
                     }],
                     "storage": {
-                        "balanceDeltaMin": 0,
-                        "balanceDeltaMax": 0,
-                        "dataHashChangedCount": 1,
+                        "balanceDeltaMin": -3,
+                        "balanceDeltaMax": -3,
+                        "dataHashChangedCount": 0,
                         "codeHashChangedCount": 0,
                         "fields": [{
                             "name": "data_word_0",
@@ -7725,6 +7833,15 @@ mod tests {
                         "maxRefs": 0,
                         "bodyHashes": []
                     },
+                    "storage": {
+                        "balanceDeltaMin": -3,
+                        "balanceDeltaMax": -3,
+                        "dataHashChangedCount": 0,
+                        "codeHashChangedCount": 0,
+                        "fields": [],
+                        "postDataHashes": [],
+                        "postCodeHashes": []
+                    },
                     "stateTransitions": [],
                     "outboundEffects": [],
                     "outActions": [],
@@ -7787,7 +7904,7 @@ mod tests {
 
     fn sample_report_markdown_with_wrong_opcode_candidate(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
             "| `0x00000001` | 9 | medium | 16 | 1 | balance 0 | none | none | none | foreign-tx |",
         )
     }
@@ -7805,8 +7922,8 @@ mod tests {
 
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
-            "| `0x00000001` | 2 | medium | 32-40 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
+            "| `0x00000001` | 2 | medium | 32-40 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
         )
     }
 
@@ -7912,7 +8029,7 @@ mod tests {
         include_risk_point: bool,
     ) -> String {
         let opcode_candidate_row = if include_schema_summary_rows {
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |\n"
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |\n"
         } else {
             ""
         };
