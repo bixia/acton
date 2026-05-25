@@ -1566,6 +1566,7 @@ fn validate_artifact_manifest_bundle_with_mode(
     let expected_absolute_path_count =
         smoke_manifest_absolute_path_count(&manifest.summary, &manifest.artifacts);
     let mut gate_failures = Vec::new();
+    validate_artifact_manifest_evidence_keys(manifest_path, &mut gate_failures);
     if manifest.absolute_path_count != expected_absolute_path_count {
         gate_failures.push(format!(
             "absolute path count mismatch: manifest {}, actual {}",
@@ -2201,6 +2202,55 @@ fn validate_artifact_manifest_target(
         passed: gate_failures.is_empty(),
         gate_failures,
     }
+}
+
+fn validate_artifact_manifest_evidence_keys(manifest_path: &Path, gate_failures: &mut Vec<String>) {
+    let Ok(json) = fs::read_to_string(manifest_path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return;
+    };
+    let manifest_name = artifact_manifest_evidence_name(manifest_path);
+    for (label, path) in [
+        ("schema version", &["schemaVersion"][..]),
+        ("kind", &["kind"][..]),
+        ("summary", &["summary"][..]),
+        ("target count", &["targetCount"][..]),
+        ("absolute path count", &["absolutePathCount"][..]),
+        ("artifacts", &["artifacts"][..]),
+    ] {
+        if !json_path_exists(&value, path) {
+            gate_failures.push(format!(
+                "artifact manifest {manifest_name} missing {label} evidence key"
+            ));
+        }
+    }
+
+    let Some(artifacts) = value.get("artifacts").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, artifact) in artifacts.iter().enumerate() {
+        for (label, path) in [
+            ("kind", &["kind"][..]),
+            ("path", &["path"][..]),
+            ("target id", &["targetId"][..]),
+        ] {
+            if !json_path_exists(artifact, path) {
+                gate_failures.push(format!(
+                    "artifact manifest {manifest_name} artifact[{index}] missing {label} evidence key"
+                ));
+            }
+        }
+    }
+}
+
+fn artifact_manifest_evidence_name(manifest_path: &Path) -> String {
+    manifest_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| manifest_path.display().to_string())
 }
 
 fn validate_smoke_run_summary_evidence_keys(
@@ -7034,6 +7084,43 @@ mod tests {
         assert_eq!(validation.gate_failures, Vec::<String>::new());
         assert_eq!(validation.targets[0].id, "target-a");
         assert!(validation.targets[0].passed);
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_manifest_missing_absolute_path_count_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut manifest_json =
+            serde_json::to_value(sample_validation_manifest()).expect("manifest should serialize");
+        manifest_json
+            .as_object_mut()
+            .expect("manifest should be an object")
+            .remove("absolutePathCount");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "artifacts.json",
+            &manifest_json.to_string(),
+        );
+        let manifest: super::SmokeArtifactManifest =
+            serde_json::from_value(manifest_json).expect("manifest should still deserialize");
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "artifact manifest artifacts.json missing absolute path count evidence key",
+                )
+            }),
+            "expected missing manifest absolute path count key failure, got {:?}",
+            validation.gate_failures
+        );
     }
 
     #[test]
