@@ -2405,6 +2405,7 @@ fn validate_manifest_report_content_matches_summary(
         artifacts,
         "schema",
     ) {
+        validate_report_schema_deliverables(&markdown, &schema, gate_failures);
         let schema_evidence_section = markdown_section(&markdown, "## Schema Evidence");
         for tx_hash in schema_evidence_hashes(&schema) {
             if !schema_evidence_section.is_some_and(|section| section.contains(tx_hash)) {
@@ -2435,6 +2436,109 @@ fn validate_manifest_report_content_matches_summary(
             ));
         }
     }
+}
+
+fn validate_report_schema_deliverables(
+    markdown: &str,
+    schema: &StateFlowSchemaReport,
+    gate_failures: &mut Vec<String>,
+) {
+    if let Some(section) = markdown_section(markdown, "## Opcode Candidates") {
+        for candidate in &schema.opcode_candidates {
+            let opcode = report_opcode_label(candidate.opcode.as_deref());
+            if !section.contains(&opcode) || !section.contains(&candidate.confidence) {
+                gate_failures.push(format!(
+                    "report opcode candidate {opcode} with confidence {} is missing",
+                    candidate.confidence
+                ));
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Message Body Fields") {
+        for candidate in &schema.opcode_candidates {
+            for field in &candidate.inbound_body.field_candidates {
+                if !section.contains(&field.name) || !section.contains(&field.confidence) {
+                    gate_failures.push(format!(
+                        "report message body field {} is missing",
+                        field.name
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Replay Probes") {
+        for candidate in &schema.opcode_candidates {
+            for probe in &candidate.replay_probes {
+                if !section.contains(&probe.field_name) || !section.contains(&probe.cli_arg) {
+                    gate_failures.push(format!("report replay probe {} is missing", probe.cli_arg));
+                }
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Storage Fields") {
+        for candidate in &schema.opcode_candidates {
+            for field in &candidate.storage.fields {
+                if !section.contains(&field.name) || !section.contains(&field.confidence) {
+                    gate_failures.push(format!("report storage field {} is missing", field.name));
+                }
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Outbound Effects") {
+        for candidate in &schema.opcode_candidates {
+            for effect in &candidate.outbound_effects {
+                validate_report_effect_row("outbound", effect, section, gate_failures);
+            }
+            for effect in &candidate.out_actions {
+                validate_report_effect_row("action", effect, section, gate_failures);
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## State Machine") {
+        for edge in &schema.state_machine.edges {
+            let edge_label = format!(
+                "{} --> {}: {} ({})",
+                edge.from_status,
+                edge.to_status,
+                report_opcode_label(edge.opcode.as_deref()),
+                edge.count
+            );
+            if !section.contains(&edge_label) {
+                gate_failures.push(format!("report state edge {edge_label} is missing"));
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Risk Points") {
+        for signal in &schema.audit_signals {
+            if !section.contains(&signal.description) {
+                gate_failures.push(format!("report risk {:?} is missing", signal.description));
+            }
+        }
+    }
+}
+
+fn validate_report_effect_row(
+    source: &str,
+    effect: &ton_stateflow::EffectCandidate,
+    section: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if !section.contains(source) || !section.contains(&effect.kind) {
+        gate_failures.push(format!(
+            "report outbound effect {source} {} is missing",
+            effect.kind
+        ));
+    }
+}
+
+fn report_opcode_label(opcode: Option<&str>) -> String {
+    opcode.unwrap_or("<none>").to_owned()
 }
 
 fn markdown_line_exists(markdown: &str, expected: &str) -> bool {
@@ -3545,6 +3649,200 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_schema_deliverables() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "transactionCount": 2,
+                "stateMachine": {
+                    "edges": [{
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "opcode": "0x00000001",
+                        "count": 2,
+                        "examples": ["tx-a", "tx-b"]
+                    }]
+                },
+                "auditSignals": [{
+                    "kind": "unknown-fields",
+                    "severity": "info",
+                    "description": "Unknown fields remain.",
+                    "evidence": ["tx-a"]
+                }],
+                "opcodeCandidates": [{
+                    "opcode": "0x00000001",
+                    "count": 2,
+                    "examples": ["tx-a", "tx-b"],
+                    "evidence": [{
+                        "txHash": "tx-a",
+                        "inboundBodyHash": "body",
+                        "inboundBodyBits": 32,
+                        "inboundBodyRefs": 0,
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "preDataHash": null,
+                        "postDataHash": null,
+                        "preCodeHash": null,
+                        "postCodeHash": null,
+                        "outboundKinds": ["internal"],
+                        "outActionKinds": ["send-message"]
+                    }],
+                    "inboundBody": {
+                        "minBits": 32,
+                        "maxBits": 96,
+                        "minRefs": 0,
+                        "maxRefs": 0,
+                        "bodyHashes": ["body"],
+                        "fieldCandidates": [{
+                            "name": "query_id",
+                            "bitOffset": 32,
+                            "minBits": 64,
+                            "maxBits": 64,
+                            "minRefs": 0,
+                            "maxRefs": 0,
+                            "kind": "uint64",
+                            "presentCount": 2,
+                            "valueSamples": ["0x7"],
+                            "confidence": "high"
+                        }]
+                    },
+                    "replayProbes": [{
+                        "fieldName": "query_id",
+                        "bitOffset": 32,
+                        "bits": 64,
+                        "value": "0x6",
+                        "mutation": {"type": "flipBodyBit", "bit": 0},
+                        "cliArg": "--flip-body-bit 0",
+                        "confidence": "high",
+                        "evidence": ["tx-a"]
+                    }],
+                    "storage": {
+                        "balanceDeltaMin": 0,
+                        "balanceDeltaMax": 0,
+                        "dataHashChangedCount": 1,
+                        "codeHashChangedCount": 0,
+                        "fields": [{
+                            "name": "data_word_0",
+                            "cellPath": "data",
+                            "bitOffset": 0,
+                            "minBits": 32,
+                            "maxBits": 32,
+                            "minRefs": 0,
+                            "maxRefs": 0,
+                            "kind": "uint32",
+                            "presentCount": 2,
+                            "valueSamples": ["0xdeadbeef"],
+                            "confidence": "medium"
+                        }],
+                        "postDataHashes": ["data"],
+                        "postCodeHashes": []
+                    },
+                    "stateTransitions": [{
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "count": 2
+                    }],
+                    "outboundEffects": [{
+                        "kind": "internal",
+                        "count": 1,
+                        "txHashes": ["tx-a"],
+                        "modes": [],
+                        "destinations": ["dst"],
+                        "valueNanotonsMin": "11",
+                        "valueNanotonsMax": "11",
+                        "bodyShape": {
+                            "minBits": 40,
+                            "maxBits": 40,
+                            "minRefs": 1,
+                            "maxRefs": 1
+                        },
+                        "codeShape": null,
+                        "libraryHashes": []
+                    }],
+                    "outActions": [{
+                        "kind": "send-message",
+                        "count": 1,
+                        "txHashes": ["tx-a"],
+                        "modes": ["64"],
+                        "destinations": ["dst"],
+                        "valueNanotonsMin": "7",
+                        "valueNanotonsMax": "7",
+                        "bodyShape": {
+                            "minBits": 32,
+                            "maxBits": 32,
+                            "minRefs": 0,
+                            "maxRefs": 0
+                        },
+                        "codeShape": null,
+                        "libraryHashes": []
+                    }],
+                    "confidence": "medium",
+                    "unknownFields": ["message body field names require TL-B recovery"]
+                }]
+            })
+            .to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_schema_deliverables("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report message body field query_id is missing")
+            }),
+            "expected report message body field failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report storage field data_word_0 is missing")
+            }),
+            "expected report storage field failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report outbound effect outbound internal is missing")
+            }),
+            "expected report outbound effect failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report state edge none --> active: 0x00000001 (2) is missing",
+                )
+            }),
+            "expected report state edge failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report risk \"Unknown fields remain.\" is missing")
+            }),
+            "expected report risk failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_probe_without_replay() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -4394,26 +4692,47 @@ mod tests {
     }
 
     fn sample_report_markdown(address: &str) -> String {
-        sample_report_markdown_inner(address, true, "flip body bit 0")
+        sample_report_markdown_inner(address, true, "flip body bit 0", true, true)
     }
 
     fn sample_report_markdown_without_schema_evidence(address: &str) -> String {
-        sample_report_markdown_inner(address, false, "flip body bit 0")
+        sample_report_markdown_inner(address, false, "flip body bit 0", true, true)
     }
 
     fn sample_report_markdown_without_replay_mutation(address: &str) -> String {
-        sample_report_markdown_inner(address, true, "none")
+        sample_report_markdown_inner(address, true, "none", true, true)
+    }
+
+    fn sample_report_markdown_without_schema_deliverables(address: &str) -> String {
+        sample_report_markdown_inner(address, true, "flip body bit 0", false, false)
     }
 
     fn sample_report_markdown_inner(
         address: &str,
         include_schema_evidence: bool,
         replay_mutation: &str,
+        include_schema_summary_rows: bool,
+        include_risk_point: bool,
     ) -> String {
+        let opcode_candidate_row = if include_schema_summary_rows {
+            "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |\n"
+        } else {
+            ""
+        };
         let schema_evidence_row = if include_schema_evidence {
             "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | n/a | n/a | none | none |\n"
         } else {
             ""
+        };
+        let state_edge = if include_schema_summary_rows {
+            "    none --> active: 0x00000001 (2)\n"
+        } else {
+            ""
+        };
+        let risk_point = if include_risk_point {
+            "- Unknown fields remain. Evidence: `tx-a`.\n"
+        } else {
+            "- No risk points were inferred from the provided artifacts.\n"
         };
         format!(
             "# TON State Flow Reverse Report\n\
@@ -4428,6 +4747,7 @@ mod tests {
              ## Opcode Candidates\n\
              | Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |\n\
              | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             {opcode_candidate_row}\
              \n\
              ## Schema Evidence\n\
              | Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |\n\
@@ -4449,6 +4769,7 @@ mod tests {
              ## State Machine\n\
              ```mermaid\n\
              stateDiagram-v2\n\
+             {state_edge}\
              ```\n\
              \n\
              ## Unknown Fields\n\
@@ -4460,7 +4781,7 @@ mod tests {
              | `tx-a` | {replay_mutation} | true | true | true | false | 0 | 0 |\n\
              \n\
              ## Risk Points\n\
-             - No risk points were inferred from the provided artifacts.\n"
+             {risk_point}"
         )
     }
 
