@@ -3851,9 +3851,14 @@ fn validate_manifest_report_content_matches_summary(
     }
 
     let replay_diff_section = markdown_section(&markdown, "## Replay Diffs");
-    for replay in
-        read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay")
-    {
+    let replay_diffs =
+        read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay");
+    if !replay_diffs.is_empty() {
+        if let Some(section) = replay_diff_section {
+            validate_report_replay_diff_header(section, gate_failures);
+        }
+    }
+    for replay in replay_diffs {
         let replay_row =
             replay_diff_section.and_then(|section| report_replay_diff_row(section, &replay));
         if replay_row.is_none() {
@@ -3873,6 +3878,37 @@ fn validate_manifest_report_content_matches_summary(
             validate_report_replay_diff_values(&replay, &row, gate_failures);
         }
     }
+}
+
+fn validate_report_replay_diff_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = replay_diff_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!("report replay diff header {expected:?} is missing"));
+    }
+}
+
+fn replay_diff_report_header() -> Vec<String> {
+    [
+        "Source tx",
+        "Mutation",
+        "Accepted",
+        "Input changed",
+        "State changed",
+        "Code changed",
+        "Data changed",
+        "Balance delta",
+        "Exit changed",
+        "Outbound delta",
+        "Action delta",
+        "C5 changed",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
 }
 
 fn validate_optional_report_target_count(
@@ -8360,6 +8396,34 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_replay_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_diff_header("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "target-a: report replay diff header [\"Source tx\", \"Mutation\", \"Accepted\", \"Input changed\", \"State changed\", \"Code changed\", \"Data changed\", \"Balance delta\", \"Exit changed\", \"Outbound delta\", \"Action delta\", \"C5 changed\"] is missing"
+            )),
+            "expected report replay header failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_missing_schema_deliverables() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10046,6 +10110,13 @@ mod tests {
              | Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |\n\
              | --- | --- | --- | --- | --- | --- | ---: | ---: |\n\
              | `tx-a` | flip body bit 0 | true | true | false | false | 0 | 0 |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_replay_diff_header(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |",
+            "| Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 stale |",
         )
     }
 
