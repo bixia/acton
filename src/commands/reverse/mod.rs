@@ -2584,6 +2584,20 @@ fn validate_report_schema_evidence_values(
         gate_failures,
     );
     validate_report_schema_evidence_cell(
+        "data hash",
+        report_hash_transition(&evidence.pre_data_hash, &evidence.post_data_hash),
+        &evidence.tx_hash,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_schema_evidence_cell(
+        "code hash",
+        report_hash_transition(&evidence.pre_code_hash, &evidence.post_code_hash),
+        &evidence.tx_hash,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_schema_evidence_cell(
         "outbound",
         report_kind_list(&evidence.outbound_kinds),
         &evidence.tx_hash,
@@ -2597,6 +2611,14 @@ fn validate_report_schema_evidence_values(
         row.get(8),
         gate_failures,
     );
+}
+
+fn report_hash_transition(before: &Option<String>, after: &Option<String>) -> String {
+    format!(
+        "{} -> {}",
+        before.as_deref().unwrap_or("<none>"),
+        after.as_deref().unwrap_or("<none>")
+    )
 }
 
 fn validate_report_schema_evidence_cell(
@@ -2741,7 +2763,7 @@ fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
     let cells = line
         .trim_matches('|')
         .split('|')
-        .map(|cell| cell.trim().trim_matches('`').to_owned())
+        .map(|cell| cell.trim().replace('`', ""))
         .collect::<Vec<_>>();
     (!cells
         .iter()
@@ -3852,6 +3874,55 @@ mod tests {
                 )
             }),
             "expected report schema evidence state failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_schema_evidence_data_code_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["evidence"][0]["preDataHash"] = serde_json::json!("old-data");
+        schema["opcodeCandidates"][0]["evidence"][0]["postDataHash"] =
+            serde_json::json!("new-data");
+        schema["opcodeCandidates"][0]["evidence"][0]["preCodeHash"] = serde_json::json!("old-code");
+        schema["opcodeCandidates"][0]["evidence"][0]["postCodeHash"] =
+            serde_json::json!("new-code");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report schema evidence data hash old-data -> new-data for tx tx-a is missing",
+                )
+            }),
+            "expected report schema evidence data hash failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report schema evidence code hash old-code -> new-code for tx tx-a is missing",
+                )
+            }),
+            "expected report schema evidence code hash failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -4977,7 +5048,7 @@ mod tests {
 
     fn sample_report_markdown_with_wrong_schema_evidence(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | n/a | n/a | none | none |",
+            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
             "| `0x00000001` | `tx-a` | `wrong-body` | 16/1 | active -> none | n/a | n/a | outbound | action |",
         )
     }
@@ -5010,7 +5081,7 @@ mod tests {
             ""
         };
         let schema_evidence_row = if include_schema_evidence {
-            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | n/a | n/a | none | none |\n"
+            "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
         } else {
             ""
         };
