@@ -1759,7 +1759,7 @@ fn validate_manifest_artifact_content(
     match artifact.kind.as_str() {
         "runSummary" => validate_json_artifact::<SmokeRunSummary>(path, artifact, gate_failures),
         "corpus" => validate_state_flow_corpus_artifact(path, artifact, gate_failures),
-        "schema" => validate_json_artifact::<StateFlowSchemaReport>(path, artifact, gate_failures),
+        "schema" => validate_state_flow_schema_artifact(path, artifact, gate_failures),
         "transaction" => validate_state_flow_tx_artifact(path, artifact, gate_failures),
         "replay" => validate_state_flow_replay_artifact(path, artifact, gate_failures),
         "validation" => {
@@ -1908,6 +1908,34 @@ fn validate_state_flow_corpus_artifact(
     }
 }
 
+fn validate_state_flow_schema_artifact(
+    path: &Path,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    match fs::read_to_string(path) {
+        Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
+            Ok(value) => {
+                validate_state_flow_schema_evidence_keys(&value, artifact, gate_failures);
+                if let Err(err) = serde_json::from_value::<StateFlowSchemaReport>(value) {
+                    gate_failures.push(format!(
+                        "invalid {} artifact {}: {err}",
+                        artifact.kind, artifact.path
+                    ));
+                }
+            }
+            Err(err) => gate_failures.push(format!(
+                "invalid {} artifact {}: {err}",
+                artifact.kind, artifact.path
+            )),
+        },
+        Err(err) => gate_failures.push(format!(
+            "failed to read {} artifact {}: {err}",
+            artifact.kind, artifact.path
+        )),
+    }
+}
+
 fn validate_state_flow_tx_artifact(
     path: &Path,
     artifact: &SmokeArtifactManifestEntry,
@@ -1961,6 +1989,29 @@ fn validate_state_flow_replay_artifact(
             "failed to read {} artifact {}: {err}",
             artifact.kind, artifact.path
         )),
+    }
+}
+
+fn validate_state_flow_schema_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    for (label, path) in [
+        ("schema version", &["schemaVersion"][..]),
+        ("network", &["network"][..]),
+        ("address", &["address"][..]),
+        ("transaction count", &["transactionCount"][..]),
+        ("state machine", &["stateMachine"][..]),
+        ("audit signals", &["auditSignals"][..]),
+        ("opcode candidates", &["opcodeCandidates"][..]),
+    ] {
+        if !json_path_exists(value, path) {
+            gate_failures.push(format!(
+                "schema artifact {} missing {label} evidence key",
+                artifact.path
+            ));
+        }
     }
 }
 
@@ -7083,6 +7134,45 @@ mod tests {
                 )
             }),
             "expected schema metric mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_audit_signals_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("auditSignals");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json missing audit signals evidence key",
+                )
+            }),
+            "expected missing schema audit signals key failure, got {:?}",
             validation.gate_failures
         );
     }
