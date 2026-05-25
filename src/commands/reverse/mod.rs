@@ -1816,6 +1816,12 @@ fn validate_manifest_target_matches_summary(
         &target.report,
         gate_failures,
     );
+    validate_manifest_target_content_matches_summary(
+        manifest_path,
+        artifacts,
+        target,
+        gate_failures,
+    );
 }
 
 fn validate_summary_single_artifact_path(
@@ -1922,6 +1928,137 @@ fn manifest_artifact_path_matches_summary(
 ) -> bool {
     resolve_manifest_artifact_path(manifest_path, artifact_path)
         == resolve_manifest_artifact_path(manifest_path, summary_path)
+}
+
+fn validate_manifest_target_content_matches_summary(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    target: &SmokeTargetRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    if let Some(corpus) =
+        read_single_target_json_artifact::<StateFlowCorpus>(manifest_path, artifacts, "corpus")
+    {
+        validate_target_text_field(
+            "corpus network",
+            &corpus.network,
+            "summary network",
+            &target.network,
+            gate_failures,
+        );
+        validate_target_text_field(
+            "corpus address",
+            &corpus.address,
+            "summary address",
+            &target.address,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "corpus requested limit",
+            corpus.requested_limit as usize,
+            "summary collect limit",
+            target.collect_limit as usize,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "corpus source transaction count",
+            corpus.source_tx_count,
+            "summary source transaction count",
+            target.source_tx_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "corpus retraced count",
+            corpus.retraced_count,
+            "summary retraced count",
+            target.retraced_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "corpus failure count",
+            corpus.failure_count,
+            "summary failure count",
+            target.failure_count,
+            gate_failures,
+        );
+    }
+
+    if let Some(schema) = read_single_target_json_artifact::<StateFlowSchemaReport>(
+        manifest_path,
+        artifacts,
+        "schema",
+    ) {
+        validate_target_text_field(
+            "schema network",
+            &schema.network,
+            "summary network",
+            &target.network,
+            gate_failures,
+        );
+        validate_target_text_field(
+            "schema address",
+            &schema.address,
+            "summary address",
+            &target.address,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "schema transaction count",
+            schema.transaction_count,
+            "summary retraced count",
+            target.retraced_count,
+            gate_failures,
+        );
+    }
+}
+
+fn read_single_target_json_artifact<T>(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    kind: &str,
+) -> Option<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let matches = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == kind)
+        .copied()
+        .collect::<Vec<_>>();
+    let [artifact] = matches.as_slice() else {
+        return None;
+    };
+    let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
+    let json = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+fn validate_target_text_field(
+    actual_label: &str,
+    actual: &str,
+    expected_label: &str,
+    expected: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {actual} does not match {expected_label} {expected}"
+        ));
+    }
+}
+
+fn validate_target_usize_field(
+    actual_label: &str,
+    actual: usize,
+    expected_label: &str,
+    expected: usize,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {actual} does not match {expected_label} {expected}"
+        ));
+    }
 }
 
 fn ensure_supported_artifact_manifest(
@@ -2573,6 +2710,45 @@ mod tests {
             validation.gate_failures.iter().any(|failure| {
                 failure.contains("invalid corpus artifact target-a/corpus.json")
             })
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_content_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "other-addr",
+                "transactionCount": 2,
+                "stateMachine": {"edges": []},
+                "auditSignals": [],
+                "opcodeCandidates": []
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema address other-addr does not match summary address addr",
+                )
+            }),
+            "expected schema content mismatch failure, got {:?}",
+            validation.gate_failures
         );
     }
 
