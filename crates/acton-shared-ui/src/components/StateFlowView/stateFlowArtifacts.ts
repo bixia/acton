@@ -5,6 +5,7 @@ export type StateFlowArtifact =
   | {readonly kind: "replay"; readonly data: StateFlowReplayDiff}
   | {readonly kind: "runSummary"; readonly data: StateFlowRunSummary}
   | {readonly kind: "artifactManifest"; readonly data: StateFlowArtifactManifest}
+  | {readonly kind: "artifactValidation"; readonly data: StateFlowArtifactValidation}
 
 export interface ArtifactSummary {
   readonly title: string
@@ -159,6 +160,26 @@ export interface StateFlowArtifactManifestEntry {
   readonly kind: string
   readonly path: string
   readonly targetId?: string | null
+}
+
+export interface StateFlowArtifactValidation {
+  readonly schemaVersion: number
+  readonly kind: "stateFlowArtifactManifestValidation"
+  readonly manifest: string
+  readonly targetCount: number
+  readonly absolutePathCount: number
+  readonly expectedAbsolutePathCount: number
+  readonly passed: boolean
+  readonly gateFailures: readonly string[]
+  readonly targets: readonly StateFlowArtifactValidationTarget[]
+}
+
+export interface StateFlowArtifactValidationTarget {
+  readonly id: string
+  readonly artifactCount: number
+  readonly replayCount: number
+  readonly passed: boolean
+  readonly gateFailures: readonly string[]
 }
 
 export interface ShardAccountSnapshot {
@@ -420,20 +441,32 @@ export function parseStateFlowArtifact(raw: string): StateFlowArtifact {
     return {kind: "replay", data: parsed as unknown as StateFlowReplayDiff}
   }
   if (
-    typeof parsed.targetCount === "number" &&
-    typeof parsed.passed === "boolean" &&
-    Array.isArray(parsed.gateFailures) &&
-    Array.isArray(parsed.targets)
-  ) {
-    return {kind: "runSummary", data: parsed as unknown as StateFlowRunSummary}
-  }
-  if (
     parsed.kind === "stateFlowArtifactManifest" &&
     typeof parsed.summary === "string" &&
     typeof parsed.targetCount === "number" &&
     Array.isArray(parsed.artifacts)
   ) {
     return {kind: "artifactManifest", data: parsed as unknown as StateFlowArtifactManifest}
+  }
+  if (
+    parsed.kind === "stateFlowArtifactManifestValidation" &&
+    typeof parsed.manifest === "string" &&
+    typeof parsed.targetCount === "number" &&
+    typeof parsed.passed === "boolean" &&
+    Array.isArray(parsed.targets)
+  ) {
+    return {
+      kind: "artifactValidation",
+      data: parsed as unknown as StateFlowArtifactValidation,
+    }
+  }
+  if (
+    typeof parsed.targetCount === "number" &&
+    typeof parsed.passed === "boolean" &&
+    Array.isArray(parsed.gateFailures) &&
+    Array.isArray(parsed.targets)
+  ) {
+    return {kind: "runSummary", data: parsed as unknown as StateFlowRunSummary}
   }
   if (
     typeof parsed.queryHash === "string" &&
@@ -465,6 +498,9 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
     }
     case "artifactManifest": {
       return summarizeArtifactManifest(artifact.data)
+    }
+    case "artifactValidation": {
+      return summarizeArtifactValidation(artifact.data)
     }
   }
 }
@@ -725,6 +761,40 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
           detail: artifact.targetId ?? undefined,
         })),
       },
+    ],
+  }
+}
+
+function summarizeArtifactValidation(validation: StateFlowArtifactValidation): ArtifactSummary {
+  return {
+    title: "State Flow Artifact Validation",
+    subtitle: validation.manifest,
+    metrics: [
+      {label: "Passed", value: yesNo(validation.passed)},
+      {label: "Targets", value: validation.targetCount.toString()},
+      {label: "Gate Failures", value: validation.gateFailures.length.toString()},
+      {label: "Absolute Paths", value: validation.absolutePathCount.toString()},
+    ],
+    sections: [
+      {
+        title: "Targets",
+        rows: validation.targets.map(target => ({
+          label: target.id,
+          value: target.passed ? "passed" : "failed",
+          detail: [
+            `${target.artifactCount} ${plural(target.artifactCount, "artifact")}`,
+            `${target.replayCount} ${plural(target.replayCount, "replay")}`,
+          ].join(" · "),
+        })),
+      },
+      ...(validation.gateFailures.length > 0
+        ? [
+            {
+              title: "Gate Failures",
+              rows: validation.gateFailures.map(failure => formatGateFailureRow(failure)),
+            },
+          ]
+        : []),
     ],
   }
 }

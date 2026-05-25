@@ -260,6 +260,33 @@ const artifactManifest = {
   ],
 }
 
+const artifactValidation = {
+  schemaVersion: 1,
+  kind: "stateFlowArtifactManifestValidation",
+  manifest: "out/artifacts.json",
+  targetCount: 2,
+  absolutePathCount: 0,
+  expectedAbsolutePathCount: 0,
+  passed: true,
+  gateFailures: [],
+  targets: [
+    {
+      id: "target-a",
+      artifactCount: 6,
+      replayCount: 2,
+      passed: true,
+      gateFailures: [],
+    },
+    {
+      id: "target-b",
+      artifactCount: 3,
+      replayCount: 0,
+      passed: false,
+      gateFailures: ["missing replay artifact"],
+    },
+  ],
+}
+
 const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("1 evidence row") === true,
@@ -409,6 +436,21 @@ const manifestRows = sectionRows(manifestSummary, "Artifacts")
 assert(manifestRows[0]?.label === "runSummary", "expected run summary manifest row")
 assert(manifestRows[0]?.value === "out/summary.json", "expected run summary path")
 assert(manifestRows[1]?.detail === "target-a", "expected target id in manifest detail")
+
+const validationArtifact = parseStateFlowArtifact(JSON.stringify(artifactValidation))
+assert(validationArtifact.kind === "artifactValidation", "expected artifact validation kind")
+const validationSummary = summarizeStateFlowArtifact(validationArtifact)
+assert(
+  validationSummary.title === "State Flow Artifact Validation",
+  "expected artifact validation title",
+)
+assert(
+  validationSummary.metrics.some(metric => metric.label === "Passed" && metric.value === "yes"),
+  "expected artifact validation pass metric",
+)
+const validationTargetRows = sectionRows(validationSummary, "Targets")
+assert(validationTargetRows[0]?.label === "target-a", "expected first validation target")
+assert(validationTargetRows[1]?.value === "failed", "expected failed validation target")
 
 function sectionRows(
   summary: ReturnType<typeof summarizeStateFlowArtifact>,

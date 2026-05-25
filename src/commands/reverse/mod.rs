@@ -203,6 +203,14 @@ pub enum ReverseCommand {
         artifacts: PathBuf,
         #[arg(long, help = "Only validate artifacts for this target id")]
         target_id: Option<String>,
+        #[arg(
+            short,
+            long,
+            alias = "out",
+            visible_alias = "out",
+            help = "Write artifact validation JSON to a file"
+        )]
+        output: Option<PathBuf>,
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
     },
@@ -342,8 +350,9 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
         ReverseCommand::VerifyArtifacts {
             artifacts,
             target_id,
+            output,
             pretty,
-        } => reverse_verify_artifacts_cmd(artifacts, target_id, pretty),
+        } => reverse_verify_artifacts_cmd(artifacts, target_id, output, pretty),
         ReverseCommand::Analyze {
             address,
             net,
@@ -642,6 +651,7 @@ fn reverse_report_cmd(
 fn reverse_verify_artifacts_cmd(
     artifacts: PathBuf,
     target_id: Option<String>,
+    output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
     let manifest = load_artifact_manifest(&artifacts)?;
@@ -649,7 +659,7 @@ fn reverse_verify_artifacts_cmd(
         validate_artifact_manifest_bundle(&manifest, &artifacts, target_id.as_deref())?;
     write_json(
         &validation,
-        None,
+        output,
         pretty,
         "State-flow artifact manifest validation JSON",
     )?;

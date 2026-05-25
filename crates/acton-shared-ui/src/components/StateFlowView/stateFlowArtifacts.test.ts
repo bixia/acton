@@ -216,6 +216,26 @@ const artifactManifest = {
   ],
 }
 
+const artifactValidation = {
+  schemaVersion: 1,
+  kind: "stateFlowArtifactManifestValidation",
+  manifest: "out/artifacts.json",
+  targetCount: 1,
+  absolutePathCount: 0,
+  expectedAbsolutePathCount: 0,
+  passed: true,
+  gateFailures: [],
+  targets: [
+    {
+      id: "target-a",
+      artifactCount: 6,
+      replayCount: 2,
+      passed: true,
+      gateFailures: [],
+    },
+  ],
+}
+
 const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
   parseStateFlowArtifact(JSON.stringify(corpus)),
@@ -223,6 +243,7 @@ const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(replay)),
   parseStateFlowArtifact(JSON.stringify(runSummary)),
   parseStateFlowArtifact(JSON.stringify(artifactManifest)),
+  parseStateFlowArtifact(JSON.stringify(artifactValidation)),
 ]
 
 const artifactKinds: Array<StateFlowArtifact["kind"]> = [
@@ -232,6 +253,7 @@ const artifactKinds: Array<StateFlowArtifact["kind"]> = [
   "replay",
   "runSummary",
   "artifactManifest",
+  "artifactValidation",
 ]
 
 for (const [index, kind] of artifactKinds.entries()) {
@@ -289,6 +311,17 @@ assert(
     .find(section => section.title === "Targets")
     ?.rows[0]?.detail?.includes("replay x2") === true,
   "expected artifact manifest target coverage",
+)
+const validationView = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(artifactValidation)),
+)
+assert(
+  validationView.title === "State Flow Artifact Validation",
+  "expected artifact validation title",
+)
+assert(
+  validationView.metrics.some(metric => metric.label === "Passed" && metric.value === "yes"),
+  "expected artifact validation pass metric",
 )
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")

@@ -513,6 +513,8 @@ fn test_acton_reverse_verify_artifacts_help() {
         "Usage: acton reverse verify-artifacts",
         "<ARTIFACTS>",
         "--target-id <TARGET_ID>",
+        "--output <OUTPUT>",
+        "[aliases: --out]",
         "--pretty",
     ] {
         assert!(
