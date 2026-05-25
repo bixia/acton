@@ -609,6 +609,7 @@ pub fn render_state_flow_report(
         corpus.failure_count
     )
     .ok();
+    writeln!(report, "- Replay diffs: {}", replays.len()).ok();
     writeln!(report).ok();
 
     writeln!(report, "## Opcode Candidates").ok();
@@ -3347,6 +3348,7 @@ mod tests {
 
         let report = super::render_state_flow_report(&corpus, &schema, &replays);
 
+        assert!(report.contains("- Replay diffs: 1"));
         assert!(report.contains("## Risk Points"));
         assert!(report.contains("Unknown fields remain for opcode 0x00000001"));
         assert!(report.contains("Evidence: `tx-a`."));

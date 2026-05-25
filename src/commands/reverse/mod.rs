@@ -2380,6 +2380,13 @@ fn validate_manifest_report_content_matches_summary(
             gate_failures.push(format!("report target line {line:?} is missing"));
         }
     }
+    validate_optional_report_target_count(
+        &markdown,
+        "replay diff count",
+        "- Replay diffs:",
+        target.replay_count,
+        gate_failures,
+    );
 
     for section in [
         "# TON State Flow Reverse Report",
@@ -2443,6 +2450,24 @@ fn validate_manifest_report_content_matches_summary(
         }
         if let Some(row) = replay_row {
             validate_report_replay_diff_values(&replay, &row, gate_failures);
+        }
+    }
+}
+
+fn validate_optional_report_target_count(
+    markdown: &str,
+    label: &str,
+    prefix: &str,
+    expected: usize,
+    gate_failures: &mut Vec<String>,
+) {
+    if markdown
+        .lines()
+        .any(|line| line.trim_start().starts_with(prefix))
+    {
+        let expected_line = format!("{prefix} {expected}");
+        if !markdown_line_exists(markdown, &expected_line) {
+            gate_failures.push(format!("report {label} {expected} is missing"));
         }
     }
 }
@@ -4556,6 +4581,35 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_replay_count_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_count("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation
+                .gate_failures
+                .iter()
+                .any(|failure| failure.contains("target-a: report replay diff count 1 is missing")),
+            "expected report replay diff count failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_opcode_candidate_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6353,6 +6407,10 @@ mod tests {
         )
     }
 
+    fn sample_report_markdown_with_wrong_replay_count(address: &str) -> String {
+        sample_report_markdown(address).replace("- Replay diffs: 1", "- Replay diffs: 9")
+    }
+
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
         sample_report_markdown(address).replace(
             "| `0x00000001` | 2 | medium | 32 | 0 | balance 0; data hash changes 0; code hash changes 0 | none -> active (2) | none | none | tx-a, tx-b |",
@@ -6488,6 +6546,7 @@ mod tests {
              - Source transactions: 2\n\
              - Retraced transactions: 2\n\
              - Replay failures while collecting: 0\n\
+             - Replay diffs: 1\n\
              \n\
              ## Opcode Candidates\n\
              | Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |\n\
