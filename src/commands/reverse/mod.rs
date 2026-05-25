@@ -2270,6 +2270,12 @@ fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut
         corpus.retraced_count + corpus.failure_count,
         gate_failures,
     );
+    if corpus.source_tx_count > corpus.requested_limit as usize {
+        gate_failures.push(format!(
+            "corpus source transaction count {} exceeds requested limit {}",
+            corpus.source_tx_count, corpus.requested_limit
+        ));
+    }
     validate_corpus_opcode_summary(corpus, gate_failures);
     validate_corpus_transaction_networks(corpus, gate_failures);
     validate_corpus_transaction_hashes(corpus, gate_failures);
@@ -8627,6 +8633,39 @@ mod tests {
                 )
             }),
             "expected corpus count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_source_count_exceeding_requested_limit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["requestedLimit"] = serde_json::json!(1);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: corpus source transaction count 2 exceeds requested limit 1",
+                )
+            }),
+            "expected corpus requested limit failure, got {:?}",
             validation.gate_failures
         );
     }
