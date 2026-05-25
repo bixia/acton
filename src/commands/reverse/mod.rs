@@ -11,6 +11,8 @@ use ton_stateflow::{
     LogArtifact, ReplayMutation, ShardAccountSnapshot, StateFlowCorpus, StateFlowReplayDiff,
     StateFlowSchemaReport, StateFlowTx,
 };
+use tycho_types::boc::Boc;
+use tycho_types::cell::Cell;
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
 const VALIDATION_ARTIFACT_PATH: &str = "validation.json";
@@ -2471,6 +2473,14 @@ fn validate_schema_opcode_candidate_matches_corpus(
         gate_failures,
     );
 
+    for field in &candidate.inbound_body.field_candidates {
+        let expected = corpus_body_field_candidate(field, &matching_transactions);
+        validate_schema_body_field_matches_corpus(field, expected.as_ref(), gate_failures);
+    }
+    for field in &candidate.storage.fields {
+        let expected = corpus_storage_field_candidate(field, &matching_transactions);
+        validate_schema_storage_field_matches_corpus(field, expected.as_ref(), gate_failures);
+    }
     for effect in &candidate.outbound_effects {
         let expected = corpus_outbound_effect_aggregate(effect, &matching_transactions);
         validate_schema_effect_matches_corpus("outbound", effect, expected, gate_failures);
@@ -2479,6 +2489,341 @@ fn validate_schema_opcode_candidate_matches_corpus(
         let expected = corpus_action_effect_aggregate(effect, &matching_transactions);
         validate_schema_effect_matches_corpus("action", effect, expected, gate_failures);
     }
+}
+
+fn corpus_body_field_candidate(
+    field: &ton_stateflow::BodyFieldCandidate,
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::BodyFieldCandidate> {
+    match field.name.as_str() {
+        "opcode" => corpus_opcode_body_field(transactions),
+        "query_id" => corpus_query_id_body_field(transactions),
+        "payload_tail" => corpus_payload_tail_body_field(transactions),
+        _ => None,
+    }
+}
+
+fn corpus_opcode_body_field(
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::BodyFieldCandidate> {
+    let mut samples = HashSet::new();
+    let mut present_count = 0;
+    for tx in transactions {
+        if tx.inbound.body.bits < 32 {
+            continue;
+        }
+        let opcode = tx
+            .inbound
+            .opcode
+            .clone()
+            .or_else(|| read_body_u32_at(&tx.inbound.body.boc64, 0).map(format_u32_hex));
+        if let Some(opcode) = opcode {
+            present_count += 1;
+            samples.insert(opcode);
+        }
+    }
+    (present_count > 0).then(|| ton_stateflow::BodyFieldCandidate {
+        name: "opcode".to_owned(),
+        bit_offset: 0,
+        min_bits: 32,
+        max_bits: 32,
+        min_refs: 0,
+        max_refs: 0,
+        kind: "uint32".to_owned(),
+        present_count,
+        value_samples: sorted_limited_values(samples),
+        confidence: field_confidence_label(present_count, transactions.len()),
+    })
+}
+
+fn corpus_query_id_body_field(
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::BodyFieldCandidate> {
+    let mut samples = HashSet::new();
+    let mut present_count = 0;
+    for tx in transactions {
+        if tx.inbound.body.bits < 96 {
+            continue;
+        }
+        if let Some(query_id) = read_body_u64_at(&tx.inbound.body.boc64, 32) {
+            present_count += 1;
+            samples.insert(format_u64_hex(query_id));
+        }
+    }
+    (present_count > 0).then(|| ton_stateflow::BodyFieldCandidate {
+        name: "query_id".to_owned(),
+        bit_offset: 32,
+        min_bits: 64,
+        max_bits: 64,
+        min_refs: 0,
+        max_refs: 0,
+        kind: "uint64".to_owned(),
+        present_count,
+        value_samples: sorted_limited_values(samples),
+        confidence: field_confidence_label(present_count, transactions.len()),
+    })
+}
+
+fn corpus_payload_tail_body_field(
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::BodyFieldCandidate> {
+    let mut samples = HashSet::new();
+    let mut present_count = 0;
+    let mut min_bits = u16::MAX;
+    let mut max_bits = 0;
+    let mut min_refs = u8::MAX;
+    let mut max_refs = 0;
+    for tx in transactions {
+        if tx.inbound.body.bits < 96 || (tx.inbound.body.bits == 96 && tx.inbound.body.refs == 0) {
+            continue;
+        }
+        let tail_bits = tx.inbound.body.bits.saturating_sub(96);
+        min_bits = min_bits.min(tail_bits);
+        max_bits = max_bits.max(tail_bits);
+        min_refs = min_refs.min(tx.inbound.body.refs);
+        max_refs = max_refs.max(tx.inbound.body.refs);
+        present_count += 1;
+        samples.insert(format!("{tail_bits} bits, {} refs", tx.inbound.body.refs));
+    }
+    (present_count > 0).then(|| ton_stateflow::BodyFieldCandidate {
+        name: "payload_tail".to_owned(),
+        bit_offset: 96,
+        min_bits,
+        max_bits,
+        min_refs: if min_refs == u8::MAX { 0 } else { min_refs },
+        max_refs,
+        kind: "raw".to_owned(),
+        present_count,
+        value_samples: sorted_limited_values(samples),
+        confidence: "low".to_owned(),
+    })
+}
+
+fn validate_schema_body_field_matches_corpus(
+    field: &ton_stateflow::BodyFieldCandidate,
+    expected: Option<&ton_stateflow::BodyFieldCandidate>,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected_present_count = expected.map_or(0, |field| field.present_count);
+    validate_evidence_value_field(
+        "schema message body field present count",
+        field.present_count,
+        "corpus message body field present count",
+        expected_present_count,
+        &field.name,
+        gate_failures,
+    );
+    let Some(expected) = expected else {
+        return;
+    };
+    validate_evidence_value_field(
+        "schema message body field bit offset",
+        field.bit_offset,
+        "corpus message body field bit offset",
+        expected.bit_offset,
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema message body field bits",
+        &report_field_range(field.min_bits, field.max_bits),
+        "corpus message body field bits",
+        &report_field_range(expected.min_bits, expected.max_bits),
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema message body field refs",
+        &report_field_range(field.min_refs, field.max_refs),
+        "corpus message body field refs",
+        &report_field_range(expected.min_refs, expected.max_refs),
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema message body field kind",
+        &field.kind,
+        "corpus message body field kind",
+        &expected.kind,
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema message body field samples",
+        &report_sample_list(&field.value_samples),
+        "corpus message body field samples",
+        &report_sample_list(&expected.value_samples),
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema message body field confidence",
+        &field.confidence,
+        "corpus message body field confidence",
+        &expected.confidence,
+        &field.name,
+        gate_failures,
+    );
+}
+
+fn corpus_storage_field_candidate(
+    field: &ton_stateflow::StorageFieldCandidate,
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::StorageFieldCandidate> {
+    match field.name.as_str() {
+        "data_word_0" => corpus_data_word_storage_field(transactions),
+        "data_tail" => corpus_data_tail_storage_field(transactions),
+        _ => None,
+    }
+}
+
+fn corpus_data_word_storage_field(
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::StorageFieldCandidate> {
+    let mut samples = HashSet::new();
+    let mut present_count = 0;
+    for tx in transactions {
+        let Some(data_cell) = post_data_cell_from_snapshot(&tx.state.post) else {
+            continue;
+        };
+        if data_cell.as_slice_allow_exotic().size_bits() < 32 {
+            continue;
+        }
+        if let Some(word) = read_cell_u32_at(&data_cell, 0) {
+            present_count += 1;
+            samples.insert(format_u32_hex(word));
+        }
+    }
+    (present_count > 0).then(|| ton_stateflow::StorageFieldCandidate {
+        name: "data_word_0".to_owned(),
+        cell_path: "data".to_owned(),
+        bit_offset: 0,
+        min_bits: 32,
+        max_bits: 32,
+        min_refs: 0,
+        max_refs: 0,
+        kind: "uint32".to_owned(),
+        present_count,
+        value_samples: sorted_limited_values(samples),
+        confidence: field_confidence_label(present_count, transactions.len()),
+    })
+}
+
+fn corpus_data_tail_storage_field(
+    transactions: &[&StateFlowTx],
+) -> Option<ton_stateflow::StorageFieldCandidate> {
+    let mut samples = HashSet::new();
+    let mut present_count = 0;
+    let mut min_bits = u16::MAX;
+    let mut max_bits = 0;
+    let mut min_refs = u8::MAX;
+    let mut max_refs = 0;
+    for tx in transactions {
+        let Some(data_cell) = post_data_cell_from_snapshot(&tx.state.post) else {
+            continue;
+        };
+        let slice = data_cell.as_slice_allow_exotic();
+        let bits = slice.size_bits();
+        let refs = slice.size_refs();
+        if bits <= 32 && refs == 0 {
+            continue;
+        }
+        let tail_bits = bits.saturating_sub(32);
+        min_bits = min_bits.min(tail_bits);
+        max_bits = max_bits.max(tail_bits);
+        min_refs = min_refs.min(refs);
+        max_refs = max_refs.max(refs);
+        present_count += 1;
+        samples.insert(format!("{tail_bits} bits, {refs} refs"));
+    }
+    (present_count > 0).then(|| ton_stateflow::StorageFieldCandidate {
+        name: "data_tail".to_owned(),
+        cell_path: "data".to_owned(),
+        bit_offset: 32,
+        min_bits,
+        max_bits,
+        min_refs: if min_refs == u8::MAX { 0 } else { min_refs },
+        max_refs,
+        kind: "raw".to_owned(),
+        present_count,
+        value_samples: sorted_limited_values(samples),
+        confidence: "low".to_owned(),
+    })
+}
+
+fn validate_schema_storage_field_matches_corpus(
+    field: &ton_stateflow::StorageFieldCandidate,
+    expected: Option<&ton_stateflow::StorageFieldCandidate>,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected_present_count = expected.map_or(0, |field| field.present_count);
+    validate_evidence_value_field(
+        "schema storage field present count",
+        field.present_count,
+        "corpus storage field present count",
+        expected_present_count,
+        &field.name,
+        gate_failures,
+    );
+    let Some(expected) = expected else {
+        return;
+    };
+    validate_evidence_text_field(
+        "schema storage field cell path",
+        &field.cell_path,
+        "corpus storage field cell path",
+        &expected.cell_path,
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "schema storage field bit offset",
+        field.bit_offset,
+        "corpus storage field bit offset",
+        expected.bit_offset,
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema storage field bits",
+        &report_field_range(field.min_bits, field.max_bits),
+        "corpus storage field bits",
+        &report_field_range(expected.min_bits, expected.max_bits),
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema storage field refs",
+        &report_field_range(field.min_refs, field.max_refs),
+        "corpus storage field refs",
+        &report_field_range(expected.min_refs, expected.max_refs),
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema storage field kind",
+        &field.kind,
+        "corpus storage field kind",
+        &expected.kind,
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema storage field samples",
+        &report_sample_list(&field.value_samples),
+        "corpus storage field samples",
+        &report_sample_list(&expected.value_samples),
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema storage field confidence",
+        &field.confidence,
+        "corpus storage field confidence",
+        &expected.confidence,
+        &field.name,
+        gate_failures,
+    );
 }
 
 #[derive(Default)]
@@ -2693,6 +3038,45 @@ fn effect_shape_range(shapes: &[(u16, u8)]) -> Option<ton_stateflow::CellShapeRa
         min_refs,
         max_refs,
     })
+}
+
+fn read_body_u32_at(boc64: &str, bit_offset: u16) -> Option<u32> {
+    let cell = Boc::decode_base64(boc64).ok()?;
+    read_cell_u32_at(&cell, bit_offset)
+}
+
+fn read_body_u64_at(boc64: &str, bit_offset: u16) -> Option<u64> {
+    let cell = Boc::decode_base64(boc64).ok()?;
+    let mut slice = cell.as_slice_allow_exotic();
+    slice.skip_first(bit_offset, 0).ok()?;
+    slice.load_u64().ok()
+}
+
+fn read_cell_u32_at(cell: &Cell, bit_offset: u16) -> Option<u32> {
+    let mut slice = cell.as_slice_allow_exotic();
+    slice.skip_first(bit_offset, 0).ok()?;
+    slice.load_u32().ok()
+}
+
+fn post_data_cell_from_snapshot(snapshot: &ShardAccountSnapshot) -> Option<Cell> {
+    let boc64 = snapshot.data_cell.as_ref()?.boc64.as_ref()?;
+    Boc::decode_base64(boc64).ok()
+}
+
+fn format_u32_hex(value: u32) -> String {
+    format!("0x{value:08x}")
+}
+
+fn format_u64_hex(value: u64) -> String {
+    format!("0x{value:016x}")
+}
+
+fn field_confidence_label(present_count: usize, transaction_count: usize) -> String {
+    if present_count == transaction_count {
+        "high".to_owned()
+    } else {
+        "medium".to_owned()
+    }
 }
 
 fn sorted_limited_values(values: HashSet<String>) -> Vec<String> {
@@ -6284,6 +6668,57 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_message_body_field_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"] = serde_json::json!([{
+            "name": "query_id",
+            "bitOffset": 32,
+            "minBits": 64,
+            "maxBits": 64,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint64",
+            "presentCount": 2,
+            "valueSamples": ["0x7"],
+            "confidence": "high"
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_schema_message_body_field("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema message body field present count 2 for query_id does not match corpus message body field present count 0",
+                )
+            }),
+            "expected message body field present count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_replay_probe_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -6405,6 +6840,66 @@ mod tests {
                 )
             }),
             "expected report storage samples failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_storage_field_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["storage"] = serde_json::json!({
+            "balanceDeltaMin": -3,
+            "balanceDeltaMax": -3,
+            "dataHashChangedCount": 0,
+            "codeHashChangedCount": 0,
+            "fields": [{
+                "name": "data_word_0",
+                "cellPath": "data",
+                "bitOffset": 0,
+                "minBits": 32,
+                "maxBits": 32,
+                "minRefs": 0,
+                "maxRefs": 0,
+                "kind": "uint32",
+                "presentCount": 2,
+                "valueSamples": ["0xdeadbeef"],
+                "confidence": "medium"
+            }],
+            "postDataHashes": ["data"],
+            "postCodeHashes": []
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_schema_storage_field("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema storage field present count 2 for data_word_0 does not match corpus storage field present count 0",
+                )
+            }),
+            "expected storage field present count mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -8280,6 +8775,13 @@ mod tests {
         )
     }
 
+    fn sample_report_markdown_with_schema_message_body_field(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Message Body Fields\n- No message body field candidates were inferred.",
+            "## Message Body Fields\n| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | 0x7 | high |",
+        )
+    }
+
     fn sample_report_markdown_with_wrong_replay_probe(address: &str) -> String {
         sample_report_markdown(address).replace(
             "## Replay Probes\n- No replay probe candidates were inferred.",
@@ -8291,6 +8793,13 @@ mod tests {
         sample_report_markdown(address).replace(
             "## Storage Fields\n- No storage field candidates were inferred.",
             "## Storage Fields\n| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `data_word_0` | code | 8 | 16..16 | 1..1 | raw | `0xff` | medium |",
+        )
+    }
+
+    fn sample_report_markdown_with_schema_storage_field(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Storage Fields\n- No storage field candidates were inferred.",
+            "## Storage Fields\n| Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n| `0x00000001` | `data_word_0` | data | 0 | 32..32 | 0..0 | uint32 | 0xdeadbeef | medium |",
         )
     }
 
