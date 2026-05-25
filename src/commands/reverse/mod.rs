@@ -2425,6 +2425,15 @@ fn validate_manifest_report_content_matches_summary(
                 replay.source_query_hash
             ));
         }
+        let mutation_label = report_replay_mutation_label(&replay.mutation);
+        if !replay_diff_section.is_some_and(|section| {
+            section.contains(&replay.source_query_hash) && section.contains(&mutation_label)
+        }) {
+            gate_failures.push(format!(
+                "report replay mutation {mutation_label:?} for tx {} is missing",
+                replay.source_query_hash
+            ));
+        }
     }
 }
 
@@ -2450,6 +2459,19 @@ fn schema_evidence_hashes(schema: &StateFlowSchemaReport) -> Vec<&str> {
         .flat_map(|candidate| candidate.evidence.iter())
         .map(|evidence| evidence.tx_hash.as_str())
         .collect()
+}
+
+fn report_replay_mutation_label(mutation: &ReplayMutation) -> String {
+    match mutation {
+        ReplayMutation::None => "none".to_owned(),
+        ReplayMutation::FlipBodyBit { bit } => format!("flip body bit {bit}"),
+        ReplayMutation::ReplaceBody { .. } => "replace body".to_owned(),
+        ReplayMutation::SetBodyUint {
+            bit_offset,
+            bits,
+            value,
+        } => format!("set body uint {value} at {bit_offset}:{bits}"),
+    }
 }
 
 fn validate_corpus_hash_membership(
@@ -3493,6 +3515,36 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_replay_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_replay_mutation("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report replay mutation \"flip body bit 0\" for tx tx-a is missing",
+                )
+            }),
+            "expected report replay mutation failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_probe_without_replay() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -4342,14 +4394,22 @@ mod tests {
     }
 
     fn sample_report_markdown(address: &str) -> String {
-        sample_report_markdown_inner(address, true)
+        sample_report_markdown_inner(address, true, "flip body bit 0")
     }
 
     fn sample_report_markdown_without_schema_evidence(address: &str) -> String {
-        sample_report_markdown_inner(address, false)
+        sample_report_markdown_inner(address, false, "flip body bit 0")
     }
 
-    fn sample_report_markdown_inner(address: &str, include_schema_evidence: bool) -> String {
+    fn sample_report_markdown_without_replay_mutation(address: &str) -> String {
+        sample_report_markdown_inner(address, true, "none")
+    }
+
+    fn sample_report_markdown_inner(
+        address: &str,
+        include_schema_evidence: bool,
+        replay_mutation: &str,
+    ) -> String {
         let schema_evidence_row = if include_schema_evidence {
             "| `0x00000001` | `tx-a` | `body` | 32/0 | none -> active | n/a | n/a | none | none |\n"
         } else {
@@ -4397,7 +4457,7 @@ mod tests {
              ## Replay Diffs\n\
              | Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |\n\
              | --- | --- | --- | --- | --- | --- | ---: | ---: |\n\
-             | `tx-a` | none | true | false | false | false | 0 | 0 |\n\
+             | `tx-a` | {replay_mutation} | true | true | true | false | 0 | 0 |\n\
              \n\
              ## Risk Points\n\
              - No risk points were inferred from the provided artifacts.\n"
