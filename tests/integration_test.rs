@@ -443,6 +443,8 @@ fn test_acton_reverse_report_help() {
         "Usage: acton reverse report",
         "--schema <SCHEMA>",
         "--replay <REPLAY>",
+        "--artifact-manifest <ARTIFACTS>",
+        "--target-id <TARGET_ID>",
         "--output <OUTPUT>",
         "[aliases: --out]",
     ] {

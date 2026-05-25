@@ -123,16 +123,38 @@ pub enum ReverseCommand {
     },
     #[command(about = "Generate a state-flow reverse-engineering report")]
     Report {
-        #[arg(help = "State-flow corpus JSON produced by `acton reverse collect`")]
-        corpus: PathBuf,
-        #[arg(long, help = "Schema candidate JSON produced by `acton reverse infer`")]
-        schema: PathBuf,
+        #[arg(
+            required_unless_present = "artifact_manifest",
+            conflicts_with = "artifact_manifest",
+            help = "State-flow corpus JSON produced by `acton reverse collect`"
+        )]
+        corpus: Option<PathBuf>,
+        #[arg(
+            long,
+            required_unless_present = "artifact_manifest",
+            conflicts_with = "artifact_manifest",
+            help = "Schema candidate JSON produced by `acton reverse infer`"
+        )]
+        schema: Option<PathBuf>,
         #[arg(
             long,
             value_name = "REPLAY",
+            conflicts_with = "artifact_manifest",
             help = "Replay diff JSON produced by `acton reverse replay`"
         )]
         replay: Vec<PathBuf>,
+        #[arg(
+            long,
+            value_name = "ARTIFACTS",
+            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+        )]
+        artifact_manifest: Option<PathBuf>,
+        #[arg(
+            long,
+            requires = "artifact_manifest",
+            help = "Target id to select from an artifact manifest"
+        )]
+        target_id: Option<String>,
         #[arg(
             short,
             long,
@@ -265,8 +287,10 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             corpus,
             schema,
             replay,
+            artifact_manifest,
+            target_id,
             output,
-        } => reverse_report_cmd(corpus, schema, replay, output),
+        } => reverse_report_cmd(corpus, schema, replay, artifact_manifest, target_id, output),
         ReverseCommand::Analyze {
             address,
             net,
@@ -485,20 +509,37 @@ fn is_corpus_json(value: &serde_json::Value) -> bool {
 }
 
 fn reverse_report_cmd(
-    corpus: PathBuf,
-    schema: PathBuf,
+    corpus: Option<PathBuf>,
+    schema: Option<PathBuf>,
     replay: Vec<PathBuf>,
+    artifact_manifest: Option<PathBuf>,
+    target_id: Option<String>,
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let corpus_json = fs::read_to_string(&corpus)
-        .with_context(|| format!("failed to read {}", corpus.display()))?;
+    let report_artifacts = if let Some(manifest_path) = artifact_manifest {
+        let json = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+        let manifest: SmokeArtifactManifest = serde_json::from_str(&json)
+            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+        report_artifacts_from_manifest(&manifest, &manifest_path, target_id.as_deref())?
+    } else {
+        ReportArtifactInputs {
+            corpus: corpus.context("state-flow corpus JSON is required")?,
+            schema: schema.context("schema candidate JSON is required")?,
+            replays: replay,
+        }
+    };
+
+    let corpus_json = fs::read_to_string(&report_artifacts.corpus)
+        .with_context(|| format!("failed to read {}", report_artifacts.corpus.display()))?;
     let corpus: StateFlowCorpus = serde_json::from_str(&corpus_json)
-        .with_context(|| format!("failed to parse {}", corpus.display()))?;
-    let schema_json = fs::read_to_string(&schema)
-        .with_context(|| format!("failed to read {}", schema.display()))?;
+        .with_context(|| format!("failed to parse {}", report_artifacts.corpus.display()))?;
+    let schema_json = fs::read_to_string(&report_artifacts.schema)
+        .with_context(|| format!("failed to read {}", report_artifacts.schema.display()))?;
     let schema: StateFlowSchemaReport = serde_json::from_str(&schema_json)
-        .with_context(|| format!("failed to parse {}", schema.display()))?;
-    let replays = replay
+        .with_context(|| format!("failed to parse {}", report_artifacts.schema.display()))?;
+    let replays = report_artifacts
+        .replays
         .iter()
         .map(|path| {
             let json = fs::read_to_string(path)
@@ -509,6 +550,13 @@ fn reverse_report_cmd(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
     write_text(&report, output, "State-flow report")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReportArtifactInputs {
+    corpus: PathBuf,
+    schema: PathBuf,
+    replays: Vec<PathBuf>,
 }
 
 fn reverse_analyze_cmd(
@@ -1082,7 +1130,7 @@ struct SmokeTargetRunSummary {
     report: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeArtifactManifest {
     schema_version: u32,
@@ -1143,6 +1191,92 @@ impl SmokeArtifactManifest {
     }
 }
 
+fn report_artifacts_from_manifest(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+) -> anyhow::Result<ReportArtifactInputs> {
+    anyhow::ensure!(
+        manifest.kind == "stateFlowArtifactManifest",
+        "unsupported artifact manifest kind {} in {}",
+        manifest.kind,
+        manifest_path.display()
+    );
+    anyhow::ensure!(
+        manifest.schema_version == 1,
+        "unsupported artifact manifest schema version {} in {}",
+        manifest.schema_version,
+        manifest_path.display()
+    );
+
+    let target_ids = manifest_target_ids(manifest);
+    let selected_target_id = match target_id {
+        Some(target_id) => target_id.to_owned(),
+        None if target_ids.len() == 1 => target_ids[0].clone(),
+        None => {
+            anyhow::bail!(
+                "artifact manifest {} contains {} target(s); pass --target-id",
+                manifest_path.display(),
+                target_ids.len()
+            )
+        }
+    };
+
+    anyhow::ensure!(
+        target_ids.iter().any(|id| id == &selected_target_id),
+        "artifact manifest {} does not contain target id {:?}",
+        manifest_path.display(),
+        selected_target_id
+    );
+
+    Ok(ReportArtifactInputs {
+        corpus: required_manifest_artifact_path(manifest, &selected_target_id, "corpus")?,
+        schema: required_manifest_artifact_path(manifest, &selected_target_id, "schema")?,
+        replays: manifest_artifact_paths(manifest, &selected_target_id, "replay"),
+    })
+}
+
+fn manifest_target_ids(manifest: &SmokeArtifactManifest) -> Vec<String> {
+    let mut target_ids = Vec::new();
+    for artifact in &manifest.artifacts {
+        let Some(target_id) = &artifact.target_id else {
+            continue;
+        };
+        if !target_ids.iter().any(|known| known == target_id) {
+            target_ids.push(target_id.clone());
+        }
+    }
+    target_ids
+}
+
+fn required_manifest_artifact_path(
+    manifest: &SmokeArtifactManifest,
+    target_id: &str,
+    kind: &str,
+) -> anyhow::Result<PathBuf> {
+    let paths = manifest_artifact_paths(manifest, target_id, kind);
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => anyhow::bail!("artifact manifest target {target_id:?} is missing {kind} artifact"),
+        _ => anyhow::bail!("artifact manifest target {target_id:?} has multiple {kind} artifacts"),
+    }
+}
+
+fn manifest_artifact_paths(
+    manifest: &SmokeArtifactManifest,
+    target_id: &str,
+    kind: &str,
+) -> Vec<PathBuf> {
+    manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == kind && artifact.target_id.as_deref() == Some(target_id)
+        })
+        .map(|artifact| PathBuf::from(&artifact.path))
+        .collect()
+}
+
 fn replay_artifact_paths(target: &SmokeTargetRunSummary) -> Vec<String> {
     if !target.replays.is_empty() {
         return target.replays.clone();
@@ -1150,7 +1284,7 @@ fn replay_artifact_paths(target: &SmokeTargetRunSummary) -> Vec<String> {
     target.replay.iter().cloned().collect()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeArtifactManifestEntry {
     kind: String,
@@ -1252,7 +1386,10 @@ fn select_corpus_transaction_ref<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
     use ton_stateflow::ReplayMutation;
 
     #[test]
@@ -1438,6 +1575,46 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|entry| entry["kind"] != "replay")
+        );
+    }
+
+    #[test]
+    fn report_artifacts_from_manifest_selects_target_bundle() {
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "out/summary.json",
+            "targetCount": 2,
+            "artifacts": [
+                {"kind": "runSummary", "path": "out/summary.json", "targetId": null},
+                {"kind": "corpus", "path": "out/target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "out/target-a/schema.json", "targetId": "target-a"},
+                {"kind": "replay", "path": "out/target-a/replay.json", "targetId": "target-a"},
+                {"kind": "report", "path": "out/target-a/report.md", "targetId": "target-a"},
+                {"kind": "corpus", "path": "out/target-b/corpus.json", "targetId": "target-b"},
+                {"kind": "schema", "path": "out/target-b/schema.json", "targetId": "target-b"},
+                {"kind": "replay", "path": "out/target-b/replay.json", "targetId": "target-b"},
+                {"kind": "replay", "path": "out/target-b/replay-probe-query_id-32-64.json", "targetId": "target-b"},
+                {"kind": "report", "path": "out/target-b/report.md", "targetId": "target-b"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let inputs = super::report_artifacts_from_manifest(
+            &manifest,
+            Path::new("out/artifacts.json"),
+            Some("target-b"),
+        )
+        .expect("target report artifacts should resolve");
+
+        assert_eq!(inputs.corpus, PathBuf::from("out/target-b/corpus.json"));
+        assert_eq!(inputs.schema, PathBuf::from("out/target-b/schema.json"));
+        assert_eq!(
+            inputs.replays,
+            vec![
+                PathBuf::from("out/target-b/replay.json"),
+                PathBuf::from("out/target-b/replay-probe-query_id-32-64.json")
+            ]
         );
     }
 
