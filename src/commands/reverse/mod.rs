@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use ton_retrace::Network;
-use ton_stateflow::StateFlowTx;
+use ton_stateflow::{StateFlowCorpus, StateFlowTx};
 
 #[derive(Subcommand, Clone)]
 pub enum ReverseCommand {
@@ -51,6 +51,21 @@ pub enum ReverseCommand {
         #[arg(long, help = "Pretty-print JSON output")]
         pretty: bool,
     },
+    #[command(about = "Infer opcode and effect schema candidates from a state-flow corpus")]
+    Infer {
+        #[arg(help = "State-flow corpus JSON produced by `acton reverse collect`")]
+        corpus: PathBuf,
+        #[arg(
+            short,
+            long,
+            alias = "out",
+            visible_alias = "out",
+            help = "Write schema candidate JSON to a file"
+        )]
+        output: Option<PathBuf>,
+        #[arg(long, help = "Pretty-print JSON output")]
+        pretty: bool,
+    },
 }
 
 pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
@@ -68,6 +83,11 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             output,
             pretty,
         } => reverse_collect_cmd(&address, &net, limit, output, pretty),
+        ReverseCommand::Infer {
+            corpus,
+            output,
+            pretty,
+        } => reverse_infer_cmd(corpus, output, pretty),
     }
 }
 
@@ -125,6 +145,15 @@ fn reverse_collect_cmd(
         HashMap::new(),
     ))?;
     write_json(&corpus, output, pretty, "State-flow corpus JSON")
+}
+
+fn reverse_infer_cmd(corpus: PathBuf, output: Option<PathBuf>, pretty: bool) -> anyhow::Result<()> {
+    let json = fs::read_to_string(&corpus)
+        .with_context(|| format!("failed to read {}", corpus.display()))?;
+    let corpus: StateFlowCorpus = serde_json::from_str(&json)
+        .with_context(|| format!("failed to parse {}", corpus.display()))?;
+    let report = ton_stateflow::infer_schema_candidates(&corpus);
+    write_json(&report, output, pretty, "State-flow schema report JSON")
 }
 
 fn write_state_flow(

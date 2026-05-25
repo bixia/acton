@@ -1,6 +1,6 @@
 use anyhow::Context;
-use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use ton_retrace::{AccountTxRef, ComputeInfo, Network, TraceResult};
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, HashBytes, Store};
@@ -10,7 +10,7 @@ use tycho_types::models::{
 
 pub const STATE_FLOW_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateFlowTx {
     pub schema_version: u32,
@@ -29,7 +29,7 @@ pub struct StateFlowTx {
     pub executor_trace: LogArtifact,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateFlowCorpus {
     pub schema_version: u32,
@@ -44,7 +44,7 @@ pub struct StateFlowCorpus {
     pub failures: Vec<StateFlowFailure>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpcodeSummary {
     pub opcode: Option<String>,
@@ -52,7 +52,7 @@ pub struct OpcodeSummary {
     pub tx_hashes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateFlowFailure {
     pub hash: String,
@@ -60,7 +60,56 @@ pub struct StateFlowFailure {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateFlowSchemaReport {
+    pub schema_version: u32,
+    pub network: String,
+    pub address: String,
+    pub transaction_count: usize,
+    pub opcode_candidates: Vec<OpcodeSchemaCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpcodeSchemaCandidate {
+    pub opcode: Option<String>,
+    pub count: usize,
+    pub examples: Vec<String>,
+    pub inbound_body: BodyShapeCandidate,
+    pub state_transitions: Vec<StateTransitionCandidate>,
+    pub outbound_effects: Vec<EffectCandidate>,
+    pub out_actions: Vec<EffectCandidate>,
+    pub confidence: String,
+    pub unknown_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyShapeCandidate {
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
+    pub body_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateTransitionCandidate {
+    pub from_status: String,
+    pub to_status: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectCandidate {
+    pub kind: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionIdentity {
     pub lt: u64,
@@ -70,7 +119,7 @@ pub struct TransactionIdentity {
     pub transaction_boc64: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplaySummary {
     pub mc_seqno: u32,
@@ -79,14 +128,14 @@ pub struct ReplaySummary {
     pub block_config_boc64: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateTransition {
     pub pre: ShardAccountSnapshot,
     pub post: ShardAccountSnapshot,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShardAccountSnapshot {
     pub shard_account_boc64: String,
@@ -100,7 +149,7 @@ pub struct ShardAccountSnapshot {
     pub frozen_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageArtifact {
     pub direction: MessageDirection,
@@ -116,14 +165,14 @@ pub struct MessageArtifact {
     pub body: CellArtifact,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageDirection {
     Inbound,
     Outbound,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellArtifact {
     pub boc64: String,
@@ -132,7 +181,7 @@ pub struct CellArtifact {
     pub refs: u8,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateFlowCompute {
     pub skipped: bool,
@@ -143,7 +192,7 @@ pub struct StateFlowCompute {
     pub gas_fees: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoneyFlow {
     pub balance_before: u64,
@@ -152,7 +201,7 @@ pub struct MoneyFlow {
     pub balance_after: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionEffect {
     pub index: usize,
@@ -165,7 +214,7 @@ pub struct ActionEffect {
     pub library: Option<LibraryEffect>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryEffect {
     pub mode: String,
@@ -173,7 +222,7 @@ pub struct LibraryEffect {
     pub cell: Option<CellArtifact>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogArtifact {
     pub line_count: usize,
@@ -221,6 +270,27 @@ pub async fn collect_state_flow_corpus(
         transactions,
         failures,
     })
+}
+
+pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaReport {
+    let mut by_opcode = BTreeMap::<Option<String>, Vec<&StateFlowTx>>::new();
+    for tx in &corpus.transactions {
+        by_opcode
+            .entry(tx.inbound.opcode.clone())
+            .or_default()
+            .push(tx);
+    }
+
+    StateFlowSchemaReport {
+        schema_version: STATE_FLOW_SCHEMA_VERSION,
+        network: corpus.network.clone(),
+        address: corpus.address.clone(),
+        transaction_count: corpus.transactions.len(),
+        opcode_candidates: by_opcode
+            .into_iter()
+            .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
+            .collect(),
+    }
 }
 
 impl StateFlowTx {
@@ -285,6 +355,113 @@ impl StateFlowTx {
             executor_trace: LogArtifact::from(result.emulated_tx.executor_logs.as_ref()),
         })
     }
+}
+
+fn opcode_candidate(
+    opcode: Option<String>,
+    transactions: &[&StateFlowTx],
+) -> OpcodeSchemaCandidate {
+    let inbound_body = inbound_body_shape(transactions);
+    let state_transitions = summarize_pairs(
+        transactions
+            .iter()
+            .map(|tx| (tx.state.pre.status.clone(), tx.state.post.status.clone())),
+    );
+    let outbound_effects = summarize_kinds(
+        transactions
+            .iter()
+            .flat_map(|tx| tx.outbound.iter().map(|msg| msg.kind.clone())),
+    );
+    let out_actions = summarize_kinds(
+        transactions
+            .iter()
+            .flat_map(|tx| tx.out_actions.iter().map(|action| action.kind.clone())),
+    );
+    let stable_body = inbound_body.min_bits == inbound_body.max_bits
+        && inbound_body.min_refs == inbound_body.max_refs;
+    let confidence = match (transactions.len(), stable_body) {
+        (3.., true) => "high",
+        (_, true) => "medium",
+        _ => "low",
+    }
+    .to_owned();
+    let mut unknown_fields = vec![
+        "message body field names require TL-B recovery".to_owned(),
+        "storage field names require typed storage decoding".to_owned(),
+    ];
+    if !stable_body {
+        unknown_fields.push("variable message body shape observed".to_owned());
+    }
+    if !outbound_effects.is_empty() || !out_actions.is_empty() {
+        unknown_fields.push("outbound effect payload fields require TL-B recovery".to_owned());
+    }
+
+    OpcodeSchemaCandidate {
+        opcode,
+        count: transactions.len(),
+        examples: transactions
+            .iter()
+            .take(5)
+            .map(|tx| tx.query_hash.clone())
+            .collect(),
+        inbound_body,
+        state_transitions,
+        outbound_effects,
+        out_actions,
+        confidence,
+        unknown_fields,
+    }
+}
+
+fn inbound_body_shape(transactions: &[&StateFlowTx]) -> BodyShapeCandidate {
+    let mut min_bits = u16::MAX;
+    let mut max_bits = 0;
+    let mut min_refs = u8::MAX;
+    let mut max_refs = 0;
+    let mut body_hashes = BTreeSet::new();
+    for tx in transactions {
+        min_bits = min_bits.min(tx.inbound.body.bits);
+        max_bits = max_bits.max(tx.inbound.body.bits);
+        min_refs = min_refs.min(tx.inbound.body.refs);
+        max_refs = max_refs.max(tx.inbound.body.refs);
+        body_hashes.insert(tx.inbound.body.hash.clone());
+    }
+
+    BodyShapeCandidate {
+        min_bits: if min_bits == u16::MAX { 0 } else { min_bits },
+        max_bits,
+        min_refs: if min_refs == u8::MAX { 0 } else { min_refs },
+        max_refs,
+        body_hashes: body_hashes.into_iter().collect(),
+    }
+}
+
+fn summarize_pairs(pairs: impl Iterator<Item = (String, String)>) -> Vec<StateTransitionCandidate> {
+    let mut counts = BTreeMap::<(String, String), usize>::new();
+    for pair in pairs {
+        *counts.entry(pair).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(
+            |((from_status, to_status), count)| StateTransitionCandidate {
+                from_status,
+                to_status,
+                count,
+            },
+        )
+        .collect()
+}
+
+fn summarize_kinds(kinds: impl Iterator<Item = String>) -> Vec<EffectCandidate> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for kind in kinds {
+        *counts.entry(kind).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(kind, count)| EffectCandidate { kind, count })
+        .collect()
 }
 
 impl StateFlowFailure {
@@ -635,7 +812,7 @@ fn format_int_addr(addr: &IntAddr) -> String {
 mod tests {
     use super::{
         CellArtifact, LogArtifact, MessageDirection, MoneyFlow, ReplaySummary, StateFlowCompute,
-        StateFlowTx, StateTransition, TransactionIdentity,
+        StateFlowCorpus, StateFlowTx, StateTransition, TransactionIdentity,
     };
 
     #[test]
@@ -667,6 +844,44 @@ mod tests {
         assert_eq!(
             summary[1].tx_hashes,
             vec!["tx-a".to_owned(), "tx-b".to_owned()]
+        );
+    }
+
+    #[test]
+    fn infer_schema_candidates_reports_body_shape_and_transitions() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow("tx-a", Some("0x00000001")),
+                sample_flow("tx-b", Some("0x00000001")),
+            ],
+            failures: Vec::new(),
+        };
+
+        let report = super::infer_schema_candidates(&corpus);
+
+        assert_eq!(report.transaction_count, 2);
+        assert_eq!(report.opcode_candidates.len(), 1);
+        let candidate = &report.opcode_candidates[0];
+        assert_eq!(candidate.opcode.as_deref(), Some("0x00000001"));
+        assert_eq!(candidate.count, 2);
+        assert_eq!(candidate.inbound_body.min_bits, 32);
+        assert_eq!(candidate.inbound_body.max_bits, 32);
+        assert_eq!(candidate.state_transitions[0].from_status, "none");
+        assert_eq!(candidate.state_transitions[0].to_status, "active");
+        assert_eq!(candidate.confidence, "medium");
+        assert!(
+            candidate
+                .unknown_fields
+                .iter()
+                .any(|field| field.contains("TL-B"))
         );
     }
 
