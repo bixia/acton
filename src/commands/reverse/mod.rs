@@ -927,7 +927,7 @@ fn write_smoke_summary_and_gate(
     let pending_validation = pending_artifact_manifest_validation(&manifest, &manifest_path);
     write_json_to_path(&pending_validation, &validation_path, pretty)?;
 
-    let validation = validate_artifact_manifest_bundle(&manifest, &manifest_path, None)?;
+    let validation = validate_artifact_manifest_bundle_for_generation(&manifest, &manifest_path)?;
     write_json(
         &validation,
         Some(validation_path),
@@ -1461,7 +1461,7 @@ fn infer_corpus_from_manifest(
     required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ArtifactManifestValidation {
     schema_version: u32,
@@ -1475,7 +1475,7 @@ struct ArtifactManifestValidation {
     targets: Vec<ArtifactManifestTargetValidation>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ArtifactManifestTargetValidation {
     id: String,
@@ -1489,6 +1489,38 @@ fn validate_artifact_manifest_bundle(
     manifest: &SmokeArtifactManifest,
     manifest_path: &Path,
     target_id: Option<&str>,
+) -> anyhow::Result<ArtifactManifestValidation> {
+    validate_artifact_manifest_bundle_with_mode(
+        manifest,
+        manifest_path,
+        target_id,
+        ValidationArtifactMode::RequireCurrent,
+    )
+}
+
+fn validate_artifact_manifest_bundle_for_generation(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+) -> anyhow::Result<ArtifactManifestValidation> {
+    validate_artifact_manifest_bundle_with_mode(
+        manifest,
+        manifest_path,
+        None,
+        ValidationArtifactMode::AllowPending,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationArtifactMode {
+    RequireCurrent,
+    AllowPending,
+}
+
+fn validate_artifact_manifest_bundle_with_mode(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+    validation_artifact_mode: ValidationArtifactMode,
 ) -> anyhow::Result<ArtifactManifestValidation> {
     ensure_supported_artifact_manifest(manifest, manifest_path)?;
     let target_ids = manifest_target_ids(manifest);
@@ -1548,7 +1580,7 @@ fn validate_artifact_manifest_bundle(
             .map(|failure| format!("{}: {failure}", target.id))
     }));
 
-    Ok(ArtifactManifestValidation {
+    let expected_validation = ArtifactManifestValidation {
         schema_version: 1,
         kind: "stateFlowArtifactManifestValidation".to_owned(),
         manifest: manifest_path.display().to_string(),
@@ -1556,8 +1588,23 @@ fn validate_artifact_manifest_bundle(
         absolute_path_count: manifest.absolute_path_count,
         expected_absolute_path_count,
         passed: gate_failures.is_empty(),
+        gate_failures: gate_failures.clone(),
+        targets: targets.clone(),
+    };
+
+    if validation_artifact_mode == ValidationArtifactMode::RequireCurrent && target_id.is_none() {
+        validate_manifest_validation_artifact(
+            manifest,
+            manifest_path,
+            &expected_validation,
+            &mut gate_failures,
+        );
+    }
+
+    Ok(ArtifactManifestValidation {
+        passed: gate_failures.is_empty(),
         gate_failures,
-        targets,
+        ..expected_validation
     })
 }
 
@@ -1693,6 +1740,90 @@ fn validate_manifest_artifact_content(
         }
         "report" => validate_report_artifact(path, artifact, gate_failures),
         _ => {}
+    }
+}
+
+fn validate_manifest_validation_artifact(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    expected: &ArtifactManifestValidation,
+    gate_failures: &mut Vec<String>,
+) {
+    let validation_artifacts = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "validation")
+        .collect::<Vec<_>>();
+    let [artifact] = validation_artifacts.as_slice() else {
+        if validation_artifacts.len() > 1 {
+            gate_failures.push("multiple validation artifact entries".to_owned());
+        }
+        return;
+    };
+    if artifact.target_id.is_some() {
+        gate_failures.push(format!(
+            "validation artifact {} must not have a target id",
+            artifact.path
+        ));
+    }
+
+    let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
+    let Ok(json) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(actual) = serde_json::from_str::<ArtifactManifestValidation>(&json) else {
+        return;
+    };
+
+    validate_target_usize_field(
+        "validation schema version",
+        actual.schema_version as usize,
+        "expected schema version",
+        expected.schema_version as usize,
+        gate_failures,
+    );
+    validate_target_text_field(
+        "validation kind",
+        &actual.kind,
+        "expected kind",
+        &expected.kind,
+        gate_failures,
+    );
+    validate_target_usize_field(
+        "validation target count",
+        actual.target_count,
+        "expected target count",
+        expected.target_count,
+        gate_failures,
+    );
+    validate_target_usize_field(
+        "validation absolute path count",
+        actual.absolute_path_count,
+        "expected absolute path count",
+        expected.absolute_path_count,
+        gate_failures,
+    );
+    validate_target_usize_field(
+        "validation expected absolute path count",
+        actual.expected_absolute_path_count,
+        "expected expected absolute path count",
+        expected.expected_absolute_path_count,
+        gate_failures,
+    );
+    if actual.passed != expected.passed {
+        gate_failures.push(format!(
+            "validation passed {} does not match expected passed {}",
+            actual.passed, expected.passed
+        ));
+    }
+    if actual.gate_failures != expected.gate_failures {
+        gate_failures.push(format!(
+            "validation gate failures {:?} do not match expected gate failures {:?}",
+            actual.gate_failures, expected.gate_failures
+        ));
+    }
+    if actual.targets != expected.targets {
+        gate_failures.push("validation targets do not match expected targets".to_owned());
     }
 }
 
@@ -3165,6 +3296,53 @@ mod tests {
                 failure.contains("target-a: report target line \"- Address: `addr`\" is missing")
             }),
             "expected report target mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_stale_validation_artifact() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "validation.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "stateFlowArtifactManifestValidation",
+                "manifest": "artifacts.json",
+                "targetCount": 99,
+                "absolutePathCount": 0,
+                "expectedAbsolutePathCount": 0,
+                "passed": true,
+                "gateFailures": [],
+                "targets": []
+            })
+            .to_string(),
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .push(super::SmokeArtifactManifestEntry::new(
+                "validation",
+                "validation.json",
+                None,
+            ));
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("validation target count 99 does not match expected target count 1")
+            }),
+            "expected stale validation artifact failure, got {:?}",
             validation.gate_failures
         );
     }
