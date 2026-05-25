@@ -405,6 +405,8 @@ fn test_acton_reverse_replay_help() {
     for expected in [
         "Replay or mutate a StateFlowTx or corpus artifact and emit a diff",
         "Usage: acton reverse replay",
+        "--artifact-manifest <ARTIFACTS>",
+        "--target-id <TARGET_ID>",
         "--tx-index <TX_INDEX>",
         "--tx-hash <TX_HASH>",
         "--flip-body-bit <FLIP_BODY_BIT>",

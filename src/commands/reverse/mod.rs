@@ -74,9 +74,23 @@ pub enum ReverseCommand {
     #[command(about = "Replay or mutate a StateFlowTx or corpus artifact and emit a diff")]
     Replay {
         #[arg(
+            required_unless_present = "artifact_manifest",
+            conflicts_with = "artifact_manifest",
             help = "StateFlowTx JSON from `acton reverse retrace` or corpus JSON from `acton reverse collect`"
         )]
-        state_flow: PathBuf,
+        state_flow: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "ARTIFACTS",
+            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+        )]
+        artifact_manifest: Option<PathBuf>,
+        #[arg(
+            long,
+            requires = "artifact_manifest",
+            help = "Target id to select from an artifact manifest"
+        )]
+        target_id: Option<String>,
         #[arg(
             long,
             help = "Transaction index to replay when the input is a corpus artifact"
@@ -264,6 +278,8 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
         } => reverse_infer_cmd(corpus, output, pretty),
         ReverseCommand::Replay {
             state_flow,
+            artifact_manifest,
+            target_id,
             tx_index,
             tx_hash,
             flip_body_bit,
@@ -274,6 +290,8 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             pretty,
         } => reverse_replay_cmd(
             state_flow,
+            artifact_manifest,
+            target_id,
             tx_index,
             tx_hash,
             flip_body_bit,
@@ -391,7 +409,9 @@ fn reverse_infer_cmd(corpus: PathBuf, output: Option<PathBuf>, pretty: bool) -> 
 }
 
 fn reverse_replay_cmd(
-    state_flow: PathBuf,
+    state_flow: Option<PathBuf>,
+    artifact_manifest: Option<PathBuf>,
+    target_id: Option<String>,
     tx_index: Option<usize>,
     tx_hash: Option<String>,
     flip_body_bit: Option<u16>,
@@ -401,12 +421,27 @@ fn reverse_replay_cmd(
     output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
+    let state_flow =
+        replay_state_flow_input_path(state_flow, artifact_manifest, target_id.as_deref())?;
     let json = fs::read_to_string(&state_flow)
         .with_context(|| format!("failed to read {}", state_flow.display()))?;
     let flow = parse_replay_input(&json, &state_flow, tx_index, tx_hash.as_deref())?;
     let mutation = replay_mutation_from_args(flip_body_bit, body_boc64, set_body_uint)?;
     let diff = ton_stateflow::replay_state_flow_tx(&flow, mutation, ignore_chksig)?;
     write_json(&diff, output, pretty, "State-flow replay diff JSON")
+}
+
+fn replay_state_flow_input_path(
+    state_flow: Option<PathBuf>,
+    artifact_manifest: Option<PathBuf>,
+    target_id: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(manifest_path) = artifact_manifest {
+        let manifest = load_artifact_manifest(&manifest_path)?;
+        return replay_state_flow_from_manifest(&manifest, &manifest_path, target_id);
+    }
+
+    state_flow.context("StateFlowTx JSON or corpus JSON is required")
 }
 
 fn replay_mutation_from_args(
@@ -517,10 +552,7 @@ fn reverse_report_cmd(
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let report_artifacts = if let Some(manifest_path) = artifact_manifest {
-        let json = fs::read_to_string(&manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        let manifest: SmokeArtifactManifest = serde_json::from_str(&json)
-            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+        let manifest = load_artifact_manifest(&manifest_path)?;
         report_artifacts_from_manifest(&manifest, &manifest_path, target_id.as_deref())?
     } else {
         ReportArtifactInputs {
@@ -943,6 +975,13 @@ fn analysis_target_from_args(
     })
 }
 
+fn load_artifact_manifest(manifest_path: &Path) -> anyhow::Result<SmokeArtifactManifest> {
+    let json = fs::read_to_string(manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    serde_json::from_str(&json)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SmokeReplayMutation {
@@ -1215,6 +1254,40 @@ fn report_artifacts_from_manifest(
     manifest_path: &Path,
     target_id: Option<&str>,
 ) -> anyhow::Result<ReportArtifactInputs> {
+    ensure_supported_artifact_manifest(manifest, manifest_path)?;
+    let selected_target_id = select_manifest_target_id(manifest, manifest_path, target_id)?;
+
+    Ok(ReportArtifactInputs {
+        corpus: required_manifest_artifact_path(
+            manifest,
+            manifest_path,
+            &selected_target_id,
+            "corpus",
+        )?,
+        schema: required_manifest_artifact_path(
+            manifest,
+            manifest_path,
+            &selected_target_id,
+            "schema",
+        )?,
+        replays: manifest_artifact_paths(manifest, manifest_path, &selected_target_id, "replay"),
+    })
+}
+
+fn replay_state_flow_from_manifest(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    ensure_supported_artifact_manifest(manifest, manifest_path)?;
+    let selected_target_id = select_manifest_target_id(manifest, manifest_path, target_id)?;
+    required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")
+}
+
+fn ensure_supported_artifact_manifest(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         manifest.kind == "stateFlowArtifactManifest",
         "unsupported artifact manifest kind {} in {}",
@@ -1228,6 +1301,14 @@ fn report_artifacts_from_manifest(
         manifest_path.display()
     );
 
+    Ok(())
+}
+
+fn select_manifest_target_id(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+) -> anyhow::Result<String> {
     let target_ids = manifest_target_ids(manifest);
     let selected_target_id = match target_id {
         Some(target_id) => target_id.to_owned(),
@@ -1248,21 +1329,7 @@ fn report_artifacts_from_manifest(
         selected_target_id
     );
 
-    Ok(ReportArtifactInputs {
-        corpus: required_manifest_artifact_path(
-            manifest,
-            manifest_path,
-            &selected_target_id,
-            "corpus",
-        )?,
-        schema: required_manifest_artifact_path(
-            manifest,
-            manifest_path,
-            &selected_target_id,
-            "schema",
-        )?,
-        replays: manifest_artifact_paths(manifest, manifest_path, &selected_target_id, "replay"),
-    })
+    Ok(selected_target_id)
 }
 
 fn manifest_target_ids(manifest: &SmokeArtifactManifest) -> Vec<String> {
@@ -1720,6 +1787,33 @@ mod tests {
                 PathBuf::from("out/target-b/replay-probe-query_id-32-64.json")
             ]
         );
+    }
+
+    #[test]
+    fn replay_state_flow_from_manifest_selects_target_corpus() {
+        let manifest: super::SmokeArtifactManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "stateFlowArtifactManifest",
+            "summary": "out/summary.json",
+            "targetCount": 2,
+            "artifacts": [
+                {"kind": "runSummary", "path": "summary.json", "targetId": null},
+                {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
+                {"kind": "schema", "path": "target-a/schema.json", "targetId": "target-a"},
+                {"kind": "corpus", "path": "target-b/corpus.json", "targetId": "target-b"},
+                {"kind": "schema", "path": "target-b/schema.json", "targetId": "target-b"}
+            ]
+        }))
+        .expect("artifact manifest should deserialize");
+
+        let state_flow = super::replay_state_flow_from_manifest(
+            &manifest,
+            Path::new("out/artifacts.json"),
+            Some("target-b"),
+        )
+        .expect("target replay input should resolve");
+
+        assert_eq!(state_flow, PathBuf::from("out/target-b/corpus.json"));
     }
 
     #[test]
