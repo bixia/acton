@@ -424,6 +424,13 @@ assert(
   validationView.metrics.some(metric => metric.label === "Passed" && metric.value === "yes"),
   "expected artifact validation pass metric",
 )
+assert(
+  validationView.sections
+    .find(section => section.title === "Target Gate Failures")
+    ?.rows.some(row => row.label === "target-b" && row.value === "missing replay artifact") ===
+    true,
+  "expected artifact validation target failure rows",
+)
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
 

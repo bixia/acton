@@ -806,6 +806,7 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
 }
 
 function summarizeArtifactValidation(validation: StateFlowArtifactValidation): ArtifactSummary {
+  const targetGateFailureRows = validationTargetGateFailureRows(validation)
   return {
     title: "State Flow Artifact Validation",
     subtitle: validation.manifest,
@@ -827,6 +828,14 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
           ].join(" · "),
         })),
       },
+      ...(targetGateFailureRows.length > 0
+        ? [
+            {
+              title: "Target Gate Failures",
+              rows: targetGateFailureRows,
+            },
+          ]
+        : []),
       ...(validation.gateFailures.length > 0
         ? [
             {
@@ -855,6 +864,21 @@ function artifactManifestTargetRows(manifest: StateFlowArtifactManifest): readon
     value: `${artifacts.length} ${plural(artifacts.length, "artifact")}`,
     detail: artifactKindCoverage(artifacts),
   }))
+}
+
+function validationTargetGateFailureRows(
+  validation: StateFlowArtifactValidation,
+): readonly SummaryRow[] {
+  return validation.targets.flatMap(target =>
+    target.gateFailures.map(failure => ({
+      label: target.id,
+      value: failure,
+      detail: [
+        `${target.artifactCount} ${plural(target.artifactCount, "artifact")}`,
+        `${target.replayCount} ${plural(target.replayCount, "replay")}`,
+      ].join(" · "),
+    })),
+  )
 }
 
 function artifactKindCoverage(artifacts: readonly StateFlowArtifactManifestEntry[]): string {

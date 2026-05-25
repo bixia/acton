@@ -658,6 +658,12 @@ assert(
 const validationTargetRows = sectionRows(validationSummary, "Targets")
 assert(validationTargetRows[0]?.label === "target-a", "expected first validation target")
 assert(validationTargetRows[1]?.value === "failed", "expected failed validation target")
+const validationTargetGateRows = sectionRows(validationSummary, "Target Gate Failures")
+assert(validationTargetGateRows[0]?.label === "target-b", "expected failed validation target id")
+assert(
+  validationTargetGateRows[0]?.value === "missing replay artifact",
+  "expected validation target failure reason",
+)
 
 function sectionRows(
   summary: ReturnType<typeof summarizeStateFlowArtifact>,
