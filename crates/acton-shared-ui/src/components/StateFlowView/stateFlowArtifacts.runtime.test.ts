@@ -441,9 +441,9 @@ stateDiagram-v2
 \`\`\`
 
 ## Replay Diffs
-| Source tx | Mutation | Accepted |
-| --- | --- | --- |
-| \`tx-a\` | flip body bit 32 | true |
+| Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |
+| --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |
+| \`tx-a\` | flip body bit 32 | true | true | true | false | true | 4 | false | 0 | 1 | true |
 
 ## Unknown Fields
 - \`0x00000001\`:
@@ -800,6 +800,18 @@ assert(reportReplayDiffRows[0]?.value === "flip body bit 32", "expected report r
 assert(
   reportReplayDiffRows[0]?.detail?.includes("accepted true") === true,
   "expected report replay accepted detail",
+)
+assert(
+  reportReplayDiffRows[0]?.detail?.includes("data true") === true,
+  "expected report replay data hash detail",
+)
+assert(
+  reportReplayDiffRows[0]?.detail?.includes("balance delta 4") === true,
+  "expected report replay balance delta detail",
+)
+assert(
+  reportReplayDiffRows[0]?.detail?.includes("c5 true") === true,
+  "expected report replay c5 detail",
 )
 const reportUnknownRows = sectionRows(reportSummary, "Unknown Fields")
 assert(reportUnknownRows[0]?.label === "0x00000001", "expected report unknown opcode")

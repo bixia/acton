@@ -1219,9 +1219,13 @@ function reportReplayDiffRows(report: StateFlowReport): readonly SummaryRow[] {
       tableValueLabel("accepted", rowValue(row, "Accepted")),
       tableValueLabel("input", rowValue(row, "Input changed")),
       tableValueLabel("state", rowValue(row, "State changed")),
+      tableValueLabel("code", rowValue(row, "Code changed")),
+      tableValueLabel("data", rowValue(row, "Data changed")),
+      tableValueLabel("balance delta", rowValue(row, "Balance delta")),
       tableValueLabel("exit", rowValue(row, "Exit changed")),
       tableValueLabel("outbound delta", rowValue(row, "Outbound delta")),
       tableValueLabel("action delta", rowValue(row, "Action delta")),
+      tableValueLabel("c5", rowValue(row, "C5 changed")),
     ]
       .filter((value): value is string => value !== undefined)
       .join(" · "),
