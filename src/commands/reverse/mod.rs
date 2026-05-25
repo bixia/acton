@@ -2227,6 +2227,51 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
+    validate_state_flow_snapshot_evidence_keys(
+        value,
+        &["state", "pre"],
+        prefix,
+        "pre state",
+        gate_failures,
+    );
+    validate_state_flow_snapshot_evidence_keys(
+        value,
+        &["state", "post"],
+        prefix,
+        "post state",
+        gate_failures,
+    );
+}
+
+fn validate_state_flow_snapshot_evidence_keys(
+    value: &serde_json::Value,
+    path: &[&str],
+    prefix: &str,
+    label_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(snapshot) = json_path_value(value, path) else {
+        return;
+    };
+    for (label, path) in [
+        ("shard account BOC", &["shardAccountBoc64"][..]),
+        ("last transaction LT", &["lastTransLt"][..]),
+        ("last transaction hash", &["lastTransHash"][..]),
+        ("account address", &["accountAddress"][..]),
+        ("status", &["status"][..]),
+        ("balance nanotons", &["balanceNanotons"][..]),
+        ("code hash", &["codeHash"][..]),
+        ("data hash", &["dataHash"][..]),
+        ("code cell", &["codeCell"][..]),
+        ("data cell", &["dataCell"][..]),
+        ("frozen hash", &["frozenHash"][..]),
+    ] {
+        if !json_path_exists(snapshot, path) {
+            gate_failures.push(format!(
+                "{prefix} {label_prefix} missing {label} evidence key"
+            ));
+        }
+    }
 }
 
 fn validate_state_flow_replay_evidence_keys(
@@ -2298,14 +2343,19 @@ fn validate_state_flow_replay_evidence_keys(
 }
 
 fn json_path_exists(value: &serde_json::Value, path: &[&str]) -> bool {
+    json_path_value(value, path).is_some()
+}
+
+fn json_path_value<'a>(
+    value: &'a serde_json::Value,
+    path: &[&str],
+) -> Option<&'a serde_json::Value> {
     let mut current = value;
     for key in path {
-        let Some(next) = current.get(key) else {
-            return false;
-        };
+        let next = current.get(key)?;
         current = next;
     }
-    true
+    Some(current)
 }
 
 fn validate_report_artifact(
@@ -8018,6 +8068,41 @@ mod tests {
                 )
             }),
             "expected missing inbound opcode evidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_missing_post_state_data_hash_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["state"]["post"]
+            .as_object_mut()
+            .expect("post state should be an object")
+            .remove("dataHash");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json post state missing data hash evidence key",
+                )
+            }),
+            "expected missing post state data hash key failure, got {:?}",
             validation.gate_failures
         );
     }
