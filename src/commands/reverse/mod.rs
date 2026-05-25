@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -2270,6 +2270,59 @@ fn validate_corpus_internal_counts(corpus: &StateFlowCorpus, gate_failures: &mut
         corpus.retraced_count + corpus.failure_count,
         gate_failures,
     );
+    validate_corpus_opcode_summary(corpus, gate_failures);
+}
+
+fn validate_corpus_opcode_summary(corpus: &StateFlowCorpus, gate_failures: &mut Vec<String>) {
+    let expected_by_opcode = expected_corpus_opcode_summary(corpus);
+    let mut seen_opcodes = HashSet::<Option<String>>::new();
+    for summary in &corpus.opcode_summary {
+        let opcode = report_opcode_label(summary.opcode.as_deref());
+        let expected_tx_hashes = expected_by_opcode
+            .get(&summary.opcode)
+            .cloned()
+            .unwrap_or_default();
+        if !seen_opcodes.insert(summary.opcode.clone()) {
+            gate_failures.push(format!("corpus opcode summary for {opcode} is duplicated"));
+        }
+        validate_evidence_value_field(
+            "corpus opcode summary count",
+            summary.count,
+            "transaction count",
+            expected_tx_hashes.len(),
+            &opcode,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "corpus opcode summary tx hashes",
+            &report_sample_list(&summary.tx_hashes),
+            "transaction tx hashes",
+            &report_sample_list(&expected_tx_hashes),
+            &opcode,
+            gate_failures,
+        );
+    }
+    for opcode in expected_by_opcode.keys() {
+        if !seen_opcodes.contains(opcode) {
+            gate_failures.push(format!(
+                "corpus opcode summary for {} is missing",
+                report_opcode_label(opcode.as_deref())
+            ));
+        }
+    }
+}
+
+fn expected_corpus_opcode_summary(
+    corpus: &StateFlowCorpus,
+) -> BTreeMap<Option<String>, Vec<String>> {
+    let mut by_opcode = BTreeMap::<Option<String>, Vec<String>>::new();
+    for tx in &corpus.transactions {
+        by_opcode
+            .entry(tx.inbound.opcode.clone())
+            .or_default()
+            .push(tx.query_hash.clone());
+    }
+    by_opcode
 }
 
 fn validate_schema_corpus_membership(
@@ -8528,6 +8581,43 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_corpus_opcode_summary_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["opcodeSummary"] = serde_json::json!([{
+            "opcode": "0x00000002",
+            "count": 9,
+            "txHashes": ["foreign-tx"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: corpus opcode summary count 9 for 0x00000002 does not match transaction count 0",
+                )
+            }),
+            "expected corpus opcode summary mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_replay_outside_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -9005,7 +9095,11 @@ mod tests {
             "sourceTxCount": 2,
             "retracedCount": 2,
             "failureCount": 0,
-            "opcodeSummary": [],
+            "opcodeSummary": [{
+                "opcode": "0x00000001",
+                "count": 2,
+                "txHashes": ["tx-a", "tx-b"]
+            }],
             "transactions": [
                 sample_state_flow_json("tx-a"),
                 sample_state_flow_json("tx-b")
