@@ -2214,11 +2214,20 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
     gate_failures: &mut Vec<String>,
 ) {
     for (label, path) in [
+        ("schema version", &["schemaVersion"][..]),
+        ("network", &["network"][..]),
+        ("query hash", &["queryHash"][..]),
+        ("transaction", &["transaction"][..]),
+        ("replay", &["replay"][..]),
+        ("state", &["state"][..]),
         ("pre state", &["state", "pre"][..]),
         ("post state", &["state", "post"][..]),
+        ("inbound", &["inbound"][..]),
         ("inbound opcode", &["inbound", "opcode"][..]),
         ("inbound body", &["inbound", "body"][..]),
         ("outbound", &["outbound"][..]),
+        ("compute", &["compute"][..]),
+        ("money", &["money"][..]),
         ("vm trace", &["vmTrace"][..]),
         ("executor trace", &["executorTrace"][..]),
         ("c5", &["c5"][..]),
@@ -2228,6 +2237,10 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
+    validate_transaction_identity_evidence_keys(value, prefix, gate_failures);
+    validate_replay_summary_evidence_keys(value, prefix, gate_failures);
+    validate_compute_evidence_keys(value, prefix, gate_failures);
+    validate_money_evidence_keys(value, prefix, gate_failures);
     validate_state_flow_snapshot_evidence_keys(
         value,
         &["state", "pre"],
@@ -2267,6 +2280,90 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
         gate_failures,
     );
     validate_out_action_evidence_keys(value, prefix, gate_failures);
+}
+
+fn validate_transaction_identity_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(transaction) = value.get("transaction") else {
+        return;
+    };
+    for (label, path) in [
+        ("LT", &["lt"][..]),
+        ("utime", &["utime"][..]),
+        ("account", &["account"][..]),
+        ("state update hash ok", &["stateUpdateHashOk"][..]),
+        ("transaction BOC", &["transactionBoc64"][..]),
+    ] {
+        if !json_path_exists(transaction, path) {
+            gate_failures.push(format!("{prefix} transaction missing {label} evidence key"));
+        }
+    }
+}
+
+fn validate_replay_summary_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(replay) = value.get("replay") else {
+        return;
+    };
+    for (label, path) in [
+        ("masterchain seqno", &["mcSeqno"][..]),
+        ("random seed", &["randSeedHex"][..]),
+        ("replayed previous tx count", &["replayedPrevTxCount"][..]),
+        ("block config BOC", &["blockConfigBoc64"][..]),
+        ("libraries BOC", &["libsBoc64"][..]),
+    ] {
+        if !json_path_exists(replay, path) {
+            gate_failures.push(format!("{prefix} replay missing {label} evidence key"));
+        }
+    }
+}
+
+fn validate_compute_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(compute) = value.get("compute") else {
+        return;
+    };
+    for (label, path) in [
+        ("skipped", &["skipped"][..]),
+        ("success", &["success"][..]),
+        ("exit code", &["exitCode"][..]),
+        ("VM steps", &["vmSteps"][..]),
+        ("gas used", &["gasUsed"][..]),
+        ("gas fees", &["gasFees"][..]),
+    ] {
+        if !json_path_exists(compute, path) {
+            gate_failures.push(format!("{prefix} compute missing {label} evidence key"));
+        }
+    }
+}
+
+fn validate_money_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(money) = value.get("money") else {
+        return;
+    };
+    for (label, path) in [
+        ("balance before", &["balanceBefore"][..]),
+        ("sent total", &["sentTotal"][..]),
+        ("total fees", &["totalFees"][..]),
+        ("balance after", &["balanceAfter"][..]),
+    ] {
+        if !json_path_exists(money, path) {
+            gate_failures.push(format!("{prefix} money missing {label} evidence key"));
+        }
+    }
 }
 
 fn validate_message_artifact_evidence_keys(
@@ -8319,6 +8416,41 @@ mod tests {
                 )
             }),
             "expected missing VM trace line count key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_missing_compute_success_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["compute"]
+            .as_object_mut()
+            .expect("compute should be an object")
+            .remove("success");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json compute missing success evidence key",
+                )
+            }),
+            "expected missing compute success key failure, got {:?}",
             validation.gate_failures
         );
     }
