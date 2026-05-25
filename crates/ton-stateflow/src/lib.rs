@@ -71,7 +71,36 @@ pub struct StateFlowSchemaReport {
     pub network: String,
     pub address: String,
     pub transaction_count: usize,
+    #[serde(default)]
+    pub state_machine: StateMachineGraph,
+    #[serde(default)]
+    pub audit_signals: Vec<AuditSignal>,
     pub opcode_candidates: Vec<OpcodeSchemaCandidate>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateMachineGraph {
+    pub edges: Vec<StateMachineEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateMachineEdge {
+    pub from_status: String,
+    pub to_status: String,
+    pub opcode: Option<String>,
+    pub count: usize,
+    pub examples: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditSignal {
+    pub kind: String,
+    pub severity: String,
+    pub description: String,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,16 +387,19 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
             .or_default()
             .push(tx);
     }
+    let opcode_candidates: Vec<_> = by_opcode
+        .into_iter()
+        .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
+        .collect();
 
     StateFlowSchemaReport {
         schema_version: STATE_FLOW_SCHEMA_VERSION,
         network: corpus.network.clone(),
         address: corpus.address.clone(),
         transaction_count: corpus.transactions.len(),
-        opcode_candidates: by_opcode
-            .into_iter()
-            .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
-            .collect(),
+        state_machine: state_machine_graph(&corpus.transactions),
+        audit_signals: infer_schema_audit_signals(corpus, &opcode_candidates),
+        opcode_candidates,
     }
 }
 
@@ -596,15 +628,28 @@ pub fn render_state_flow_report(
 
 fn render_state_machine(schema: &StateFlowSchemaReport) -> Vec<String> {
     let mut lines = Vec::new();
-    for candidate in &schema.opcode_candidates {
-        let opcode = candidate.opcode.as_deref().unwrap_or("<none>");
-        for transition in &candidate.state_transitions {
+    if schema.state_machine.edges.is_empty() {
+        for candidate in &schema.opcode_candidates {
+            let opcode = candidate.opcode.as_deref().unwrap_or("<none>");
+            for transition in &candidate.state_transitions {
+                lines.push(format!(
+                    "{} --> {}: {} ({})",
+                    mermaid_state_id(&transition.from_status),
+                    mermaid_state_id(&transition.to_status),
+                    mermaid_label(opcode),
+                    transition.count,
+                ));
+            }
+        }
+    } else {
+        for edge in &schema.state_machine.edges {
+            let opcode = edge.opcode.as_deref().unwrap_or("<none>");
             lines.push(format!(
                 "{} --> {}: {} ({})",
-                mermaid_state_id(&transition.from_status),
-                mermaid_state_id(&transition.to_status),
+                mermaid_state_id(&edge.from_status),
+                mermaid_state_id(&edge.to_status),
                 mermaid_label(opcode),
-                transition.count,
+                edge.count,
             ));
         }
     }
@@ -618,45 +663,15 @@ fn infer_risk_points(
     schema: &StateFlowSchemaReport,
     replays: &[StateFlowReplayDiff],
 ) -> Vec<String> {
-    let mut risks = Vec::new();
-    if corpus.failure_count > 0 {
-        risks.push(format!(
-            "{} transaction(s) failed during collection and are absent from inference.",
-            corpus.failure_count
-        ));
-    }
-
-    for candidate in &schema.opcode_candidates {
-        let opcode = markdown_code_opt(candidate.opcode.as_deref());
-        if candidate.confidence == "low" {
-            risks.push(format!(
-                "Low-confidence schema candidate for opcode {opcode}; body shape varied or evidence is sparse."
-            ));
-        }
-        if !candidate.unknown_fields.is_empty() {
-            risks.push(format!(
-                "Unknown fields remain for opcode {opcode}: {}.",
-                markdown_escape(&candidate.unknown_fields.join("; "))
-            ));
-        }
-        if candidate.storage.data_hash_changed_count > 0 {
-            risks.push(format!(
-                "Opcode {opcode} changed storage data hash in {} observed transaction(s).",
-                candidate.storage.data_hash_changed_count
-            ));
-        }
-        if candidate.storage.code_hash_changed_count > 0 {
-            risks.push(format!(
-                "Opcode {opcode} changed code hash in {} observed transaction(s).",
-                candidate.storage.code_hash_changed_count
-            ));
-        }
-        if !candidate.outbound_effects.is_empty() || !candidate.out_actions.is_empty() {
-            risks.push(format!(
-                "Opcode {opcode} produced outbound effects or c5 actions; payload fields still require TL-B recovery."
-            ));
-        }
-    }
+    let schema_signals = if schema.audit_signals.is_empty() {
+        infer_schema_audit_signals(corpus, &schema.opcode_candidates)
+    } else {
+        schema.audit_signals.clone()
+    };
+    let mut risks: Vec<_> = schema_signals
+        .iter()
+        .map(format_audit_signal_risk)
+        .collect();
 
     for replay in replays {
         let mutation = markdown_escape(&mutation_label(&replay.mutation));
@@ -686,6 +701,154 @@ fn infer_risk_points(
     risks.sort();
     risks.dedup();
     risks
+}
+
+fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
+    let mut by_edge = BTreeMap::<(String, String, Option<String>), (usize, Vec<String>)>::new();
+    for tx in transactions {
+        let key = (
+            tx.state.pre.status.clone(),
+            tx.state.post.status.clone(),
+            tx.inbound.opcode.clone(),
+        );
+        let entry = by_edge.entry(key).or_default();
+        entry.0 += 1;
+        entry.1.push(tx.query_hash.clone());
+    }
+
+    StateMachineGraph {
+        edges: by_edge
+            .into_iter()
+            .map(
+                |((from_status, to_status, opcode), (count, examples))| StateMachineEdge {
+                    from_status,
+                    to_status,
+                    opcode,
+                    count,
+                    examples,
+                },
+            )
+            .collect(),
+    }
+}
+
+fn infer_schema_audit_signals(
+    corpus: &StateFlowCorpus,
+    candidates: &[OpcodeSchemaCandidate],
+) -> Vec<AuditSignal> {
+    let mut signals = Vec::new();
+    if corpus.failure_count > 0 {
+        signals.push(AuditSignal {
+            kind: "collection-failure".to_owned(),
+            severity: "medium".to_owned(),
+            description: format!(
+                "{} transaction(s) failed during collection and are absent from inference.",
+                corpus.failure_count
+            ),
+            evidence: corpus
+                .failures
+                .iter()
+                .map(|failure| failure.hash.clone())
+                .collect(),
+        });
+    }
+
+    for candidate in candidates {
+        let opcode = plain_opcode_label(candidate.opcode.as_deref());
+        if candidate.confidence == "low" {
+            signals.push(AuditSignal {
+                kind: "low-confidence-schema".to_owned(),
+                severity: "medium".to_owned(),
+                description: format!(
+                    "Low-confidence schema candidate for opcode {opcode}; body shape varied or evidence is sparse."
+                ),
+                evidence: candidate.examples.clone(),
+            });
+        }
+        if !candidate.unknown_fields.is_empty() {
+            signals.push(AuditSignal {
+                kind: "unknown-fields".to_owned(),
+                severity: "medium".to_owned(),
+                description: format!(
+                    "Unknown fields remain for opcode {opcode}: {}.",
+                    candidate.unknown_fields.join("; ")
+                ),
+                evidence: candidate.examples.clone(),
+            });
+        }
+        if candidate.storage.data_hash_changed_count > 0 {
+            signals.push(AuditSignal {
+                kind: "storage-data-hash-change".to_owned(),
+                severity: "medium".to_owned(),
+                description: format!(
+                    "Opcode {opcode} changed storage data hash in {} observed transaction(s).",
+                    candidate.storage.data_hash_changed_count
+                ),
+                evidence: candidate.examples.clone(),
+            });
+        }
+        if candidate.storage.code_hash_changed_count > 0 {
+            signals.push(AuditSignal {
+                kind: "storage-code-hash-change".to_owned(),
+                severity: "high".to_owned(),
+                description: format!(
+                    "Opcode {opcode} changed code hash in {} observed transaction(s).",
+                    candidate.storage.code_hash_changed_count
+                ),
+                evidence: candidate.examples.clone(),
+            });
+        }
+        if !candidate.outbound_effects.is_empty() || !candidate.out_actions.is_empty() {
+            signals.push(AuditSignal {
+                kind: "outbound-or-action-effects".to_owned(),
+                severity: "medium".to_owned(),
+                description: format!(
+                    "Opcode {opcode} produced outbound effects or c5 actions; payload fields still require TL-B recovery."
+                ),
+                evidence: candidate.examples.clone(),
+            });
+        }
+    }
+
+    signals.sort_by(|left, right| {
+        (
+            left.severity.as_str(),
+            left.kind.as_str(),
+            left.description.as_str(),
+        )
+            .cmp(&(
+                right.severity.as_str(),
+                right.kind.as_str(),
+                right.description.as_str(),
+            ))
+    });
+    signals.dedup_by(|left, right| {
+        left.kind == right.kind
+            && left.severity == right.severity
+            && left.description == right.description
+            && left.evidence == right.evidence
+    });
+    signals
+}
+
+fn format_audit_signal_risk(signal: &AuditSignal) -> String {
+    if signal.evidence.is_empty() {
+        return markdown_escape(&signal.description);
+    }
+    format!(
+        "{} Evidence: {}.",
+        markdown_escape(&signal.description),
+        signal
+            .evidence
+            .iter()
+            .map(|item| format!("`{}`", markdown_escape(item)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn plain_opcode_label(opcode: Option<&str>) -> String {
+    opcode.unwrap_or("<none>").to_owned()
 }
 
 fn mermaid_state_id(value: &str) -> String {
@@ -1610,6 +1773,29 @@ mod tests {
                 .iter()
                 .any(|field| field.contains("TL-B"))
         );
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["stateMachine"]["edges"][0]["fromStatus"], "none");
+        assert_eq!(json["stateMachine"]["edges"][0]["toStatus"], "active");
+        assert_eq!(json["stateMachine"]["edges"][0]["opcode"], "0x00000001");
+        assert_eq!(json["stateMachine"]["edges"][0]["count"], 2);
+        assert_eq!(
+            json["stateMachine"]["edges"][0]["examples"],
+            serde_json::json!(["tx-a", "tx-b"])
+        );
+        let audit_signals = json["auditSignals"]
+            .as_array()
+            .expect("schema report should export structured audit signals");
+        assert!(
+            audit_signals
+                .iter()
+                .any(|signal| signal["kind"] == "unknown-fields")
+        );
+        assert!(
+            audit_signals
+                .iter()
+                .any(|signal| signal["kind"] == "storage-data-hash-change")
+        );
     }
 
     #[test]
@@ -1704,7 +1890,8 @@ mod tests {
         let report = super::render_state_flow_report(&corpus, &schema, &replays);
 
         assert!(report.contains("## Risk Points"));
-        assert!(report.contains("Unknown fields remain for opcode `0x00000001`"));
+        assert!(report.contains("Unknown fields remain for opcode 0x00000001"));
+        assert!(report.contains("Evidence: `tx-a`."));
         assert!(report.contains("Mutation `flip body bit 32` changed state for `tx-a`"));
     }
 
@@ -1741,6 +1928,9 @@ mod tests {
             report.opcode_candidates[0].storage.post_data_hashes.len(),
             0
         );
+        let serialized = serde_json::to_value(&report).unwrap();
+        assert_eq!(serialized["stateMachine"]["edges"], serde_json::json!([]));
+        assert_eq!(serialized["auditSignals"], serde_json::json!([]));
     }
 
     fn sample_flow(query_hash: &str, opcode: Option<&str>) -> StateFlowTx {

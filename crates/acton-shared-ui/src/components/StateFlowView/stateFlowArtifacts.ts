@@ -77,7 +77,28 @@ export interface StateFlowSchemaReport {
   readonly network: string
   readonly address: string
   readonly transactionCount: number
+  readonly stateMachine?: StateMachineGraph | null
+  readonly auditSignals?: readonly AuditSignal[] | null
   readonly opcodeCandidates: readonly OpcodeSchemaCandidate[]
+}
+
+export interface StateMachineGraph {
+  readonly edges: readonly StateMachineEdge[]
+}
+
+export interface StateMachineEdge {
+  readonly fromStatus: string
+  readonly toStatus: string
+  readonly opcode?: string | null
+  readonly count: number
+  readonly examples: readonly string[]
+}
+
+export interface AuditSignal {
+  readonly kind: string
+  readonly severity: string
+  readonly description: string
+  readonly evidence: readonly string[]
 }
 
 export interface StateFlowReplayDiff {
@@ -345,6 +366,8 @@ function summarizeCorpus(corpus: StateFlowCorpus): ArtifactSummary {
 }
 
 function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
+  const stateEdges = schema.stateMachine?.edges ?? []
+  const auditSignals = schema.auditSignals ?? []
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -352,6 +375,8 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Network", value: schema.network},
       {label: "Transactions", value: schema.transactionCount.toString()},
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
+      {label: "State Edges", value: stateEdges.length.toString()},
+      {label: "Audit Signals", value: auditSignals.length.toString()},
     ],
     sections: [
       {
@@ -367,6 +392,30 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
           ].join(" · "),
         })),
       },
+      ...(stateEdges.length > 0
+        ? [
+            {
+              title: "State Machine",
+              rows: stateEdges.map(edge => ({
+                label: `${edge.fromStatus} -> ${edge.toStatus}`,
+                value: `${edge.opcode ?? "<none>"} (${edge.count})`,
+                detail: edge.examples.map(hash => shortHash(hash)).join(", "),
+              })),
+            },
+          ]
+        : []),
+      ...(auditSignals.length > 0
+        ? [
+            {
+              title: "Audit Signals",
+              rows: auditSignals.map(signal => ({
+                label: `${signal.severity} ${signal.kind}`,
+                value: signal.description,
+                detail: signal.evidence.map(hash => shortHash(hash)).join(", "),
+              })),
+            },
+          ]
+        : []),
     ],
   }
 }

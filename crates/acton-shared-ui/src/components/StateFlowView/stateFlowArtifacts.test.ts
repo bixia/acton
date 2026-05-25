@@ -86,6 +86,25 @@ const schema = {
   network: "mainnet",
   address: "account",
   transactionCount: 1,
+  stateMachine: {
+    edges: [
+      {
+        fromStatus: "active",
+        toStatus: "active",
+        opcode: "0x00000001",
+        count: 1,
+        examples: ["tx-hash"],
+      },
+    ],
+  },
+  auditSignals: [
+    {
+      kind: "unknown-fields",
+      severity: "medium",
+      description: "Unknown fields remain for opcode 0x00000001.",
+      evidence: ["tx-hash"],
+    },
+  ],
   opcodeCandidates: [
     {
       opcode: "0x00000001",
@@ -161,6 +180,14 @@ const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.str
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("storage balance -2") === true,
   "expected schema summary to include storage evidence",
+)
+assert(
+  schemaSummary.metrics.some(metric => metric.label === "State Edges" && metric.value === "1"),
+  "expected schema summary to include state machine edge count",
+)
+assert(
+  schemaSummary.sections.some(section => section.title === "Audit Signals"),
+  "expected schema summary to include audit signals",
 )
 assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
 assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
