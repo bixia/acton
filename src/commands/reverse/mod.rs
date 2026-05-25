@@ -2017,6 +2017,27 @@ fn validate_manifest_target_content_matches_summary(
             target.retraced_count,
             gate_failures,
         );
+        validate_target_usize_field(
+            "schema opcode candidate count",
+            schema.opcode_candidates.len(),
+            "summary opcode candidate count",
+            target.opcode_candidate_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "schema state edge count",
+            schema.state_machine.edges.len(),
+            "summary state edge count",
+            target.state_edge_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "schema audit signal count",
+            schema.audit_signals.len(),
+            "summary audit signal count",
+            target.audit_signal_count,
+            gate_failures,
+        );
         validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
     }
 }
@@ -2942,6 +2963,45 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_metric_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "network": "mainnet",
+                "address": "addr",
+                "transactionCount": 2,
+                "stateMachine": {"edges": []},
+                "auditSignals": [],
+                "opcodeCandidates": []
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: schema opcode candidate count 0 does not match summary opcode candidate count 1",
+                )
+            }),
+            "expected schema metric mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_evidence_outside_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -3350,9 +3410,52 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
-                "stateMachine": {"edges": []},
-                "auditSignals": [],
-                "opcodeCandidates": []
+                "stateMachine": {
+                    "edges": [{
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "opcode": "0x00000001",
+                        "count": 2,
+                        "examples": ["tx-a", "tx-b"]
+                    }]
+                },
+                "auditSignals": [{
+                    "kind": "unknown-fields",
+                    "severity": "info",
+                    "description": "Unknown fields remain.",
+                    "evidence": ["tx-a"]
+                }],
+                "opcodeCandidates": [{
+                    "opcode": "0x00000001",
+                    "count": 2,
+                    "examples": ["tx-a", "tx-b"],
+                    "evidence": [{
+                        "txHash": "tx-a",
+                        "inboundBodyHash": "body",
+                        "inboundBodyBits": 32,
+                        "inboundBodyRefs": 0,
+                        "fromStatus": "none",
+                        "toStatus": "active",
+                        "preDataHash": null,
+                        "postDataHash": null,
+                        "preCodeHash": null,
+                        "postCodeHash": null,
+                        "outboundKinds": [],
+                        "outActionKinds": []
+                    }],
+                    "inboundBody": {
+                        "minBits": 32,
+                        "maxBits": 32,
+                        "minRefs": 0,
+                        "maxRefs": 0,
+                        "bodyHashes": []
+                    },
+                    "stateTransitions": [],
+                    "outboundEffects": [],
+                    "outActions": [],
+                    "confidence": "medium",
+                    "unknownFields": []
+                }]
             })
             .to_string(),
         );
