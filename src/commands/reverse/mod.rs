@@ -1969,12 +1969,19 @@ fn validate_state_flow_replay_evidence_keys(
         ("source query hash", &["sourceQueryHash"][..]),
         ("mutation", &["mutation"][..]),
         ("ignore chksig", &["ignoreChksig"][..]),
+        ("baseline accepted", &["baseline", "accepted"][..]),
         ("baseline state", &["baseline", "state"][..]),
+        (
+            "baseline inbound opcode",
+            &["baseline", "inbound", "opcode"][..],
+        ),
         (
             "baseline inbound body",
             &["baseline", "inbound", "body"][..],
         ),
         ("baseline outbound", &["baseline", "outbound"][..]),
+        ("baseline compute", &["baseline", "compute"][..]),
+        ("baseline money", &["baseline", "money"][..]),
         ("baseline c5", &["baseline", "c5"][..]),
         ("baseline out actions", &["baseline", "outActions"][..]),
         ("baseline VM trace", &["baseline", "vmTrace"][..]),
@@ -1983,9 +1990,16 @@ fn validate_state_flow_replay_evidence_keys(
             &["baseline", "executorTrace"][..],
         ),
         ("baseline error", &["baseline", "error"][..]),
+        ("replay accepted", &["replay", "accepted"][..]),
         ("replay state", &["replay", "state"][..]),
+        (
+            "replay inbound opcode",
+            &["replay", "inbound", "opcode"][..],
+        ),
         ("replay inbound body", &["replay", "inbound", "body"][..]),
         ("replay outbound", &["replay", "outbound"][..]),
+        ("replay compute", &["replay", "compute"][..]),
+        ("replay money", &["replay", "money"][..]),
         ("replay c5", &["replay", "c5"][..]),
         ("replay out actions", &["replay", "outActions"][..]),
         ("replay VM trace", &["replay", "vmTrace"][..]),
@@ -9945,6 +9959,45 @@ mod tests {
                 )
             }),
             "expected missing replay baseline c5 key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_baseline_compute_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["baseline"]
+            .as_object_mut()
+            .expect("baseline should be an object")
+            .remove("compute");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json missing baseline compute evidence key",
+                )
+            }),
+            "expected missing replay baseline compute key failure, got {:?}",
             validation.gate_failures
         );
     }
