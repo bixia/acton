@@ -2218,6 +2218,7 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
         ("post state", &["state", "post"][..]),
         ("inbound opcode", &["inbound", "opcode"][..]),
         ("inbound body", &["inbound", "body"][..]),
+        ("outbound", &["outbound"][..]),
         ("vm trace", &["vmTrace"][..]),
         ("executor trace", &["executorTrace"][..]),
         ("c5", &["c5"][..]),
@@ -2241,6 +2242,80 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
         "post state",
         gate_failures,
     );
+    if let Some(message) = value.get("inbound") {
+        validate_message_artifact_evidence_keys(message, prefix, "inbound", gate_failures);
+    }
+    if let Some(outbound_messages) = value.get("outbound").and_then(|value| value.as_array()) {
+        for (index, message) in outbound_messages.iter().enumerate() {
+            validate_message_artifact_evidence_keys(
+                message,
+                prefix,
+                &format!("outbound[{index}]"),
+                gate_failures,
+            );
+        }
+    }
+    if matches!(value.get("c5"), Some(serde_json::Value::Object(_))) {
+        validate_cell_artifact_evidence_keys(value, &["c5"], prefix, "c5", gate_failures);
+    }
+}
+
+fn validate_message_artifact_evidence_keys(
+    message: &serde_json::Value,
+    prefix: &str,
+    label_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    for (label, path) in [
+        ("direction", &["direction"][..]),
+        ("index", &["index"][..]),
+        ("kind", &["kind"][..]),
+        ("src", &["src"][..]),
+        ("dst", &["dst"][..]),
+        ("value nanotons", &["valueNanotons"][..]),
+        ("bounced", &["bounced"][..]),
+        ("bounce", &["bounce"][..]),
+        ("opcode", &["opcode"][..]),
+        ("message BOC", &["messageBoc64"][..]),
+        ("body", &["body"][..]),
+    ] {
+        if !json_path_exists(message, path) {
+            gate_failures.push(format!(
+                "{prefix} {label_prefix} missing {label} evidence key"
+            ));
+        }
+    }
+    validate_cell_artifact_evidence_keys(
+        message,
+        &["body"],
+        prefix,
+        &format!("{label_prefix} body"),
+        gate_failures,
+    );
+}
+
+fn validate_cell_artifact_evidence_keys(
+    value: &serde_json::Value,
+    path: &[&str],
+    prefix: &str,
+    label_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(cell) = json_path_value(value, path) else {
+        return;
+    };
+    for (label, path) in [
+        ("BOC", &["boc64"][..]),
+        ("hash", &["hash"][..]),
+        ("bits", &["bits"][..]),
+        ("refs", &["refs"][..]),
+    ] {
+        if !json_path_exists(cell, path) {
+            gate_failures.push(format!(
+                "{prefix} {label_prefix} missing {label} evidence key"
+            ));
+        }
+    }
 }
 
 fn validate_state_flow_snapshot_evidence_keys(
@@ -8068,6 +8143,41 @@ mod tests {
                 )
             }),
             "expected missing inbound opcode evidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_missing_inbound_body_hash_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"]["body"]
+            .as_object_mut()
+            .expect("inbound body should be an object")
+            .remove("hash");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json inbound body missing hash evidence key",
+                )
+            }),
+            "expected missing inbound body hash key failure, got {:?}",
             validation.gate_failures
         );
     }
