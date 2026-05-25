@@ -905,23 +905,29 @@ pub fn render_state_flow_report(
     } else {
         writeln!(
             report,
-            "| Source tx | Mutation | Accepted | Input changed | State changed | Exit changed | Outbound delta | Action delta |"
+            "| Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |"
         )
         .ok();
         writeln!(
             report,
-            "| --- | --- | --- | --- | --- | --- | ---: | ---: |"
+            "| --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
         )
         .ok();
         for replay in replays {
             writeln!(
                 report,
-                "| `{}` | {} | {} | {} | {} | {} | {} | {} |",
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 replay.source_query_hash,
                 markdown_escape(&mutation_label(&replay.mutation)),
                 replay.diff.replay_accepted,
                 replay.diff.input_changed,
                 format_optional_bool(replay.diff.state_changed),
+                format_optional_bool(replay.diff.code_hash_changed),
+                format_optional_bool(replay.diff.data_hash_changed),
+                replay
+                    .diff
+                    .balance_delta_diff
+                    .map_or("n/a".to_owned(), |value| value.to_string()),
                 format_optional_bool(replay.diff.exit_code_changed),
                 replay
                     .diff
@@ -931,6 +937,7 @@ pub fn render_state_flow_report(
                     .diff
                     .action_count_delta
                     .map_or("n/a".to_owned(), |value| value.to_string()),
+                format_optional_bool(replay.diff.c5_changed),
             )
             .ok();
         }
@@ -3371,6 +3378,10 @@ mod tests {
         let report = super::render_state_flow_report(&corpus, &schema, &replays);
 
         assert!(report.contains("- Replay diffs: 1"));
+        assert!(report.contains("| Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |"));
+        assert!(report.contains(
+            "| `tx-a` | flip body bit 32 | true | true | true | false | false | 0 | false | 0 | 0 | false |"
+        ));
         assert!(report.contains("## Risk Points"));
         assert!(report.contains("Unknown fields remain for opcode 0x00000001"));
         assert!(report.contains("Evidence: `tx-a`."));
