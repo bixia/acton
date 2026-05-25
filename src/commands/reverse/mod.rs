@@ -1758,7 +1758,7 @@ fn validate_manifest_artifact_content(
 ) {
     match artifact.kind.as_str() {
         "runSummary" => validate_json_artifact::<SmokeRunSummary>(path, artifact, gate_failures),
-        "corpus" => validate_json_artifact::<StateFlowCorpus>(path, artifact, gate_failures),
+        "corpus" => validate_state_flow_corpus_artifact(path, artifact, gate_failures),
         "schema" => validate_json_artifact::<StateFlowSchemaReport>(path, artifact, gate_failures),
         "transaction" => validate_state_flow_tx_artifact(path, artifact, gate_failures),
         "replay" => validate_state_flow_replay_artifact(path, artifact, gate_failures),
@@ -1880,6 +1880,34 @@ fn validate_json_artifact<T>(
     }
 }
 
+fn validate_state_flow_corpus_artifact(
+    path: &Path,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    match fs::read_to_string(path) {
+        Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
+            Ok(value) => {
+                validate_state_flow_corpus_evidence_keys(&value, artifact, gate_failures);
+                if let Err(err) = serde_json::from_value::<StateFlowCorpus>(value) {
+                    gate_failures.push(format!(
+                        "invalid {} artifact {}: {err}",
+                        artifact.kind, artifact.path
+                    ));
+                }
+            }
+            Err(err) => gate_failures.push(format!(
+                "invalid {} artifact {}: {err}",
+                artifact.kind, artifact.path
+            )),
+        },
+        Err(err) => gate_failures.push(format!(
+            "failed to read {} artifact {}: {err}",
+            artifact.kind, artifact.path
+        )),
+    }
+}
+
 fn validate_state_flow_tx_artifact(
     path: &Path,
     artifact: &SmokeArtifactManifestEntry,
@@ -1936,9 +1964,38 @@ fn validate_state_flow_replay_artifact(
     }
 }
 
+fn validate_state_flow_corpus_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(transactions) = value.get("transactions").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, transaction) in transactions.iter().enumerate() {
+        validate_state_flow_tx_evidence_keys_with_prefix(
+            transaction,
+            &format!("corpus artifact {} transaction[{index}]", artifact.path),
+            gate_failures,
+        );
+    }
+}
+
 fn validate_state_flow_tx_evidence_keys(
     value: &serde_json::Value,
     artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_state_flow_tx_evidence_keys_with_prefix(
+        value,
+        &format!("transaction artifact {}", artifact.path),
+        gate_failures,
+    );
+}
+
+fn validate_state_flow_tx_evidence_keys_with_prefix(
+    value: &serde_json::Value,
+    prefix: &str,
     gate_failures: &mut Vec<String>,
 ) {
     for (label, path) in [
@@ -1952,10 +2009,7 @@ fn validate_state_flow_tx_evidence_keys(
         ("out actions", &["outActions"][..]),
     ] {
         if !json_path_exists(value, path) {
-            gate_failures.push(format!(
-                "transaction artifact {} missing {label} evidence key",
-                artifact.path
-            ));
+            gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
 }
@@ -7516,6 +7570,45 @@ mod tests {
                 )
             }),
             "expected missing inbound opcode evidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_transaction_missing_c5_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let corpus_path = temp_dir.path().join("target-a/corpus.json");
+        let mut corpus: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&corpus_path).expect("corpus artifact should be readable"),
+        )
+        .expect("corpus artifact should parse");
+        corpus["transactions"][0]
+            .as_object_mut()
+            .expect("corpus transaction should be an object")
+            .remove("c5");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "corpus artifact target-a/corpus.json transaction[0] missing c5 evidence key",
+                )
+            }),
+            "expected missing corpus transaction c5 key failure, got {:?}",
             validation.gate_failures
         );
     }
