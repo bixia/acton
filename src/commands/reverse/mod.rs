@@ -2377,6 +2377,12 @@ fn validate_manifest_replay_membership(
         gate_failures.push("replay artifacts must include at least one mutation".to_owned());
     }
     for replay in replays {
+        if !matches!(replay.mutation, ReplayMutation::None) && !replay.diff.input_changed {
+            gate_failures.push(format!(
+                "mutated replay {} must report inputChanged true",
+                replay.source_query_hash
+            ));
+        }
         if !corpus_hashes
             .iter()
             .any(|hash| hash == &replay.source_query_hash)
@@ -3490,6 +3496,54 @@ mod tests {
                 failure.contains("target-a: replay artifacts must include at least one mutation")
             }),
             "expected unmutated replay bundle failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_mutated_replay_without_input_diff() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": sample_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": false,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": false
+                }
+            })
+            .to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: mutated replay tx-a must report inputChanged true")
+            }),
+            "expected mutated replay input diff failure, got {:?}",
             validation.gate_failures
         );
     }
