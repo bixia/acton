@@ -213,7 +213,7 @@ const schema = {
         valueNanotonsMin: "11",
         valueNanotonsMax: "11",
         bodyShape: {minBits: 40, maxBits: 40, minRefs: 1, maxRefs: 1},
-        codeShape: null,
+        codeShape: undefined,
         libraryHashes: [],
         confidence: "medium",
         evidence: ["tx-a"],
@@ -229,7 +229,7 @@ const schema = {
         valueNanotonsMin: "7",
         valueNanotonsMax: "7",
         bodyShape: {minBits: 32, maxBits: 32, minRefs: 0, maxRefs: 0},
-        codeShape: null,
+        codeShape: undefined,
         libraryHashes: [],
         confidence: "medium",
         evidence: ["tx-a"],
@@ -543,7 +543,7 @@ const replay = {
         label: "Shard account state",
         baseline: "active",
         replay: "frozen",
-        delta: null,
+        delta: undefined,
         severity: "high",
         evidence: ["tx-hash"],
       },
@@ -604,9 +604,9 @@ const replayWithoutDiffSurface = {
       balanceNanotons: "1",
       codeHash: "code",
       dataHash: "data",
-      codeCell: null,
-      dataCell: null,
-      frozenHash: null,
+      codeCell: undefined,
+      dataCell: undefined,
+      frozenHash: undefined,
     },
   },
   replay: {
@@ -620,9 +620,9 @@ const replayWithoutDiffSurface = {
       balanceNanotons: "2",
       codeHash: "code",
       dataHash: "data",
-      codeCell: null,
-      dataCell: null,
-      frozenHash: null,
+      codeCell: undefined,
+      dataCell: undefined,
+      frozenHash: undefined,
     },
   },
   diffSurface: undefined,
@@ -666,6 +666,7 @@ const runSummary = {
       network: "mainnet",
       address: "addr-b",
       sourceUrl: "https://tonviewer.com/addr-b",
+      notes: "User-requested Tonviewer account that must remain in live state-flow smoke coverage.",
       collectLimit: 2,
       sourceTxCount: 2,
       retracedCount: 2,
@@ -1205,8 +1206,9 @@ assert(
 assert(runTargetSourceRows[1]?.label === "target-b", "expected second target source row")
 assert(runTargetSourceRows[1]?.value === "addr-b", "expected second target source address")
 assert(
-  runTargetSourceRows[1]?.detail === "mainnet · https://tonviewer.com/addr-b",
-  "expected second target source network and source URL",
+  runTargetSourceRows[1]?.detail ===
+    "mainnet · https://tonviewer.com/addr-b · User-requested Tonviewer account that must remain in live state-flow smoke coverage.",
+  "expected second target source network, source URL, and notes",
 )
 const runArtifactRows = sectionRows(runSummaryView, "Target Artifacts")
 const bundleArtifactRows = sectionRows(runSummaryView, "Bundle Artifacts")

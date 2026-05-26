@@ -859,6 +859,7 @@ fn run_state_flow_targets(
             network: target.network.clone(),
             address: target.address.clone(),
             source_url: target.source_url.clone(),
+            notes: target.notes.clone(),
             collect_limit: target.collect_limit,
             source_tx_count: corpus.source_tx_count,
             retraced_count: corpus.retraced_count,
@@ -1091,6 +1092,8 @@ struct SmokeTarget {
     network: String,
     address: String,
     source_url: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
     collect_limit: u32,
     #[serde(default)]
     replay_tx_index: Option<usize>,
@@ -1121,6 +1124,7 @@ fn analysis_target_from_args(
         network: net.to_owned(),
         address: address.to_owned(),
         source_url: None,
+        notes: None,
         collect_limit: limit,
         replay_tx_index,
         replay_tx_hash,
@@ -1349,6 +1353,8 @@ struct SmokeTargetRunSummary {
     network: String,
     address: String,
     source_url: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
     collect_limit: u32,
     source_tx_count: usize,
     retraced_count: usize,
@@ -11317,6 +11323,8 @@ mod tests {
             target.id == "tonviewer-requested-target"
                 && target.network == "mainnet"
                 && target.address == "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+                && target.notes.as_deref()
+                    == Some("User-requested Tonviewer account that must remain in live state-flow smoke coverage.")
                 && target.retrace_tx_hash.as_deref()
                     == Some("bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566")
                 && target
@@ -18331,6 +18339,7 @@ mod tests {
             network: "mainnet".to_owned(),
             address: "addr".to_owned(),
             source_url: None,
+            notes: Some("sample target note".to_owned()),
             collect_limit: 2,
             source_tx_count: 2,
             retraced_count: 2,

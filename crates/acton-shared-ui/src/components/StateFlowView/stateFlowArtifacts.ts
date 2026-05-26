@@ -309,6 +309,7 @@ export interface StateFlowRunTargetSummary {
   readonly network: string
   readonly address: string
   readonly sourceUrl?: string | null
+  readonly notes?: string | null
   readonly collectLimit: number
   readonly sourceTxCount: number
   readonly retracedCount: number
@@ -1948,7 +1949,7 @@ function parseUnknownFieldLine(raw: string): Pick<SummaryRow, "value" | "detail"
   const details = metadata
     .split(";")
     .map(part => part.trim())
-    .map(formatUnknownFieldMetadata)
+    .map(value => formatUnknownFieldMetadata(value))
     .filter(part => part.length > 0)
   return {
     value,
@@ -2203,7 +2204,7 @@ function runSummaryTargetSourceRows(summary: StateFlowRunSummary): readonly Summ
   return summary.targets.map(target => ({
     label: target.id,
     value: target.address,
-    detail: [target.network, target.sourceUrl ?? undefined]
+    detail: [target.network, target.sourceUrl ?? undefined, target.notes ?? undefined]
       .filter((value): value is string => value !== undefined && value.length > 0)
       .join(" · "),
   }))
@@ -2331,7 +2332,7 @@ function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow
 
 function schemaOpTableRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
   return schemaOpTableEntries(schema).map(entry => ({
-    label: formatOpcode(entry.opcode ?? null),
+    label: formatOpcode(entry.opcode),
     value: entry.name,
     detail: [
       entry.sourceFunction,
@@ -2357,11 +2358,11 @@ function schemaOpTableEntries(schema: StateFlowSchemaReport): readonly OpTableEn
   if (structured.length > 0) {
     return structured
   }
-  return schema.opcodeCandidates.map(opTableEntryFromCandidate)
+  return schema.opcodeCandidates.map(candidate => opTableEntryFromCandidate(candidate))
 }
 
 function opTableEntryFromCandidate(candidate: OpcodeSchemaCandidate): OpTableEntry {
-  const opcode = candidate.opcode ?? null
+  const opcode = candidate.opcode
   const name = candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`
   const sourceFunction = candidate.methodSurface?.sourceFunction || "recv_internal"
   const unknowns =
@@ -2389,7 +2390,7 @@ function opTableEntryFromCandidate(candidate: OpcodeSchemaCandidate): OpTableEnt
 }
 
 function schemaMessageSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
-  return schemaMessageSurfaceMessages(schema).map(messageSurfaceRow)
+  return schemaMessageSurfaceMessages(schema).map(message => messageSurfaceRow(message))
 }
 
 function schemaMessageSurfaceMessages(
@@ -2399,13 +2400,13 @@ function schemaMessageSurfaceMessages(
   if (structured.length > 0) {
     return structured
   }
-  return schema.opcodeCandidates.map(messageSurfaceMessageFromCandidate)
+  return schema.opcodeCandidates.map(candidate => messageSurfaceMessageFromCandidate(candidate))
 }
 
 function messageSurfaceMessageFromCandidate(
   candidate: OpcodeSchemaCandidate,
 ): MessageSurfaceMessage {
-  const opcode = candidate.opcode ?? null
+  const opcode = candidate.opcode
   const unknowns =
     candidate.methodSurface?.unknowns && candidate.methodSurface.unknowns.length > 0
       ? candidate.methodSurface.unknowns
@@ -2419,7 +2420,9 @@ function messageSurfaceMessageFromCandidate(
     bodyMaxBits: candidate.inboundBody.maxBits,
     bodyMinRefs: candidate.inboundBody.minRefs,
     bodyMaxRefs: candidate.inboundBody.maxRefs,
-    fields: (candidate.inboundBody.fieldCandidates ?? []).map(messageSurfaceFieldFromCandidate),
+    fields: (candidate.inboundBody.fieldCandidates ?? []).map(field =>
+      messageSurfaceFieldFromCandidate(field),
+    ),
     unknowns,
     confidence: candidate.confidence,
     evidence: candidate.examples,
@@ -2445,7 +2448,7 @@ function messageSurfaceFieldFromCandidate(field: BodyFieldCandidate): MessageSur
 
 function messageSurfaceRow(message: MessageSurfaceMessage): SummaryRow {
   return {
-    label: `${formatOpcode(message.opcode ?? null)} ${message.name}`,
+    label: `${formatOpcode(message.opcode)} ${message.name}`,
     value: message.sourceFunction,
     detail: [
       `${message.transactionCount} ${plural(message.transactionCount, "transaction")}`,
@@ -2459,7 +2462,7 @@ function messageSurfaceRow(message: MessageSurfaceMessage): SummaryRow {
       message.unknowns.length > 0 ? `unknowns ${message.unknowns.join("; ")}` : undefined,
       messageSurfaceValueEvidenceDetail(message.fields),
       message.fields.length > 0
-        ? `fields ${message.fields.map(messageSurfaceFieldLabel).join(", ")}`
+        ? `fields ${message.fields.map(field => messageSurfaceFieldLabel(field)).join(", ")}`
         : undefined,
     ]
       .filter((value): value is string => value !== undefined && value.length > 0)
@@ -2496,7 +2499,7 @@ function schemaMethodSurfaceRows(schema: StateFlowSchemaReport): readonly Summar
         label: `${opcode} ${surface.name}`,
         value: surface.sourceFunction,
         detail: [
-          surface.fields.map(methodSurfaceFieldLabel).join(", "),
+          surface.fields.map(field => methodSurfaceFieldLabel(field)).join(", "),
           tableValueLabel("confidence", surface.confidence),
           tableValueLabel("evidence", surface.evidence.map(hash => shortHash(hash)).join(", ")),
           tableValueLabel("unknowns", surface.unknowns.join("; ")),
@@ -2571,7 +2574,7 @@ function storageValueEvidenceDetail(evidence: readonly StorageValueEvidence[]): 
 }
 
 function schemaEffectSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
-  return schemaEffectSurfaceEntries(schema).map(effectSurfaceRow)
+  return schemaEffectSurfaceEntries(schema).map(effect => effectSurfaceRow(effect))
 }
 
 function schemaEffectSurfaceEntries(schema: StateFlowSchemaReport): readonly EffectSurfaceEntry[] {
@@ -2594,7 +2597,7 @@ function effectSurfaceEntryFromCandidate(
   source: string,
   effect: EffectCandidate,
 ): EffectSurfaceEntry {
-  const opcode = candidate.opcode ?? null
+  const opcode = candidate.opcode
   return {
     opcode,
     opName: candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`,
@@ -2615,7 +2618,7 @@ function effectSurfaceEntryFromCandidate(
 
 function effectSurfaceRow(effect: EffectSurfaceEntry): SummaryRow {
   return {
-    label: `${formatOpcode(effect.opcode ?? null)} ${effect.source} ${effect.kind}`,
+    label: `${formatOpcode(effect.opcode)} ${effect.source} ${effect.kind}`,
     value: `${effect.count} ${plural(effect.count, "effect")}`,
     detail: [
       effect.opName,
@@ -2657,7 +2660,7 @@ function aggregateStorageLayoutFields(
       maxRefs: number
       kind: string
       observationCount: number
-      opcodes: Set<string | null>
+      opcodes: Set<string | null | undefined>
       valueSamples: Set<string>
       confidence: string
       evidence: Set<string>
@@ -2677,7 +2680,7 @@ function aggregateStorageLayoutFields(
         maxRefs: field.maxRefs,
         kind: field.kind,
         observationCount: 0,
-        opcodes: new Set<string | null>(),
+        opcodes: new Set<string | null | undefined>(),
         valueSamples: new Set<string>(),
         confidence: field.confidence,
         evidence: new Set<string>(),
@@ -2688,10 +2691,10 @@ function aggregateStorageLayoutFields(
       entry.maxRefs = Math.max(entry.maxRefs, field.maxRefs)
       entry.kind = entry.kind === field.kind ? entry.kind : "mixed"
       entry.observationCount += field.presentCount
-      entry.opcodes.add(candidate.opcode ?? null)
-      field.valueSamples.forEach(sample => entry.valueSamples.add(sample))
+      entry.opcodes.add(candidate.opcode)
+      for (const sample of field.valueSamples) entry.valueSamples.add(sample)
       entry.confidence = weakerConfidence(entry.confidence, field.confidence)
-      candidate.examples.forEach(hash => entry.evidence.add(hash))
+      for (const hash of candidate.examples) entry.evidence.add(hash)
       byField.set(key, entry)
     }
   }
@@ -2756,7 +2759,7 @@ function schemaReplayProbeRows(schema: StateFlowSchemaReport): readonly SummaryR
 }
 
 function schemaReplaySurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
-  return schemaReplaySurfaceProbes(schema).map(replaySurfaceRow)
+  return schemaReplaySurfaceProbes(schema).map(probe => replaySurfaceRow(probe))
 }
 
 function schemaReplaySurfaceProbes(schema: StateFlowSchemaReport): readonly ReplaySurfaceProbe[] {
@@ -2776,7 +2779,7 @@ function replaySurfaceProbeFromCandidate(
   const field = (candidate.inboundBody.fieldCandidates ?? []).find(
     field => field.name === probe.fieldName,
   )
-  const opcode = candidate.opcode ?? null
+  const opcode = candidate.opcode
   return {
     opcode,
     opName: candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`,
@@ -2795,7 +2798,7 @@ function replaySurfaceProbeFromCandidate(
 
 function replaySurfaceRow(probe: ReplaySurfaceProbe): SummaryRow {
   return {
-    label: `${formatOpcode(probe.opcode ?? null)} ${probe.fieldName}`,
+    label: `${formatOpcode(probe.opcode)} ${probe.fieldName}`,
     value: probe.cliArg,
     detail: [
       probe.opName,
@@ -2924,10 +2927,10 @@ function stateMachineNodes(
   for (const edge of edges) {
     const from = entryFor(edge.fromStatus)
     from.preCount += edge.count
-    edge.examples.forEach(hash => from.examples.add(hash))
+    for (const hash of edge.examples) from.examples.add(hash)
     const to = entryFor(edge.toStatus)
     to.postCount += edge.count
-    edge.examples.forEach(hash => to.examples.add(hash))
+    for (const hash of edge.examples) to.examples.add(hash)
   }
 
   return [...byStatus.entries()]
@@ -3001,14 +3004,14 @@ function confidenceRank(confidence: string): number {
   return 0
 }
 
-function formatOpcodeList(opcodes: readonly (string | null)[]): string {
+function formatOpcodeList(opcodes: readonly (string | null | undefined)[]): string {
   if (opcodes.length === 0) {
     return "<none>"
   }
-  return opcodes.map(formatOpcode).join(", ")
+  return opcodes.map(opcode => formatOpcode(opcode)).join(", ")
 }
 
-function formatOpcode(opcode: string | null): string {
+function formatOpcode(opcode: string | null | undefined): string {
   return opcode ?? "<none>"
 }
 
@@ -3131,7 +3134,7 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
 
   if (!replay.diff.replayAccepted) {
     changes.push(
-      replayDiffChange("accepted", "Replay accepted", "true", "false", null, "info", replay),
+      replayDiffChange("accepted", "Replay accepted", "true", "false", undefined, "info", replay),
     )
     return {changes}
   }
@@ -3147,7 +3150,7 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
         "Shard account state",
         baselineState,
         replayState,
-        null,
+        undefined,
         "high",
         replay,
       ),
@@ -3160,7 +3163,7 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
         "Code hash",
         replay.baseline.state?.codeHash ?? "<none>",
         replay.replay.state?.codeHash ?? "<none>",
-        null,
+        undefined,
         "high",
         replay,
       ),
@@ -3173,17 +3176,13 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
         "Data hash",
         replay.baseline.state?.dataHash ?? "<none>",
         replay.replay.state?.dataHash ?? "<none>",
-        null,
+        undefined,
         "medium",
         replay,
       ),
     )
   }
-  if (
-    replay.diff.balanceDeltaDiff !== undefined &&
-    replay.diff.balanceDeltaDiff !== null &&
-    replay.diff.balanceDeltaDiff !== 0
-  ) {
+  if (typeof replay.diff.balanceDeltaDiff === "number" && replay.diff.balanceDeltaDiff !== 0) {
     changes.push(
       replayDiffChange(
         "balanceDelta",
@@ -3203,17 +3202,13 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
         "Exit code",
         replayExitCodeLabel(replay.baseline),
         replayExitCodeLabel(replay.replay),
-        null,
+        undefined,
         "medium",
         replay,
       ),
     )
   }
-  if (
-    replay.diff.outboundCountDelta !== undefined &&
-    replay.diff.outboundCountDelta !== null &&
-    replay.diff.outboundCountDelta !== 0
-  ) {
+  if (typeof replay.diff.outboundCountDelta === "number" && replay.diff.outboundCountDelta !== 0) {
     changes.push(
       replayDiffChange(
         "outboundCount",
@@ -3226,11 +3221,7 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
       ),
     )
   }
-  if (
-    replay.diff.actionCountDelta !== undefined &&
-    replay.diff.actionCountDelta !== null &&
-    replay.diff.actionCountDelta !== 0
-  ) {
+  if (typeof replay.diff.actionCountDelta === "number" && replay.diff.actionCountDelta !== 0) {
     changes.push(
       replayDiffChange(
         "actionCount",
@@ -3250,7 +3241,7 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
         "C5/action register",
         replay.baseline.c5?.hash ?? "none",
         replay.replay.c5?.hash ?? "none",
-        null,
+        undefined,
         "medium",
         replay,
       ),
