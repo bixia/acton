@@ -16,7 +16,7 @@ use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, Store};
 use tycho_types::models::{
     IntAddr, LibRef, Message, MsgInfo, OutAction, OutActionsRevIter, RelaxedMsgInfo, ShardAccount,
-    StdAddr, StdAddrFormat,
+    StdAddr, StdAddrFormat, Transaction,
 };
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
@@ -2726,6 +2726,19 @@ fn validate_state_flow_tx_cell_consistency(
     gate_failures: &mut Vec<String>,
 ) {
     let prefix = format!("{} artifact {}", artifact.kind, artifact.path);
+    validate_transaction_boc_decodable_consistency(
+        &format!("{prefix} transactionBoc64"),
+        &flow.transaction.transaction_boc64,
+        &flow.query_hash,
+        gate_failures,
+    );
+    validate_required_boc_decodable_consistency(
+        &format!("{prefix} replay blockConfigBoc64"),
+        &flow.replay.block_config_boc64,
+        &flow.query_hash,
+        "block config",
+        gate_failures,
+    );
     validate_state_snapshot_cell_consistency(
         &format!("{prefix} pre"),
         &flow.state.pre,
@@ -2911,6 +2924,39 @@ fn action_effect_from_decoded_c5(index: usize, action: &OutAction) -> Option<Act
                 library: Some(library),
             })
         }
+    }
+}
+
+fn validate_required_boc_decodable_consistency(
+    label: &str,
+    boc64: &str,
+    tx_hash: &str,
+    artifact_label: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if Boc::decode_base64(boc64).is_err() {
+        gate_failures.push(format!(
+            "{label} for {tx_hash} is not a decodable {artifact_label}"
+        ));
+    }
+}
+
+fn validate_transaction_boc_decodable_consistency(
+    label: &str,
+    boc64: &str,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Ok(cell) = Boc::decode_base64(boc64) else {
+        gate_failures.push(format!(
+            "{label} for {tx_hash} is not a decodable transaction"
+        ));
+        return;
+    };
+    if cell.parse::<Transaction>().is_err() {
+        gate_failures.push(format!(
+            "{label} for {tx_hash} is not a decodable transaction"
+        ));
     }
 }
 
@@ -13114,8 +13160,9 @@ mod tests {
         boc::Boc,
         cell::{Cell, CellBuilder, CellFamily, Lazy, Store},
         models::{
-            CurrencyCollection, IntMsgInfo, MsgInfo, OutAction, OwnedMessage, ReserveCurrencyFlags,
-            ShardAccount,
+            AccountStatus, ComputePhase, ComputePhaseSkipReason, CurrencyCollection, HashUpdate,
+            IntMsgInfo, MsgInfo, OrdinaryTxInfo, OutAction, OwnedMessage, ReserveCurrencyFlags,
+            ShardAccount, SkippedComputePhase, Transaction, TxInfo,
         },
         prelude::HashBytes,
     };
@@ -16841,6 +16888,61 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_corpus_validation_rejects_malformed_transaction_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let corpus_path = temp_dir.path().join("corpus.json");
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][0]["transaction"]["transactionBoc64"] =
+            serde_json::json!("not-a-boc");
+        fs::write(&corpus_path, corpus.to_string()).expect("corpus artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "corpus",
+            "corpus.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_corpus_artifact(&corpus_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("corpus artifact corpus.json transactionBoc64")
+                    && failure.contains("for tx-a is not a decodable transaction")
+            }),
+            "expected malformed corpus transaction BoC failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_corpus_validation_rejects_malformed_block_config_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let corpus_path = temp_dir.path().join("corpus.json");
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][0]["replay"]["blockConfigBoc64"] = serde_json::json!("not-a-boc");
+        fs::write(&corpus_path, corpus.to_string()).expect("corpus artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "corpus",
+            "corpus.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_corpus_artifact(&corpus_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("corpus artifact corpus.json replay blockConfigBoc64")
+                    && failure.contains("for tx-a is not a decodable block config")
+            }),
+            "expected malformed corpus block config failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -16970,9 +17072,7 @@ mod tests {
         );
         assert!(
             validation.gate_failures.iter().any(|failure| {
-                failure.contains(
-                    "target-a: transaction boc64 wrong-tx for tx-a does not match corpus transaction boc64 tx",
-                )
+                failure.contains("target-a: transaction boc64 wrong-tx for tx-a does not match corpus transaction boc64")
             }),
             "expected transaction BoC mismatch failure, got {:?}",
             validation.gate_failures
@@ -16988,9 +17088,7 @@ mod tests {
         );
         assert!(
             validation.gate_failures.iter().any(|failure| {
-                failure.contains(
-                    "target-a: transaction replay block config wrong-config for tx-a does not match corpus replay block config config",
-                )
+                failure.contains("target-a: transaction replay block config wrong-config for tx-a does not match corpus replay block config")
             }),
             "expected transaction replay block config mismatch failure, got {:?}",
             validation.gate_failures
@@ -17152,6 +17250,58 @@ mod tests {
                     && failure.contains("for tx-a is not a decodable shard account")
             }),
             "expected malformed shard account failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_malformed_transaction_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["transaction"]["transactionBoc64"] = serde_json::json!("not-a-boc");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json transactionBoc64")
+                    && failure.contains("for tx-a is not a decodable transaction")
+            }),
+            "expected malformed transaction BoC failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_malformed_block_config_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["replay"]["blockConfigBoc64"] = serde_json::json!("not-a-boc");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json replay blockConfigBoc64")
+                    && failure.contains("for tx-a is not a decodable block config")
+            }),
+            "expected malformed block config failure, got {:?}",
             gate_failures
         );
     }
@@ -23449,13 +23599,13 @@ mod tests {
                 "utime": 1,
                 "account": "addr",
                 "stateUpdateHashOk": true,
-                "transactionBoc64": "tx"
+                "transactionBoc64": sample_transaction_boc64()
             },
             "replay": {
                 "mcSeqno": 7,
                 "randSeedHex": "00",
                 "replayedPrevTxCount": 0,
-                "blockConfigBoc64": "config",
+                "blockConfigBoc64": test_boc64_with_u32(0x636f_6e66),
                 "libsBoc64": "libs"
             },
             "state": {
@@ -23513,5 +23663,46 @@ mod tests {
             last_trans_lt,
         };
         Boc::encode_base64(test_to_cell(&shard_account))
+    }
+
+    fn sample_transaction_boc64() -> String {
+        let transaction = Transaction {
+            account: HashBytes::ZERO,
+            lt: 42,
+            prev_trans_hash: HashBytes::ZERO,
+            prev_trans_lt: 0,
+            now: 1,
+            out_msg_count: Default::default(),
+            orig_status: AccountStatus::Uninit,
+            end_status: AccountStatus::Uninit,
+            in_msg: None,
+            out_msgs: Default::default(),
+            total_fees: CurrencyCollection::default(),
+            state_update: Lazy::new(&HashUpdate {
+                old: HashBytes::ZERO,
+                new: HashBytes::ZERO,
+            })
+            .expect("state update should fit in a lazy cell"),
+            info: Lazy::new(&TxInfo::Ordinary(OrdinaryTxInfo {
+                credit_first: false,
+                storage_phase: None,
+                credit_phase: None,
+                compute_phase: ComputePhase::Skipped(SkippedComputePhase {
+                    reason: ComputePhaseSkipReason::NoState,
+                }),
+                action_phase: None,
+                aborted: false,
+                bounce_phase: None,
+                destroyed: false,
+            }))
+            .expect("transaction info should fit in a lazy cell"),
+        };
+        Boc::encode_base64(test_to_cell(&transaction))
+    }
+
+    fn test_boc64_with_u32(value: u32) -> String {
+        let mut builder = CellBuilder::new();
+        builder.store_u32(value).expect("value should store");
+        Boc::encode_base64(builder.build().expect("cell should build"))
     }
 }
