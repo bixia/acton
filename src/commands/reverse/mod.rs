@@ -666,6 +666,8 @@ fn reverse_report_cmd(
             corpus: corpus.context("state-flow corpus JSON is required")?,
             schema: schema.context("schema candidate JSON is required")?,
             replays: replay,
+            source_url: None,
+            notes: None,
         }
     };
 
@@ -687,7 +689,13 @@ fn reverse_report_cmd(
                 .with_context(|| format!("failed to parse {}", path.display()))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
+    let mut report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
+    if let Some(source_url) = &report_artifacts.source_url {
+        insert_report_source_url(&mut report, source_url);
+    }
+    if let Some(notes) = &report_artifacts.notes {
+        insert_report_target_notes(&mut report, notes);
+    }
     write_text(&report, output, "State-flow report")
 }
 
@@ -719,6 +727,8 @@ struct ReportArtifactInputs {
     corpus: PathBuf,
     schema: PathBuf,
     replays: Vec<PathBuf>,
+    source_url: Option<String>,
+    notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1580,6 +1590,10 @@ fn report_artifacts_from_manifest(
 ) -> anyhow::Result<ReportArtifactInputs> {
     ensure_supported_artifact_manifest(manifest, manifest_path)?;
     let selected_target_id = select_manifest_target_id(manifest, manifest_path, target_id)?;
+    let target_context = manifest
+        .targets
+        .iter()
+        .find(|target| target.id == selected_target_id);
 
     Ok(ReportArtifactInputs {
         corpus: required_manifest_artifact_path(
@@ -1595,6 +1609,8 @@ fn report_artifacts_from_manifest(
             "schema",
         )?,
         replays: manifest_artifact_paths(manifest, manifest_path, &selected_target_id, "replay"),
+        source_url: target_context.and_then(|target| target.source_url.clone()),
+        notes: target_context.and_then(|target| target.notes.clone()),
     })
 }
 
@@ -11840,6 +11856,19 @@ mod tests {
             "kind": "stateFlowArtifactManifest",
             "summary": "out/summary.json",
             "targetCount": 2,
+            "targets": [{
+                "id": "target-a",
+                "network": "mainnet",
+                "address": "addr-a",
+                "sourceUrl": null,
+                "notes": null
+            }, {
+                "id": "target-b",
+                "network": "mainnet",
+                "address": "addr-b",
+                "sourceUrl": "https://tonviewer.com/addr-b",
+                "notes": "target-b note"
+            }],
             "artifacts": [
                 {"kind": "runSummary", "path": "summary.json", "targetId": null},
                 {"kind": "corpus", "path": "target-a/corpus.json", "targetId": "target-a"},
@@ -11870,6 +11899,46 @@ mod tests {
                 PathBuf::from("out/target-b/replay.json"),
                 PathBuf::from("out/target-b/replay-probe-query_id-32-64.json")
             ]
+        );
+        assert_eq!(
+            inputs.source_url.as_deref(),
+            Some("https://tonviewer.com/addr-b")
+        );
+        assert_eq!(inputs.notes.as_deref(), Some("target-b note"));
+    }
+
+    #[test]
+    fn reverse_report_from_manifest_preserves_target_source_context() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut manifest = sample_validation_manifest();
+        manifest.targets[0].source_url = Some("https://tonviewer.com/addr".to_owned());
+        let manifest_path = temp_dir.path().join("artifacts.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should be written");
+        let report_path = temp_dir.path().join("regenerated-report.md");
+
+        super::reverse_report_cmd(
+            None,
+            None,
+            Vec::new(),
+            Some(manifest_path),
+            None,
+            Some(report_path.clone()),
+        )
+        .expect("report should regenerate from manifest");
+
+        let report = fs::read_to_string(report_path).expect("report should be readable");
+        assert!(
+            report.contains("- Source URL: <https://tonviewer.com/addr>"),
+            "expected source URL from manifest target context, got {report}"
+        );
+        assert!(
+            report.contains("- Notes: sample target note"),
+            "expected notes from manifest target context, got {report}"
         );
     }
 
