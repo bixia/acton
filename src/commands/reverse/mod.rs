@@ -2369,6 +2369,7 @@ fn validate_schema_opcode_candidate_evidence_keys(
         ("count", &["count"][..]),
         ("examples", &["examples"][..]),
         ("evidence", &["evidence"][..]),
+        ("method surface", &["methodSurface"][..]),
         ("inbound body", &["inboundBody"][..]),
         ("replay probes", &["replayProbes"][..]),
         ("storage", &["storage"][..]),
@@ -2385,6 +2386,7 @@ fn validate_schema_opcode_candidate_evidence_keys(
     }
     validate_schema_confidence_label(value, &prefix, gate_failures);
     validate_schema_candidate_evidence_entry_keys(value, &prefix, gate_failures);
+    validate_schema_method_surface_evidence_keys(value, &prefix, gate_failures);
     validate_schema_inbound_body_evidence_keys(value, &prefix, gate_failures);
     validate_schema_storage_evidence_keys(value, &prefix, gate_failures);
     validate_schema_state_transition_evidence_keys(value, &prefix, gate_failures);
@@ -2392,6 +2394,55 @@ fn validate_schema_opcode_candidate_evidence_keys(
     validate_schema_effect_evidence_keys(value, &prefix, "outboundEffects", gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outActions", gate_failures);
     validate_schema_unknown_field_evidence_keys(value, &prefix, gate_failures);
+}
+
+fn validate_schema_method_surface_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(surface) = value.get("methodSurface") else {
+        return;
+    };
+    for (label, path) in [
+        ("name", &["name"][..]),
+        ("source function", &["sourceFunction"][..]),
+        ("opcode", &["opcode"][..]),
+        ("fields", &["fields"][..]),
+        ("unknowns", &["unknowns"][..]),
+        ("confidence", &["confidence"][..]),
+        ("evidence", &["evidence"][..]),
+    ] {
+        if !json_path_exists(surface, path) {
+            gate_failures.push(format!(
+                "{prefix} methodSurface missing {label} evidence key"
+            ));
+        }
+    }
+    validate_schema_confidence_label(surface, &format!("{prefix} methodSurface"), gate_failures);
+
+    let Some(fields) = surface.get("fields").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, field) in fields.iter().enumerate() {
+        let field_prefix = format!("{prefix} methodSurface.fields[{index}]");
+        for (label, path) in [
+            ("name", &["name"][..]),
+            ("kind", &["kind"][..]),
+            ("source", &["source"][..]),
+            ("bit offset", &["bitOffset"][..]),
+            ("min bits", &["minBits"][..]),
+            ("max bits", &["maxBits"][..]),
+            ("min refs", &["minRefs"][..]),
+            ("max refs", &["maxRefs"][..]),
+            ("confidence", &["confidence"][..]),
+        ] {
+            if !json_path_exists(field, path) {
+                gate_failures.push(format!("{field_prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_confidence_label(field, &field_prefix, gate_failures);
+    }
 }
 
 fn validate_schema_candidate_evidence_entry_keys(
@@ -4366,6 +4417,14 @@ fn validate_schema_corpus_membership(
                 gate_failures,
             );
         }
+        for evidence in &candidate.method_surface.evidence {
+            validate_corpus_hash_membership(
+                "schema method surface evidence",
+                evidence,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
         for evidence in &candidate.evidence {
             validate_corpus_hash_membership(
                 "schema evidence tx hash",
@@ -4456,6 +4515,7 @@ fn validate_schema_opcode_candidate_matches_corpus(
         &opcode,
         gate_failures,
     );
+    validate_schema_method_surface_matches_candidate(candidate, &opcode, gate_failures);
 
     let expected_min_bits = matching_transactions
         .iter()
@@ -4645,6 +4705,89 @@ fn validate_schema_opcode_candidate_matches_corpus(
         let expected = corpus_action_effect_aggregate(effect, &matching_transactions);
         validate_schema_effect_matches_corpus("action", effect, expected, gate_failures);
     }
+}
+
+fn validate_schema_method_surface_matches_candidate(
+    candidate: &ton_stateflow::OpcodeSchemaCandidate,
+    opcode: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let surface = &candidate.method_surface;
+    validate_evidence_text_field(
+        "schema method surface source function",
+        &surface.source_function,
+        "expected source function",
+        "recv_internal",
+        opcode,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema method surface opcode",
+        &option_text_label(surface.opcode.as_deref()),
+        "candidate opcode",
+        &option_text_label(candidate.opcode.as_deref()),
+        opcode,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema method surface confidence",
+        &surface.confidence,
+        "candidate confidence",
+        &candidate.confidence,
+        opcode,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema method surface evidence",
+        &report_sample_list(&surface.evidence),
+        "candidate examples",
+        &report_sample_list(&candidate.examples),
+        opcode,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema method surface unknowns",
+        &report_kind_list(&surface.unknowns),
+        "candidate unknown fields",
+        &report_kind_list(&candidate.unknown_fields),
+        opcode,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema method surface fields",
+        &report_method_surface_field_list(&surface.fields),
+        "candidate body fields",
+        &report_body_field_surface_list(&candidate.inbound_body.field_candidates),
+        opcode,
+        gate_failures,
+    );
+}
+
+fn report_method_surface_field_list(fields: &[ton_stateflow::MethodSurfaceField]) -> String {
+    if fields.is_empty() {
+        return "none".to_owned();
+    }
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}@{}:{}",
+                field.name, field.kind, field.source, field.bit_offset
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn report_body_field_surface_list(fields: &[ton_stateflow::BodyFieldCandidate]) -> String {
+    if fields.is_empty() {
+        return "none".to_owned();
+    }
+    fields
+        .iter()
+        .map(|field| format!("{}:{}@body:{}", field.name, field.kind, field.bit_offset))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn validate_schema_opcode_state_transition_matches_corpus(
@@ -5755,6 +5898,7 @@ fn validate_manifest_report_content_matches_summary(
         "# TON State Flow Reverse Report",
         "## Target",
         "## Opcode Candidates",
+        "## Method Surface",
         "## Schema Evidence",
         "## Runtime Evidence",
         "## Message Body Fields",
@@ -6321,6 +6465,34 @@ fn opcode_candidate_report_header() -> Vec<String> {
     .collect()
 }
 
+fn validate_report_method_surface_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = method_surface_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report method surface header {expected:?} is missing"
+        ));
+    }
+}
+
+fn method_surface_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Name",
+        "Source function",
+        "Fields",
+        "Unknowns",
+        "Confidence",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_report_schema_evidence_header(section: &str, gate_failures: &mut Vec<String>) {
     let expected = schema_evidence_report_header();
     let header = section
@@ -6381,6 +6553,27 @@ fn validate_report_schema_deliverables(
             }
             if let Some(row) = candidate_row {
                 validate_report_opcode_candidate_values(candidate, &opcode, &row, gate_failures);
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Method Surface") {
+        if !schema.opcode_candidates.is_empty() {
+            validate_report_method_surface_header(section, gate_failures);
+        }
+        for candidate in &schema.opcode_candidates {
+            let opcode = report_opcode_label(candidate.opcode.as_deref());
+            let row = report_method_surface_row(section, &opcode, &candidate.method_surface);
+            if row.is_none() {
+                gate_failures.push(format!("report method surface {opcode} is missing"));
+            }
+            if let Some(row) = row {
+                validate_report_method_surface_values(
+                    &candidate.method_surface,
+                    &opcode,
+                    &row,
+                    gate_failures,
+                );
             }
         }
     }
@@ -6776,6 +6969,76 @@ fn report_opcode_candidate_row(section: &str, opcode: &str) -> Option<Vec<String
             .is_some_and(|cell| cell == opcode)
             .then_some(cells)
     })
+}
+
+fn report_method_surface_row(
+    section: &str,
+    opcode: &str,
+    surface: &ton_stateflow::MethodSurfaceCandidate,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == opcode)
+            && cells.get(1).is_some_and(|cell| cell == &surface.name))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_method_surface_values(
+    surface: &ton_stateflow::MethodSurfaceCandidate,
+    opcode: &str,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_method_surface_cell(
+        "source function",
+        surface.source_function.clone(),
+        opcode,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_method_surface_cell(
+        "fields",
+        report_code_list_from_strings(method_surface_field_labels_for_report(&surface.fields)),
+        opcode,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_method_surface_cell(
+        "unknowns",
+        report_kind_list(&surface.unknowns),
+        opcode,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_method_surface_cell(
+        "confidence",
+        surface.confidence.clone(),
+        opcode,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_method_surface_cell(
+        "evidence",
+        report_sample_list(&surface.evidence),
+        opcode,
+        row.get(6),
+        gate_failures,
+    );
+}
+
+fn validate_report_method_surface_cell(
+    label: &str,
+    expected: String,
+    opcode: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report method surface {label} {expected} for {opcode} is missing"
+        ));
+    }
 }
 
 fn validate_report_opcode_candidate_values(
@@ -7427,6 +7690,28 @@ fn report_sample_list(samples: &[String]) -> String {
         return "<none>".to_owned();
     }
     samples.join(", ")
+}
+
+fn report_code_list_from_strings(samples: Vec<String>) -> String {
+    if samples.is_empty() {
+        "none".to_owned()
+    } else {
+        samples.join(", ")
+    }
+}
+
+fn method_surface_field_labels_for_report(
+    fields: &[ton_stateflow::MethodSurfaceField],
+) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}@{}:{}",
+                field.name, field.kind, field.source, field.bit_offset
+            )
+        })
+        .collect()
 }
 
 fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
@@ -10151,6 +10436,44 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_method_surface_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]
+            .as_object_mut()
+            .expect("schema candidate should be an object")
+            .remove("methodSurface");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] missing method surface evidence key",
+                )
+            }),
+            "expected missing schema method surface key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_unknown_field_evidence_outside_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -10221,6 +10544,7 @@ mod tests {
                         "outboundKinds": [],
                         "outActionKinds": []
                     }],
+                    "methodSurface": sample_method_surface_json(&["tx-a"]),
                     "inboundBody": {
                         "minBits": 32,
                         "maxBits": 32,
@@ -12749,6 +13073,10 @@ mod tests {
                         "outboundKinds": ["internal"],
                         "outActionKinds": ["send-message"]
                     }],
+                    "methodSurface": sample_query_id_method_surface_json(
+                        &["tx-a", "tx-b"],
+                        &["message body field names require TL-B recovery"],
+                    ),
                     "inboundBody": {
                         "minBits": 32,
                         "maxBits": 96,
@@ -12952,6 +13280,7 @@ mod tests {
                         "outboundKinds": [],
                         "outActionKinds": []
                     }],
+                    "methodSurface": sample_query_id_method_surface_json(&["tx-a", "tx-b"], &[]),
                     "inboundBody": {
                         "minBits": 32,
                         "maxBits": 32,
@@ -13050,6 +13379,7 @@ mod tests {
                         "outboundKinds": [],
                         "outActionKinds": []
                     }],
+                    "methodSurface": sample_query_id_method_surface_json(&["tx-a", "tx-b"], &[]),
                     "inboundBody": {
                         "minBits": 32,
                         "maxBits": 32,
@@ -14650,6 +14980,43 @@ mod tests {
         .expect("artifact manifest should deserialize")
     }
 
+    fn sample_method_surface_json(evidence: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "name": "op::0x00000001",
+            "sourceFunction": "recv_internal",
+            "opcode": "0x00000001",
+            "fields": [],
+            "unknowns": [],
+            "confidence": "medium",
+            "evidence": evidence
+        })
+    }
+
+    fn sample_query_id_method_surface_json(
+        evidence: &[&str],
+        unknowns: &[&str],
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": "op::0x00000001",
+            "sourceFunction": "recv_internal",
+            "opcode": "0x00000001",
+            "fields": [{
+                "name": "query_id",
+                "kind": "uint64",
+                "source": "body",
+                "bitOffset": 32,
+                "minBits": 64,
+                "maxBits": 64,
+                "minRefs": 0,
+                "maxRefs": 0,
+                "confidence": "high"
+            }],
+            "unknowns": unknowns,
+            "confidence": "medium",
+            "evidence": evidence
+        })
+    }
+
     fn write_sample_validation_artifacts(out_dir: &Path) {
         let summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
         write_sample_validation_artifact(
@@ -14703,6 +15070,7 @@ mod tests {
                         "outboundKinds": [],
                         "outActionKinds": []
                     }],
+                    "methodSurface": sample_method_surface_json(&["tx-a", "tx-b"]),
                     "inboundBody": {
                         "minBits": 32,
                         "maxBits": 32,
@@ -15073,6 +15441,11 @@ mod tests {
         } else {
             ""
         };
+        let method_surface_row = if include_schema_summary_rows {
+            "| `0x00000001` | `op::0x00000001` | recv_internal | none | none | medium | tx-a, tx-b |\n"
+        } else {
+            ""
+        };
         let schema_evidence_row = if include_schema_evidence {
             "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
         } else {
@@ -15111,6 +15484,11 @@ mod tests {
              | Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |\n\
              | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |\n\
              {opcode_candidate_row}\
+             \n\
+             ## Method Surface\n\
+             | Opcode | Name | Source function | Fields | Unknowns | Confidence | Evidence |\n\
+             | --- | --- | --- | --- | --- | --- | --- |\n\
+             {method_surface_row}\
              \n\
              ## Schema Evidence\n\
              | Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |\n\

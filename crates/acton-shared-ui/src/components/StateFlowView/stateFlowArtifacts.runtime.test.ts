@@ -156,6 +156,38 @@ const schema = {
           },
         ],
       },
+      methodSurface: {
+        name: "op::0x00000001",
+        sourceFunction: "recv_internal",
+        opcode: "0x00000001",
+        fields: [
+          {
+            name: "opcode",
+            kind: "uint32",
+            source: "body",
+            bitOffset: 0,
+            minBits: 32,
+            maxBits: 32,
+            minRefs: 0,
+            maxRefs: 0,
+            confidence: "high",
+          },
+          {
+            name: "query_id",
+            kind: "uint64",
+            source: "body",
+            bitOffset: 32,
+            minBits: 64,
+            maxBits: 64,
+            minRefs: 0,
+            maxRefs: 0,
+            confidence: "high",
+          },
+        ],
+        unknowns: ["message body field names require TL-B recovery"],
+        confidence: "high",
+        evidence: ["tx-a"],
+      },
       replayProbes: [
         {
           fieldName: "query_id",
@@ -628,6 +660,13 @@ assert(bodyFieldRows[1]?.value === "uint64 @32", "expected query_id field offset
 assert(
   bodyFieldRows[1]?.detail?.includes("0x0000000000000007") === true,
   "expected query_id samples in body field row",
+)
+const methodSurfaceRows = sectionRows(schemaSummary, "Method Surface")
+assert(methodSurfaceRows[0]?.label === "0x00000001 op::0x00000001", "expected method surface row")
+assert(methodSurfaceRows[0]?.value === "recv_internal", "expected method surface source")
+assert(
+  methodSurfaceRows[0]?.detail?.includes("query_id:uint64@body:32") === true,
+  "expected method surface ordered field detail",
 )
 const storageFieldRows = sectionRows(schemaSummary, "Storage Fields")
 assert(storageFieldRows[0]?.label === "0x00000001 data_word_0", "expected storage field row")

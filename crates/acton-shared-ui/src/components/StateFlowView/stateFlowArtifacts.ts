@@ -313,6 +313,7 @@ export interface OpcodeSchemaCandidate {
   readonly count: number
   readonly examples: readonly string[]
   readonly evidence?: readonly SchemaEvidence[]
+  readonly methodSurface?: MethodSurfaceCandidate | null
   readonly inboundBody: {
     readonly minBits: number
     readonly maxBits: number
@@ -329,6 +330,28 @@ export interface OpcodeSchemaCandidate {
   readonly confidence: string
   readonly unknownFields: readonly string[]
   readonly unknownFieldEvidence?: readonly UnknownFieldEvidence[] | null
+}
+
+export interface MethodSurfaceCandidate {
+  readonly name: string
+  readonly sourceFunction: string
+  readonly opcode?: string | null
+  readonly fields: readonly MethodSurfaceField[]
+  readonly unknowns: readonly string[]
+  readonly confidence: string
+  readonly evidence: readonly string[]
+}
+
+export interface MethodSurfaceField {
+  readonly name: string
+  readonly kind: string
+  readonly source: string
+  readonly bitOffset: number
+  readonly minBits: number
+  readonly maxBits: number
+  readonly minRefs: number
+  readonly maxRefs: number
+  readonly confidence: string
 }
 
 export interface UnknownFieldEvidence {
@@ -673,6 +696,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const stateEdges = stateMachineEdges(schema)
   const auditSignals = schemaAuditSignals(schema)
   const bodyFieldRows = schemaBodyFieldRows(schema)
+  const methodSurfaceRows = schemaMethodSurfaceRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
   const effectRows = schemaEffectRows(schema)
   const evidenceRows = schemaEvidenceRows(schema)
@@ -716,6 +740,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Message Body Fields",
               rows: bodyFieldRows,
+            },
+          ]
+        : []),
+      ...(methodSurfaceRows.length > 0
+        ? [
+            {
+              title: "Method Surface",
+              rows: methodSurfaceRows,
             },
           ]
         : []),
@@ -1857,6 +1889,34 @@ function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow
         .join(" · "),
     }))
   })
+}
+
+function schemaMethodSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const surface = candidate.methodSurface
+    if (!surface) {
+      return []
+    }
+    const opcode = candidate.opcode ?? "<none>"
+    return [
+      {
+        label: `${opcode} ${surface.name}`,
+        value: surface.sourceFunction,
+        detail: [
+          surface.fields.map(methodSurfaceFieldLabel).join(", "),
+          tableValueLabel("confidence", surface.confidence),
+          tableValueLabel("evidence", surface.evidence.map(hash => shortHash(hash)).join(", ")),
+          tableValueLabel("unknowns", surface.unknowns.join("; ")),
+        ]
+          .filter((value): value is string => value !== undefined && value.length > 0)
+          .join(" · "),
+      },
+    ]
+  })
+}
+
+function methodSurfaceFieldLabel(field: MethodSurfaceField): string {
+  return `${field.name}:${field.kind}@${field.source}:${field.bitOffset}`
 }
 
 function schemaStorageFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

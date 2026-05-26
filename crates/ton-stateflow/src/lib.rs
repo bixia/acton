@@ -183,6 +183,8 @@ pub struct OpcodeSchemaCandidate {
     pub examples: Vec<String>,
     #[serde(default)]
     pub evidence: Vec<SchemaEvidence>,
+    #[serde(default)]
+    pub method_surface: MethodSurfaceCandidate,
     pub inbound_body: BodyShapeCandidate,
     #[serde(default)]
     pub replay_probes: Vec<ReplayProbeCandidate>,
@@ -195,6 +197,32 @@ pub struct OpcodeSchemaCandidate {
     pub unknown_fields: Vec<String>,
     #[serde(default)]
     pub unknown_field_evidence: Vec<UnknownFieldEvidence>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodSurfaceCandidate {
+    pub name: String,
+    pub source_function: String,
+    pub opcode: Option<String>,
+    pub fields: Vec<MethodSurfaceField>,
+    pub unknowns: Vec<String>,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodSurfaceField {
+    pub name: String,
+    pub kind: String,
+    pub source: String,
+    pub bit_offset: u16,
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -673,6 +701,34 @@ pub fn render_state_flow_report(
             markdown_escape(&candidate.examples.join(", ")),
         )
         .ok();
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Method Surface").ok();
+    if schema.opcode_candidates.is_empty() {
+        writeln!(report, "- No method surfaces were inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Opcode | Name | Source function | Fields | Unknowns | Confidence | Evidence |"
+        )
+        .ok();
+        writeln!(report, "| --- | --- | --- | --- | --- | --- | --- |").ok();
+        for candidate in &schema.opcode_candidates {
+            let surface = &candidate.method_surface;
+            writeln!(
+                report,
+                "| {} | `{}` | {} | {} | {} | {} | {} |",
+                markdown_code_opt(candidate.opcode.as_deref()),
+                markdown_escape(&surface.name),
+                markdown_escape(&surface.source_function),
+                markdown_code_list(&method_surface_field_labels(&surface.fields)),
+                markdown_escape(&format_kind_list(&surface.unknowns)),
+                markdown_escape(&surface.confidence),
+                markdown_code_list(&surface.evidence),
+            )
+            .ok();
+        }
     }
     writeln!(report).ok();
 
@@ -1399,6 +1455,18 @@ fn format_effects(effects: &[EffectCandidate]) -> String {
         .join("; ")
 }
 
+fn method_surface_field_labels(fields: &[MethodSurfaceField]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}@{}:{}",
+                field.name, field.kind, field.source, field.bit_offset
+            )
+        })
+        .collect()
+}
+
 fn write_effect_row(
     report: &mut String,
     opcode: Option<&str>,
@@ -1782,12 +1850,20 @@ fn opcode_candidate(
         })
         .collect::<Vec<_>>();
     let replay_probes = replay_probe_candidates(&inbound_body, &examples);
+    let method_surface = method_surface_candidate(
+        opcode.clone(),
+        &inbound_body,
+        &unknown_fields,
+        &confidence,
+        &examples,
+    );
 
     OpcodeSchemaCandidate {
         opcode,
         count: transactions.len(),
         examples,
         evidence: schema_evidence(transactions),
+        method_surface,
         inbound_body,
         replay_probes,
         storage,
@@ -1797,6 +1873,43 @@ fn opcode_candidate(
         confidence,
         unknown_fields,
         unknown_field_evidence,
+    }
+}
+
+fn method_surface_candidate(
+    opcode: Option<String>,
+    inbound_body: &BodyShapeCandidate,
+    unknown_fields: &[String],
+    confidence: &str,
+    examples: &[String],
+) -> MethodSurfaceCandidate {
+    let opcode_label = opcode.as_deref().unwrap_or("<none>");
+    MethodSurfaceCandidate {
+        name: format!("op::{opcode_label}"),
+        source_function: "recv_internal".to_owned(),
+        opcode,
+        fields: inbound_body
+            .field_candidates
+            .iter()
+            .map(method_surface_field)
+            .collect(),
+        unknowns: unknown_fields.to_vec(),
+        confidence: confidence.to_owned(),
+        evidence: examples.to_vec(),
+    }
+}
+
+fn method_surface_field(field: &BodyFieldCandidate) -> MethodSurfaceField {
+    MethodSurfaceField {
+        name: field.name.clone(),
+        kind: field.kind.clone(),
+        source: "body".to_owned(),
+        bit_offset: field.bit_offset,
+        min_bits: field.min_bits,
+        max_bits: field.max_bits,
+        min_refs: field.min_refs,
+        max_refs: field.max_refs,
+        confidence: field.confidence.clone(),
     }
 }
 
@@ -2991,6 +3104,35 @@ mod tests {
 
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(
+            json["opcodeCandidates"][0]["methodSurface"]["sourceFunction"],
+            "recv_internal"
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["methodSurface"]["fields"][0],
+            serde_json::json!({
+                "name": "opcode",
+                "kind": "uint32",
+                "source": "body",
+                "bitOffset": 0,
+                "minBits": 32,
+                "maxBits": 32,
+                "minRefs": 0,
+                "maxRefs": 0,
+                "confidence": "high"
+            })
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["methodSurface"]["unknowns"],
+            serde_json::json!([
+                "message body field names require TL-B recovery",
+                "storage field names require typed storage decoding"
+            ])
+        );
+        assert_eq!(
+            json["opcodeCandidates"][0]["methodSurface"]["evidence"],
+            serde_json::json!(["tx-a", "tx-b"])
+        );
+        assert_eq!(
             json["opcodeCandidates"][0]["unknownFieldEvidence"][0],
             serde_json::json!({
                 "marker": "message body field names require TL-B recovery",
@@ -3522,6 +3664,8 @@ mod tests {
         ));
         assert!(report.contains("## Replay Probes"));
         assert!(report.contains("| `0x00000001` | `query_id` | `--set-body-uint 32:64:0x0000000000000006` | high | `tx-a` |"));
+        assert!(report.contains("## Method Surface"));
+        assert!(report.contains("| `0x00000001` | `op::0x00000001` | recv_internal | `opcode:uint32@body:0`, `query_id:uint64@body:32`, `payload_tail:raw@body:96` | message body field names require TL-B recovery, storage field names require typed storage decoding | medium | `tx-a` |"));
     }
 
     #[test]
