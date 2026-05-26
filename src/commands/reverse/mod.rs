@@ -10824,37 +10824,11 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    let actual_opcode = option_text_label(flow.inbound.opcode.as_deref());
-    let expected_opcode = option_text_label(corpus_flow.inbound.opcode.as_deref());
-    validate_evidence_text_field(
-        "transaction inbound opcode",
-        &actual_opcode,
-        "corpus inbound opcode",
-        &expected_opcode,
-        tx_hash,
-        gate_failures,
-    );
-    validate_evidence_text_field(
-        "transaction inbound body hash",
-        &flow.inbound.body.hash,
-        "corpus inbound body hash",
-        &corpus_flow.inbound.body.hash,
-        tx_hash,
-        gate_failures,
-    );
-    validate_evidence_value_field(
-        "transaction inbound body bits",
-        flow.inbound.body.bits,
-        "corpus inbound body bits",
-        corpus_flow.inbound.body.bits,
-        tx_hash,
-        gate_failures,
-    );
-    validate_evidence_value_field(
-        "transaction inbound body refs",
-        flow.inbound.body.refs,
-        "corpus inbound body refs",
-        corpus_flow.inbound.body.refs,
+    validate_message_artifact_matches_corpus(
+        "transaction inbound",
+        &flow.inbound,
+        "corpus inbound",
+        &corpus_flow.inbound,
         tx_hash,
         gate_failures,
     );
@@ -11802,37 +11776,11 @@ fn validate_replay_baseline_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    let actual_opcode = option_text_label(replay.baseline.inbound.opcode.as_deref());
-    let expected_opcode = option_text_label(corpus_flow.inbound.opcode.as_deref());
-    validate_evidence_text_field(
-        "replay baseline inbound opcode",
-        &actual_opcode,
-        "corpus inbound opcode",
-        &expected_opcode,
-        tx_hash,
-        gate_failures,
-    );
-    validate_evidence_text_field(
-        "replay baseline inbound body hash",
-        &replay.baseline.inbound.body.hash,
-        "corpus inbound body hash",
-        &corpus_flow.inbound.body.hash,
-        tx_hash,
-        gate_failures,
-    );
-    validate_evidence_value_field(
-        "replay baseline inbound body bits",
-        replay.baseline.inbound.body.bits,
-        "corpus inbound body bits",
-        corpus_flow.inbound.body.bits,
-        tx_hash,
-        gate_failures,
-    );
-    validate_evidence_value_field(
-        "replay baseline inbound body refs",
-        replay.baseline.inbound.body.refs,
-        "corpus inbound body refs",
-        corpus_flow.inbound.body.refs,
+    validate_message_artifact_matches_corpus(
+        "replay baseline inbound",
+        &replay.baseline.inbound,
+        "corpus inbound",
+        &corpus_flow.inbound,
         tx_hash,
         gate_failures,
     );
@@ -16206,6 +16154,58 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_transaction_inbound_message_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"]["dst"] = serde_json::json!("wrong-dst");
+        tx["inbound"]["messageBoc64"] = serde_json::json!("wrong-msg");
+        tx["inbound"]["body"]["boc64"] = serde_json::json!("wrong-body");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction inbound dst wrong-dst for tx-a does not match corpus inbound dst dst",
+                )
+            }),
+            "expected transaction inbound dst mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction inbound message boc64 wrong-msg for tx-a does not match corpus inbound message boc64 msg",
+                )
+            }),
+            "expected transaction inbound message BoC mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction inbound body boc64 wrong-body for tx-a does not match corpus inbound body boc64 body",
+                )
+            }),
+            "expected transaction inbound body BoC mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_effect_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -19139,6 +19139,62 @@ mod tests {
                 )
             }),
             "expected replay baseline state balance mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_baseline_inbound_message_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["baseline"]["inbound"]["dst"] = serde_json::json!("wrong-dst");
+        replay["baseline"]["inbound"]["messageBoc64"] = serde_json::json!("wrong-msg");
+        replay["baseline"]["inbound"]["body"]["boc64"] = serde_json::json!("wrong-body");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline inbound dst wrong-dst for tx-a does not match corpus inbound dst dst",
+                )
+            }),
+            "expected replay baseline inbound dst mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline inbound message boc64 wrong-msg for tx-a does not match corpus inbound message boc64 msg",
+                )
+            }),
+            "expected replay baseline inbound message BoC mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline inbound body boc64 wrong-body for tx-a does not match corpus inbound body boc64 body",
+                )
+            }),
+            "expected replay baseline inbound body BoC mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
