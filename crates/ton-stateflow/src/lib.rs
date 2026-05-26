@@ -78,6 +78,8 @@ pub struct StateFlowSchemaReport {
     #[serde(default)]
     pub message_surface: MessageSurfaceCandidate,
     #[serde(default)]
+    pub replay_surface: ReplaySurfaceCandidate,
+    #[serde(default)]
     pub effect_surface: EffectSurfaceCandidate,
     #[serde(default)]
     pub storage_layout: StorageLayoutCandidate,
@@ -182,6 +184,29 @@ pub struct MessageSurfaceField {
     pub present_count: usize,
     pub value_samples: Vec<String>,
     pub confidence: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaySurfaceCandidate {
+    pub probes: Vec<ReplaySurfaceProbe>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaySurfaceProbe {
+    pub opcode: Option<String>,
+    pub op_name: String,
+    pub field_name: String,
+    pub field_kind: String,
+    pub source: String,
+    pub bit_offset: u16,
+    pub bits: u16,
+    pub value: String,
+    pub mutation: ReplayMutation,
+    pub cli_arg: String,
+    pub confidence: String,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -693,6 +718,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         .collect();
     let op_table = op_table_from_candidates(&opcode_candidates);
     let message_surface = message_surface_from_candidates(&opcode_candidates);
+    let replay_surface = replay_surface_from_candidates(&opcode_candidates);
     let effect_surface = effect_surface_from_candidates(&opcode_candidates);
     let storage_layout = storage_layout_from_candidates(&opcode_candidates);
 
@@ -704,6 +730,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         state_machine: state_machine_graph(&corpus.transactions),
         op_table,
         message_surface,
+        replay_surface,
         effect_surface,
         storage_layout,
         audit_signals: infer_schema_audit_signals(corpus, &opcode_candidates),
@@ -1068,6 +1095,37 @@ pub fn render_state_flow_report(
                 )
                 .ok();
             }
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Replay Surface").ok();
+    if schema.replay_surface.probes.is_empty() {
+        writeln!(report, "- No replay surface probes were inferred.").ok();
+    } else {
+        writeln!(report, "| Opcode | Name | Field | Source | Kind | Offset | Bits | Mutation | CLI mutation | Confidence | Evidence |").ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |"
+        )
+        .ok();
+        for probe in &schema.replay_surface.probes {
+            writeln!(
+                report,
+                "| {} | `{}` | `{}` | {} | {} | {} | {} | {} | `{}` | {} | {} |",
+                markdown_code_opt(probe.opcode.as_deref()),
+                markdown_escape(&probe.op_name),
+                markdown_escape(&probe.field_name),
+                markdown_escape(&probe.source),
+                markdown_escape(&probe.field_kind),
+                probe.bit_offset,
+                probe.bits,
+                markdown_escape(&mutation_label(&probe.mutation)),
+                markdown_escape(&probe.cli_arg),
+                markdown_escape(&probe.confidence),
+                markdown_code_list(&probe.evidence),
+            )
+            .ok();
         }
     }
     writeln!(report).ok();
@@ -2503,6 +2561,54 @@ fn message_surface_field(field: &BodyFieldCandidate) -> MessageSurfaceField {
         value_samples: field.value_samples.clone(),
         confidence: field.confidence.clone(),
     }
+}
+
+pub fn replay_surface_from_candidates(
+    candidates: &[OpcodeSchemaCandidate],
+) -> ReplaySurfaceCandidate {
+    ReplaySurfaceCandidate {
+        probes: candidates
+            .iter()
+            .flat_map(replay_surface_probes)
+            .collect::<Vec<_>>(),
+    }
+}
+
+fn replay_surface_probes(candidate: &OpcodeSchemaCandidate) -> Vec<ReplaySurfaceProbe> {
+    let opcode_label = plain_opcode_label(candidate.opcode.as_deref());
+    let op_name = if candidate.method_surface.name.is_empty() {
+        format!("op::{opcode_label}")
+    } else {
+        candidate.method_surface.name.clone()
+    };
+
+    candidate
+        .replay_probes
+        .iter()
+        .map(|probe| {
+            let field = candidate
+                .inbound_body
+                .field_candidates
+                .iter()
+                .find(|field| field.name == probe.field_name);
+            ReplaySurfaceProbe {
+                opcode: candidate.opcode.clone(),
+                op_name: op_name.clone(),
+                field_name: probe.field_name.clone(),
+                field_kind: field
+                    .map(|field| field.kind.clone())
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                source: "body".to_owned(),
+                bit_offset: probe.bit_offset,
+                bits: probe.bits,
+                value: probe.value.clone(),
+                mutation: probe.mutation.clone(),
+                cli_arg: probe.cli_arg.clone(),
+                confidence: probe.confidence.clone(),
+                evidence: probe.evidence.clone(),
+            }
+        })
+        .collect()
 }
 
 pub fn effect_surface_from_candidates(
@@ -4108,6 +4214,56 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_persists_replay_surface() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_body_fields("tx-a", 0x0000_0001, 7, 0xaa),
+                sample_flow_with_body_fields("tx-b", 0x0000_0001, 8, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["replaySurface"]["probes"][1],
+            serde_json::json!({
+                "opcode": "0x00000001",
+                "opName": "op::0x00000001",
+                "fieldName": "query_id",
+                "fieldKind": "uint64",
+                "source": "body",
+                "bitOffset": 32,
+                "bits": 64,
+                "value": "0x0000000000000006",
+                "mutation": {
+                    "type": "setBodyUint",
+                    "bitOffset": 32,
+                    "bits": 64,
+                    "value": "0x0000000000000006"
+                },
+                "cliArg": "--set-body-uint 32:64:0x0000000000000006",
+                "confidence": "high",
+                "evidence": ["tx-a", "tx-b"]
+            })
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("## Replay Surface"));
+        assert!(report.contains("| Opcode | Name | Field | Source | Kind | Offset | Bits | Mutation | CLI mutation | Confidence | Evidence |"));
+        assert!(report.contains("| `0x00000001` | `op::0x00000001` | `query_id` | body | uint64 | 32 | 64 | set body uint 0x0000000000000006 at 32:64 | `--set-body-uint 32:64:0x0000000000000006` | high | `tx-a`, `tx-b` |"));
+    }
+
+    #[test]
     fn infer_schema_candidates_reports_storage_field_candidates() {
         let corpus = StateFlowCorpus {
             schema_version: 1,
@@ -4737,6 +4893,7 @@ mod tests {
             serialized["messageSurface"]["messages"],
             serde_json::json!([])
         );
+        assert_eq!(serialized["replaySurface"]["probes"], serde_json::json!([]));
         assert_eq!(serialized["storageLayout"]["fields"], serde_json::json!([]));
         assert_eq!(serialized["auditSignals"], serde_json::json!([]));
     }

@@ -92,6 +92,7 @@ export interface StateFlowSchemaReport {
   readonly stateMachine?: StateMachineGraph | null
   readonly opTable?: OpTableCandidate | null
   readonly messageSurface?: MessageSurfaceCandidate | null
+  readonly replaySurface?: ReplaySurfaceCandidate | null
   readonly effectSurface?: EffectSurfaceCandidate | null
   readonly storageLayout?: StorageLayoutCandidate | null
   readonly auditSignals?: readonly AuditSignal[] | null
@@ -182,6 +183,25 @@ export interface MessageSurfaceField {
   readonly presentCount: number
   readonly valueSamples: readonly string[]
   readonly confidence: string
+}
+
+export interface ReplaySurfaceCandidate {
+  readonly probes: readonly ReplaySurfaceProbe[]
+}
+
+export interface ReplaySurfaceProbe {
+  readonly opcode?: string | null
+  readonly opName: string
+  readonly fieldName: string
+  readonly fieldKind: string
+  readonly source: string
+  readonly bitOffset: number
+  readonly bits: number
+  readonly value: string
+  readonly mutation: ReplayMutation
+  readonly cliArg: string
+  readonly confidence: string
+  readonly evidence: readonly string[]
 }
 
 export interface EffectSurfaceCandidate {
@@ -818,6 +838,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const effectRows = schemaEffectRows(schema)
   const evidenceRows = schemaEvidenceRows(schema)
   const replayProbeRows = schemaReplayProbeRows(schema)
+  const replaySurfaceRows = schemaReplaySurfaceRows(schema)
   const unknownFieldRows = schemaUnknownFieldRows(schema)
   return {
     title: "State Flow Schema",
@@ -834,6 +855,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Effect Surface", value: effectSurfaceRows.length.toString()},
       {label: "Effects", value: effectRows.length.toString()},
       {label: "Replay Probes", value: replayProbeRows.length.toString()},
+      {label: "Replay Surface", value: replaySurfaceRows.length.toString()},
       {label: "State Nodes", value: stateNodes.length.toString()},
       {label: "State Edges", value: stateEdges.length.toString()},
       {label: "Audit Signals", value: auditSignals.length.toString()},
@@ -934,6 +956,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Replay Probes",
               rows: replayProbeRows,
+            },
+          ]
+        : []),
+      ...(replaySurfaceRows.length > 0
+        ? [
+            {
+              title: "Replay Surface",
+              rows: replaySurfaceRows,
             },
           ]
         : []),
@@ -1182,6 +1212,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const runtimeEvidenceRows = reportRuntimeEvidenceRows(report)
   const messageBodyFieldRows = reportMessageBodyFieldRows(report)
   const replayProbeRows = reportReplayProbeRows(report)
+  const replaySurfaceRows = reportReplaySurfaceRows(report)
   const storageFieldRows = reportStorageFieldRows(report)
   const storageLayoutRows = reportStorageLayoutRows(report)
   const effectSurfaceRows = reportEffectSurfaceRows(report)
@@ -1260,6 +1291,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Replay Probes",
               rows: replayProbeRows,
+            },
+          ]
+        : []),
+      ...(replaySurfaceRows.length > 0
+        ? [
+            {
+              title: "Replay Surface",
+              rows: replaySurfaceRows,
             },
           ]
         : []),
@@ -1590,6 +1629,24 @@ function reportReplayProbeRows(report: StateFlowReport): readonly SummaryRow[] {
       tableValueLabel("evidence", rowValue(row, "Evidence")),
     ]
       .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportReplaySurfaceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Replay Surface").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Field"]),
+    value: rowValue(row, "CLI mutation") || "n/a",
+    detail: [
+      rowValue(row, "Name"),
+      `${rowValue(row, "Source") || "n/a"} ${rowValue(row, "Kind") || "n/a"} @${
+        rowValue(row, "Offset") || "n/a"
+      }:${rowValue(row, "Bits") || "n/a"}`,
+      tableValueLabel("mutation", rowValue(row, "Mutation")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
       .join(" · "),
   }))
 }
@@ -2591,6 +2648,60 @@ function schemaReplayProbeRows(schema: StateFlowSchemaReport): readonly SummaryR
         .join(" · "),
     }))
   })
+}
+
+function schemaReplaySurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schemaReplaySurfaceProbes(schema).map(replaySurfaceRow)
+}
+
+function schemaReplaySurfaceProbes(schema: StateFlowSchemaReport): readonly ReplaySurfaceProbe[] {
+  const structured = schema.replaySurface?.probes ?? []
+  if (structured.length > 0) {
+    return structured
+  }
+  return schema.opcodeCandidates.flatMap(candidate =>
+    (candidate.replayProbes ?? []).map(probe => replaySurfaceProbeFromCandidate(candidate, probe)),
+  )
+}
+
+function replaySurfaceProbeFromCandidate(
+  candidate: OpcodeSchemaCandidate,
+  probe: ReplayProbeCandidate,
+): ReplaySurfaceProbe {
+  const field = (candidate.inboundBody.fieldCandidates ?? []).find(
+    field => field.name === probe.fieldName,
+  )
+  const opcode = candidate.opcode ?? null
+  return {
+    opcode,
+    opName: candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`,
+    fieldName: probe.fieldName,
+    fieldKind: field?.kind ?? "unknown",
+    source: "body",
+    bitOffset: probe.bitOffset,
+    bits: probe.bits,
+    value: probe.value,
+    mutation: probe.mutation,
+    cliArg: probe.cliArg,
+    confidence: probe.confidence,
+    evidence: probe.evidence,
+  }
+}
+
+function replaySurfaceRow(probe: ReplaySurfaceProbe): SummaryRow {
+  return {
+    label: `${formatOpcode(probe.opcode ?? null)} ${probe.fieldName}`,
+    value: probe.cliArg,
+    detail: [
+      probe.opName,
+      `${probe.source} ${probe.fieldKind} @${probe.bitOffset}:${probe.bits}`,
+      mutationLabel(probe.mutation),
+      `confidence ${probe.confidence}`,
+      `evidence ${probe.evidence.map(hash => shortHash(hash)).join(", ")}`,
+    ]
+      .filter(value => value.length > 0)
+      .join(" · "),
+  }
 }
 
 function schemaUnknownFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

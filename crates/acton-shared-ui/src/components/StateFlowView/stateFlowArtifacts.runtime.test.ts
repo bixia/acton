@@ -169,6 +169,29 @@ const schema = {
       },
     ],
   },
+  replaySurface: {
+    probes: [
+      {
+        opcode: "0x00000001",
+        opName: "op::0x00000001",
+        fieldName: "query_id",
+        fieldKind: "uint64",
+        source: "body",
+        bitOffset: 32,
+        bits: 64,
+        value: "0x0000000000000006",
+        mutation: {
+          type: "setBodyUint",
+          bitOffset: 32,
+          bits: 64,
+          value: "0x0000000000000006",
+        },
+        cliArg: "--set-body-uint 32:64:0x0000000000000006",
+        confidence: "high",
+        evidence: ["tx-a"],
+      },
+    ],
+  },
   effectSurface: {
     effects: [
       {
@@ -693,6 +716,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | --- | --- | --- |
 | \`0x00000001\` | \`query_id\` | \`--set-body-uint 32:64:0x6\` | high | \`tx-a\` |
 
+## Replay Surface
+| Opcode | Name | Field | Source | Kind | Offset | Bits | Mutation | CLI mutation | Confidence | Evidence |
+| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |
+| \`0x00000001\` | \`op::0x00000001\` | \`query_id\` | body | uint64 | 32 | 64 | set body uint 0x6 at 32:64 | \`--set-body-uint 32:64:0x6\` | high | \`tx-a\` |
+
 ## Storage Fields
 | Opcode | Field | Cell | Offset | Bits | Refs | Kind | Samples | Confidence |
 | --- | --- | --- | ---: | --- | --- | --- | --- | --- |
@@ -929,6 +957,21 @@ assert(
   "expected replay probe CLI arg",
 )
 assert(replayProbeRows[0]?.detail?.includes("tx-a") === true, "expected replay probe evidence")
+const replaySurfaceRows = sectionRows(schemaSummary, "Replay Surface")
+assert(
+  schemaSummary.metrics.some(metric => metric.label === "Replay Surface" && metric.value === "1"),
+  "expected schema replay surface metric",
+)
+assert(replaySurfaceRows[0]?.label === "0x00000001 query_id", "expected replay surface row")
+assert(
+  replaySurfaceRows[0]?.value === "--set-body-uint 32:64:0x0000000000000006",
+  "expected replay surface CLI arg",
+)
+assert(
+  replaySurfaceRows[0]?.detail ===
+    "op::0x00000001 · body uint64 @32:64 · set body uint 0x0000000000000006 at 32:64 · confidence high · evidence tx-a",
+  "expected replay surface detail",
+)
 const schemaUnknownRows = sectionRows(schemaSummary, "Unknown Fields")
 assert(schemaUnknownRows[0]?.label === "0x00000001", "expected schema unknown opcode")
 assert(
@@ -1164,7 +1207,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "18"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "19"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1248,6 +1291,20 @@ assert(reportReplayProbeRows[0]?.label === "0x00000001 query_id", "expected repl
 assert(
   reportReplayProbeRows[0]?.value === "--set-body-uint 32:64:0x6",
   "expected replay probe mutation",
+)
+const reportReplaySurfaceRows = sectionRows(reportSummary, "Replay Surface")
+assert(
+  reportReplaySurfaceRows[0]?.label === "0x00000001 query_id",
+  "expected report replay surface row",
+)
+assert(
+  reportReplaySurfaceRows[0]?.value === "--set-body-uint 32:64:0x6",
+  "expected report replay surface CLI arg",
+)
+assert(
+  reportReplaySurfaceRows[0]?.detail ===
+    "op::0x00000001 · body uint64 @32:64 · mutation set body uint 0x6 at 32:64 · confidence high · evidence tx-a",
+  "expected report replay surface detail",
 )
 const reportStorageRows = sectionRows(reportSummary, "Storage Fields")
 assert(reportStorageRows[0]?.label === "0x00000001 data_word_0", "expected storage field row")

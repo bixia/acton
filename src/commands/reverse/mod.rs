@@ -2256,6 +2256,7 @@ fn validate_state_flow_schema_evidence_keys(
         ("state machine", &["stateMachine"][..]),
         ("op table", &["opTable"][..]),
         ("message surface", &["messageSurface"][..]),
+        ("replay surface", &["replaySurface"][..]),
         ("effect surface", &["effectSurface"][..]),
         ("storage layout", &["storageLayout"][..]),
         ("audit signals", &["auditSignals"][..]),
@@ -2272,6 +2273,7 @@ fn validate_state_flow_schema_evidence_keys(
     validate_schema_state_machine_evidence_keys(value, artifact, gate_failures);
     validate_schema_op_table_evidence_keys(value, artifact, gate_failures);
     validate_schema_message_surface_evidence_keys(value, artifact, gate_failures);
+    validate_schema_replay_surface_evidence_keys(value, artifact, gate_failures);
     validate_schema_effect_surface_evidence_keys(value, artifact, gate_failures);
     validate_schema_storage_layout_evidence_keys(value, artifact, gate_failures);
     validate_schema_audit_signal_evidence_keys(value, artifact, gate_failures);
@@ -2475,6 +2477,55 @@ fn validate_schema_message_surface_evidence_keys(
                 }
             }
             validate_schema_confidence_label(field, &field_prefix, gate_failures);
+        }
+    }
+}
+
+fn validate_schema_replay_surface_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(surface) = value.get("replaySurface") else {
+        return;
+    };
+    for (label, path) in [("probes", &["probes"][..])] {
+        if !json_path_exists(surface, path) {
+            gate_failures.push(format!(
+                "schema artifact {} replaySurface missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+    let Some(probes) = surface.get("probes").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, probe) in probes.iter().enumerate() {
+        let prefix = format!(
+            "schema artifact {} replaySurface.probes[{index}]",
+            artifact.path
+        );
+        for (label, path) in [
+            ("opcode", &["opcode"][..]),
+            ("op name", &["opName"][..]),
+            ("field name", &["fieldName"][..]),
+            ("field kind", &["fieldKind"][..]),
+            ("source", &["source"][..]),
+            ("bit offset", &["bitOffset"][..]),
+            ("bits", &["bits"][..]),
+            ("value", &["value"][..]),
+            ("mutation", &["mutation"][..]),
+            ("CLI arg", &["cliArg"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(probe, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_confidence_label(probe, &prefix, gate_failures);
+        if let Some(mutation) = probe.get("mutation") {
+            validate_replay_mutation_value_evidence_keys(mutation, &prefix, gate_failures);
         }
     }
 }
@@ -4699,6 +4750,17 @@ fn validate_schema_corpus_membership(
         }
     }
     validate_schema_message_surface_matches_candidates(schema, gate_failures);
+    for probe in &schema.replay_surface.probes {
+        for evidence in &probe.evidence {
+            validate_corpus_hash_membership(
+                "schema replay-surface evidence",
+                evidence,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+    }
+    validate_schema_replay_surface_matches_candidates(schema, gate_failures);
     for effect in &schema.effect_surface.effects {
         for evidence in &effect.evidence {
             validate_corpus_hash_membership(
@@ -6311,6 +6373,126 @@ fn validate_schema_message_surface_matches_candidates(
     }
 }
 
+fn validate_schema_replay_surface_matches_candidates(
+    schema: &StateFlowSchemaReport,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected = ton_stateflow::replay_surface_from_candidates(&schema.opcode_candidates);
+    let expected_by_key = expected
+        .probes
+        .iter()
+        .map(|probe| (replay_surface_key(probe), probe))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = HashSet::new();
+
+    for probe in &schema.replay_surface.probes {
+        let key = replay_surface_key(probe);
+        seen.insert(key.clone());
+        let Some(expected) = expected_by_key.get(&key).copied() else {
+            gate_failures.push(format!(
+                "schema replay-surface probe {} is not backed by an opcode candidate replay probe",
+                probe.cli_arg
+            ));
+            continue;
+        };
+        let label = &probe.cli_arg;
+        validate_evidence_text_field(
+            "schema replay-surface probe op name",
+            &probe.op_name,
+            "opcode candidate replay probe op name",
+            &expected.op_name,
+            label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema replay-surface probe field name",
+            &probe.field_name,
+            "opcode candidate replay probe field name",
+            &expected.field_name,
+            label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema replay-surface probe field kind",
+            &probe.field_kind,
+            "opcode candidate replay probe field kind",
+            &expected.field_kind,
+            label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema replay-surface probe source",
+            &probe.source,
+            "opcode candidate replay probe source",
+            &expected.source,
+            label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema replay-surface probe bit offset",
+            probe.bit_offset,
+            "opcode candidate replay probe bit offset",
+            expected.bit_offset,
+            label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema replay-surface probe bits",
+            probe.bits,
+            "opcode candidate replay probe bits",
+            expected.bits,
+            label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema replay-surface probe value",
+            &probe.value,
+            "opcode candidate replay probe value",
+            &expected.value,
+            label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema replay-surface probe confidence",
+            &probe.confidence,
+            "opcode candidate replay probe confidence",
+            &expected.confidence,
+            label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema replay-surface probe evidence",
+            &report_sample_list(&probe.evidence),
+            "opcode candidate replay probe evidence",
+            &report_sample_list(&expected.evidence),
+            label,
+            gate_failures,
+        );
+        if !replay_mutations_match(&probe.mutation, &expected.mutation) {
+            gate_failures.push(format!(
+                "schema replay-surface probe mutation {} for {} does not match opcode candidate replay probe mutation {}",
+                report_replay_mutation_label(&probe.mutation),
+                probe.cli_arg,
+                report_replay_mutation_label(&expected.mutation)
+            ));
+        }
+    }
+
+    for expected in &expected.probes {
+        let key = replay_surface_key(expected);
+        if !seen.contains(&key) {
+            gate_failures.push(format!(
+                "schema replay-surface probe {} is missing",
+                expected.cli_arg
+            ));
+        }
+    }
+}
+
+fn replay_surface_key(probe: &ton_stateflow::ReplaySurfaceProbe) -> (Option<String>, String) {
+    (probe.opcode.clone(), probe.cli_arg.clone())
+}
+
 fn validate_schema_effect_surface_matches_candidates(
     schema: &StateFlowSchemaReport,
     gate_failures: &mut Vec<String>,
@@ -6808,6 +6990,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Runtime Evidence",
         "## Message Body Fields",
         "## Replay Probes",
+        "## Replay Surface",
         "## Storage Fields",
         "## Storage Layout",
         "## Effect Surface",
@@ -7628,6 +7811,24 @@ fn validate_report_schema_deliverables(
         }
     }
 
+    if let Some(section) = markdown_section(markdown, "## Replay Surface") {
+        if !schema.replay_surface.probes.is_empty() {
+            validate_report_replay_surface_header(section, gate_failures);
+        }
+        for probe in &schema.replay_surface.probes {
+            let row = report_replay_surface_row(section, probe);
+            if row.is_none() {
+                gate_failures.push(format!(
+                    "report replay surface {} is missing",
+                    probe.cli_arg
+                ));
+            }
+            if let Some(row) = row {
+                validate_report_replay_surface_values(probe, &row, gate_failures);
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## Storage Fields") {
         if schema
             .opcode_candidates
@@ -7837,6 +8038,38 @@ fn replay_probes_report_header() -> Vec<String> {
         .iter()
         .map(|header| header.to_string())
         .collect()
+}
+
+fn validate_report_replay_surface_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = replay_surface_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report replay surface header {expected:?} is missing"
+        ));
+    }
+}
+
+fn replay_surface_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Name",
+        "Field",
+        "Source",
+        "Kind",
+        "Offset",
+        "Bits",
+        "Mutation",
+        "CLI mutation",
+        "Confidence",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
 }
 
 fn validate_report_storage_fields_header(section: &str, gate_failures: &mut Vec<String>) {
@@ -8740,6 +8973,98 @@ fn validate_report_replay_probe_cell(
     if actual.is_none_or(|actual| actual != &expected) {
         gate_failures.push(format!(
             "report replay probe {label} {expected} for {} is missing",
+            probe.cli_arg
+        ));
+    }
+}
+
+fn report_replay_surface_row(
+    section: &str,
+    probe: &ton_stateflow::ReplaySurfaceProbe,
+) -> Option<Vec<String>> {
+    let opcode = report_opcode_label(probe.opcode.as_deref());
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == &opcode)
+            && cells.get(2).is_some_and(|cell| cell == &probe.field_name)
+            && cells.get(8).is_some_and(|cell| cell == &probe.cli_arg))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_replay_surface_values(
+    probe: &ton_stateflow::ReplaySurfaceProbe,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_replay_surface_cell(
+        "op name",
+        probe.op_name.clone(),
+        probe,
+        row.get(1),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "source",
+        probe.source.clone(),
+        probe,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "kind",
+        probe.field_kind.clone(),
+        probe,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "offset",
+        probe.bit_offset.to_string(),
+        probe,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "bits",
+        probe.bits.to_string(),
+        probe,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "mutation",
+        report_replay_mutation_label(&probe.mutation),
+        probe,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "confidence",
+        probe.confidence.clone(),
+        probe,
+        row.get(9),
+        gate_failures,
+    );
+    validate_report_replay_surface_cell(
+        "evidence",
+        report_sample_list(&probe.evidence),
+        probe,
+        row.get(10),
+        gate_failures,
+    );
+}
+
+fn validate_report_replay_surface_cell(
+    label: &str,
+    expected: String,
+    probe: &ton_stateflow::ReplaySurfaceProbe,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report replay surface {label} {expected} for {} is missing",
             probe.cli_arg
         ));
     }
@@ -11776,6 +12101,101 @@ mod tests {
                 )
             }),
             "expected schema message surface transaction count failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_replay_surface_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("replaySurface");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json missing replay surface evidence key",
+                )
+            }),
+            "expected missing schema replay surface key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_replay_surface_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["replaySurface"] = serde_json::json!({
+            "probes": [{
+                "opcode": "0x00000001",
+                "opName": "op::0x00000001",
+                "fieldName": "query_id",
+                "fieldKind": "uint64",
+                "source": "body",
+                "bitOffset": 0,
+                "bits": 64,
+                "value": "0x6",
+                "mutation": {
+                    "type": "setBodyUint",
+                    "bitOffset": 0,
+                    "bits": 64,
+                    "value": "0x6"
+                },
+                "cliArg": "--set-body-uint 0:64:0x6",
+                "confidence": "high",
+                "evidence": ["tx-a", "tx-b"]
+            }]
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema replay-surface probe --set-body-uint 0:64:0x6 is not backed by an opcode candidate replay probe",
+                )
+            }),
+            "expected schema replay surface backing failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -15277,6 +15697,7 @@ mod tests {
                         "evidence": ["tx-a", "tx-b"]
                     }]
                 },
+                "replaySurface": {"probes": []},
                 "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
@@ -15675,6 +16096,7 @@ mod tests {
                         "evidence": ["tx-a", "tx-b"]
                     }]
                 },
+                "replaySurface": {"probes": []},
                 "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
@@ -17420,6 +17842,7 @@ mod tests {
                         "evidence": ["tx-a", "tx-b"]
                     }]
                 },
+                "replaySurface": {"probes": []},
                 "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
@@ -17941,6 +18364,9 @@ mod tests {
              \n\
              ## Replay Probes\n\
              - No replay probe candidates were inferred.\n\
+             \n\
+             ## Replay Surface\n\
+             - No replay surface probes were inferred.\n\
              \n\
              ## Storage Fields\n\
              - No storage field candidates were inferred.\n\
