@@ -346,6 +346,9 @@ This conflicts with \fB\-\-manifest\-path\fR\&.
 When tests fork from the built\-in \fBmainnet\fR/\fBtestnet\fR backends, authenticated
 requests read \fBTONCENTER_MAINNET_API_KEY\fR or \fBTONCENTER_TESTNET_API_KEY\fR\&.
 .sp
+Both built\-in networks also fall back to \fBTON_CENTER_API_KEY\fR, which is useful
+when one shared key is kept in a local \fB\&.env\fR file.
+.sp
 When tests fork from \fBcustom:<name>\fR, Acton reads \fB<NORMALIZED_NAME>_API_KEY\fR\&.
 Custom network names are uppercased and non\-alphanumeric characters are
 replaced with \fB_\fR, so \fBcustom:mock\-remote\fR becomes \fBMOCK_REMOTE_API_KEY\fR\&.

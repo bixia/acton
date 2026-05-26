@@ -132,6 +132,9 @@ When localnet forks from the built-in `mainnet`/`testnet` backends,
 authenticated requests read `TONCENTER_MAINNET_API_KEY` or
 `TONCENTER_TESTNET_API_KEY`.
 
+Both built-in networks also fall back to `TON_CENTER_API_KEY`, which is useful
+when one shared key is kept in a local `.env` file.
+
 When localnet forks from `custom:<name>`, Acton reads
 `<NORMALIZED_NAME>_API_KEY`. Custom network names are uppercased and
 non-alphanumeric characters are replaced with `_`, so `custom:mock-remote`
