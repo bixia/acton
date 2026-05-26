@@ -13,8 +13,8 @@ use ton_stateflow::{
     StateFlowSchemaReport, StateFlowTx,
 };
 use tycho_types::boc::Boc;
-use tycho_types::cell::Cell;
-use tycho_types::models::{StdAddr, StdAddrFormat};
+use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, Store};
+use tycho_types::models::{Message, StdAddr, StdAddrFormat};
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
 const VALIDATION_ARTIFACT_PATH: &str = "validation.json";
@@ -2834,12 +2834,108 @@ fn validate_message_artifact_cell_consistency(
     tx_hash: &str,
     gate_failures: &mut Vec<String>,
 ) {
+    validate_message_artifact_decodable_consistency(label, message, tx_hash, gate_failures);
     validate_cell_artifact_decodable_consistency(
         &format!("{label} body"),
         &message.body,
         tx_hash,
         gate_failures,
     );
+}
+
+fn validate_message_artifact_decodable_consistency(
+    label: &str,
+    message: &MessageArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Ok(cell) = Boc::decode_base64(&message.message_boc64) else {
+        return;
+    };
+    let Ok(decoded) = cell.parse::<Message<'_>>() else {
+        return;
+    };
+    validate_message_body_matches_decoded(label, message, &decoded, tx_hash, gate_failures);
+    validate_evidence_optional_text_field(
+        &format!("{label} opcode"),
+        message.opcode.as_deref(),
+        "decoded message opcode",
+        opcode_from_message_body(decoded.body.clone(), decoded_message_bounced(&decoded))
+            .as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_message_body_matches_decoded(
+    label: &str,
+    message: &MessageArtifact,
+    decoded: &Message<'_>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(decoded_body) = cell_artifact_from_message_body(&decoded.body) else {
+        return;
+    };
+    validate_evidence_blob_field(
+        &format!("{label} body boc64"),
+        &message.body.boc64,
+        "decoded message body boc64",
+        &decoded_body.boc64,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("{label} body hash"),
+        &message.body.hash,
+        "decoded message body hash",
+        &decoded_body.hash,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{label} body bits"),
+        message.body.bits,
+        "decoded message body bits",
+        decoded_body.bits,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{label} body refs"),
+        message.body.refs,
+        "decoded message body refs",
+        decoded_body.refs,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn cell_artifact_from_message_body(body: &CellSlice<'_>) -> Option<CellArtifact> {
+    let mut builder = CellBuilder::new();
+    body.store_into(&mut builder, Cell::empty_context()).ok()?;
+    let cell = builder.build().ok()?;
+    let slice = cell.as_slice_allow_exotic();
+    Some(CellArtifact {
+        boc64: Boc::encode_base64(cell.clone()),
+        hash: hex::encode(cell.hash(0)),
+        bits: slice.size_bits(),
+        refs: slice.size_refs(),
+    })
+}
+
+fn decoded_message_bounced(message: &Message<'_>) -> bool {
+    matches!(
+        &message.info,
+        tycho_types::models::MsgInfo::Int(info) if info.bounced
+    )
+}
+
+fn opcode_from_message_body(mut body: CellSlice<'_>, bounced: bool) -> Option<String> {
+    if bounced {
+        body.skip_first(32, 0).ok()?;
+    }
+    Some(format!("0x{:08x}", body.load_u32().ok()?))
 }
 
 fn validate_cell_shape_decodable_consistency(
@@ -16592,6 +16688,44 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_tx_validation_rejects_message_body_mismatch_with_decoded_message() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        tx["inbound"]["opcode"] = serde_json::json!("0x00000002");
+        tx["inbound"]["body"] = test_cell_artifact_json(0x0000_0002, None);
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound body hash")
+                    && failure.contains("does not match decoded message body hash")
+            }),
+            "expected decoded message body mismatch failure, got {:?}",
+            gate_failures
+        );
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound opcode")
+                    && failure.contains(
+                        "0x00000002 for tx-a does not match decoded message opcode 0x00000001",
+                    )
+            }),
+            "expected decoded message opcode mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_tx_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let tx_path = temp_dir.path().join("transaction.json");
@@ -20459,6 +20593,60 @@ mod tests {
                     && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
             }),
             "expected replay decodable cell hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_replay_validation_rejects_message_body_mismatch_with_decoded_message() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        baseline_observation["inbound"]["opcode"] = serde_json::json!("0x00000002");
+        baseline_observation["inbound"]["body"] = test_cell_artifact_json(0x0000_0002, None);
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline inbound body hash")
+                    && failure.contains("does not match decoded message body hash")
+            }),
+            "expected replay decoded message body mismatch failure, got {:?}",
             gate_failures
         );
     }
