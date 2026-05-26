@@ -532,6 +532,15 @@ export function parseStateFlowArtifact(
   throw new Error("Unsupported StateFlow artifact shape")
 }
 
+export function parseStateFlowArtifactFromSource(
+  raw: string,
+  sourceName?: string | null,
+): StateFlowArtifact {
+  return parseStateFlowArtifact(raw, {
+    artifactKind: artifactKindFromSourceName(sourceName),
+  })
+}
+
 export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): ArtifactSummary {
   switch (artifact.kind) {
     case "transaction": {
@@ -562,6 +571,11 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
       return summarizeReport(artifact.data)
     }
   }
+}
+
+function artifactKindFromSourceName(sourceName: string | null | undefined): string | undefined {
+  const fileName = sourceName?.split(/[\\/]/).pop()?.toLowerCase()
+  return fileName === "retrace.json" ? "retrace" : undefined
 }
 
 function summarizeTransaction(

@@ -1,5 +1,6 @@
 import {
   parseStateFlowArtifact,
+  parseStateFlowArtifactFromSource,
   summarizeStateFlowArtifact,
   type StateFlowArtifact,
 } from "./stateFlowArtifacts"
@@ -428,6 +429,10 @@ assert(
     ?.rows[0]?.detail?.includes("vm step") === true,
   "expected retrace summary to include VM trace evidence",
 )
+const retraceFileSummary = summarizeStateFlowArtifact(
+  parseStateFlowArtifactFromSource(JSON.stringify(stateFlowTx), "retrace.json"),
+)
+assert(retraceFileSummary.title === "State Flow Retrace", "expected retrace filename hint")
 
 const summary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(corpus)))
 

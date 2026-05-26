@@ -1,4 +1,8 @@
-import {parseStateFlowArtifact, summarizeStateFlowArtifact} from "./stateFlowArtifacts.ts"
+import {
+  parseStateFlowArtifact,
+  parseStateFlowArtifactFromSource,
+  summarizeStateFlowArtifact,
+} from "./stateFlowArtifacts.ts"
 
 const stateFlowTx = {
   schemaVersion: 1,
@@ -527,6 +531,15 @@ assert(retraceSummary.title === "State Flow Retrace", "expected retrace summary 
 assert(
   sectionRows(retraceSummary, "Traces")[0]?.detail === "vm step 1",
   "expected retrace summary to keep VM trace evidence",
+)
+const retraceFileArtifact = parseStateFlowArtifactFromSource(
+  JSON.stringify(stateFlowTx),
+  "retrace.json",
+)
+assert(retraceFileArtifact.kind === "retrace", "expected retrace file source to set artifact kind")
+assert(
+  summarizeStateFlowArtifact(retraceFileArtifact).title === "State Flow Retrace",
+  "expected retrace file source to render as retrace",
 )
 
 const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))

@@ -4,7 +4,7 @@ import {FileUp, Trash2} from "lucide-react"
 import {Button} from "../ui/Button"
 
 import {StateFlowArtifactView} from "./StateFlowArtifactView"
-import {parseStateFlowArtifact, type StateFlowArtifact} from "./stateFlowArtifacts"
+import {parseStateFlowArtifactFromSource, type StateFlowArtifact} from "./stateFlowArtifacts"
 import styles from "./StateFlowArtifactWorkbench.module.css"
 
 export interface StateFlowArtifactWorkbenchProps {
@@ -26,9 +26,9 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
   const [error, setError] = React.useState<string | undefined>()
 
   const loadArtifact = React.useCallback(
-    (nextRaw: string) => {
+    (nextRaw: string, sourceName?: string) => {
       try {
-        const nextArtifact = parseStateFlowArtifact(nextRaw)
+        const nextArtifact = parseStateFlowArtifactFromSource(nextRaw, sourceName)
         setArtifact(nextArtifact)
         setError(undefined)
         if (storageKey) {
@@ -64,7 +64,7 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
 
       void file.text().then(text => {
         setRaw(text)
-        loadArtifact(text)
+        loadArtifact(text, file.name)
       })
       event.currentTarget.value = ""
     },
@@ -137,7 +137,7 @@ function parseInitialArtifact(raw: string): StateFlowArtifact | undefined {
     return undefined
   }
   try {
-    return parseStateFlowArtifact(raw)
+    return parseStateFlowArtifactFromSource(raw)
   } catch {
     return undefined
   }
