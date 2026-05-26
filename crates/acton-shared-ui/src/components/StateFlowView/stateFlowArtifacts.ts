@@ -1396,9 +1396,8 @@ function reportStateMachineRows(report: StateFlowReport): readonly SummaryRow[] 
 function reportStateMachineEvidenceRows(report: StateFlowReport): readonly SummaryRow[] {
   return reportTableRows(report, "State Machine Evidence").map(row => ({
     label:
-      [rowValue(row, "From"), rowValue(row, "To")]
-        .filter(value => value.length > 0)
-        .join(" -> ") || "n/a",
+      [rowValue(row, "From"), rowValue(row, "To")].filter(value => value.length > 0).join(" -> ") ||
+      "n/a",
     value: rowValue(row, "Opcode") || "<none>",
     detail: [
       tableCountLabel(rowValue(row, "Count"), "transition"),

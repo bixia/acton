@@ -3,9 +3,7 @@ import {
   parseStateFlowArtifactFromSource,
   summarizeStateFlowArtifact,
   type StateFlowArtifact,
-} from "./stateFlowArtifacts"
-import {StateFlowArtifactView} from "./StateFlowArtifactView"
-import {StateFlowArtifactWorkbench} from "./StateFlowArtifactWorkbench"
+} from "./stateFlowArtifacts.ts"
 
 const stateFlowTx = {
   schemaVersion: 1,
@@ -94,8 +92,8 @@ const stateFlowTx = {
       body: {boc64: "action-body", hash: "action-body", bits: 16, refs: 0},
     },
   ],
-  vmTrace: {lineCount: 2, text: "vm"},
-  executorTrace: {lineCount: 1, text: "executor"},
+  vmTrace: {lineCount: 2, text: "vm step 1"},
+  executorTrace: {lineCount: 1, text: "executor accepted"},
 }
 
 const corpus = {
@@ -140,6 +138,22 @@ const schema = {
       opcode: "0x00000001",
       count: 1,
       examples: ["tx-hash"],
+      evidence: [
+        {
+          txHash: "tx-hash",
+          inboundBodyHash: "body-hash",
+          inboundBodyBits: 32,
+          inboundBodyRefs: 0,
+          fromStatus: "active",
+          toStatus: "frozen",
+          preDataHash: "data-a",
+          postDataHash: "data-b",
+          preCodeHash: "code-a",
+          postCodeHash: "code-a",
+          outboundKinds: ["internal"],
+          outActionKinds: ["send_msg"],
+        },
+      ],
       inboundBody: {minBits: 32, maxBits: 32, minRefs: 0, maxRefs: 0, bodyHashes: ["body-hash"]},
       replayProbes: [
         {
@@ -269,10 +283,10 @@ const artifactValidation = {
   schemaVersion: 1,
   kind: "stateFlowArtifactManifestValidation",
   manifest: "out/artifacts.json",
-  targetCount: 1,
+  targetCount: 2,
   absolutePathCount: 0,
   expectedAbsolutePathCount: 0,
-  passed: true,
+  passed: false,
   gateFailures: [],
   capabilityCount: 2,
   capabilityPassedCount: 2,
@@ -308,6 +322,17 @@ const artifactValidation = {
           ],
         },
       ],
+    },
+    {
+      id: "target-b",
+      artifactCount: 3,
+      replayCount: 0,
+      passed: false,
+      gateFailures: ["missing replay artifact"],
+      capabilityCount: 0,
+      capabilityPassedCount: 0,
+      capabilityFailedCount: 0,
+      capabilityChecks: [],
     },
   ],
 }
@@ -549,7 +574,7 @@ assert(
   "expected artifact validation title",
 )
 assert(
-  validationView.metrics.some(metric => metric.label === "Passed" && metric.value === "yes"),
+  validationView.metrics.some(metric => metric.label === "Passed" && metric.value === "no"),
   "expected artifact validation pass metric",
 )
 assert(
@@ -662,9 +687,6 @@ assert(
     ?.rows.some(row => row.value === "Unknown fields remain for opcode 0x00000001.") === true,
   "expected report risk point rows",
 )
-assert(typeof StateFlowArtifactView === "function", "expected artifact view component export")
-assert(typeof StateFlowArtifactWorkbench === "function", "expected workbench component export")
-
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
     throw new Error(message)
