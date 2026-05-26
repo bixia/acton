@@ -1593,7 +1593,11 @@ fn validate_artifact_manifest_bundle_with_mode(
     if let Some(summary) = &summary {
         validate_manifest_summary_targets(manifest, &target_ids, summary, &mut gate_failures);
     }
-    for artifact in &manifest.artifacts {
+    for artifact in manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact_selected_for_validation(artifact, target_id))
+    {
         let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
         if !path.exists() {
             gate_failures.push(format!("missing artifact {}", artifact.path));
@@ -1640,6 +1644,18 @@ fn validate_artifact_manifest_bundle_with_mode(
         passed: gate_failures.is_empty(),
         gate_failures,
         ..expected_validation
+    })
+}
+
+fn artifact_selected_for_validation(
+    artifact: &SmokeArtifactManifestEntry,
+    target_id: Option<&str>,
+) -> bool {
+    target_id.is_none_or(|target_id| {
+        artifact
+            .target_id
+            .as_deref()
+            .is_none_or(|id| id == target_id)
     })
 }
 
@@ -7975,6 +7991,70 @@ mod tests {
         assert_eq!(validation.gate_failures, Vec::<String>::new());
         assert_eq!(validation.targets[0].id, "target-a");
         assert!(validation.targets[0].passed);
+    }
+
+    #[test]
+    fn artifact_manifest_validation_target_id_ignores_unselected_target_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        let mut target_b = summary.targets[0].clone();
+        target_b.id = "target-b".to_owned();
+        target_b.output_dir = "target-b".to_owned();
+        target_b.corpus = "target-b/corpus.json".to_owned();
+        target_b.schema = "target-b/schema.json".to_owned();
+        target_b.transaction = Some("target-b/transaction-0.json".to_owned());
+        target_b.replay = Some("target-b/replay.json".to_owned());
+        target_b.replays = vec!["target-b/replay.json".to_owned()];
+        target_b.report = "target-b/report.md".to_owned();
+        summary.targets.push(target_b);
+        summary.refresh_gate_status();
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "summary.json",
+            &serde_json::to_string(&summary).expect("summary should serialize"),
+        );
+
+        let mut manifest = sample_validation_manifest();
+        manifest.target_count = 2;
+        manifest.artifacts.extend([
+            super::SmokeArtifactManifestEntry::new(
+                "corpus",
+                "target-b/missing-corpus.json",
+                Some("target-b".to_owned()),
+            ),
+            super::SmokeArtifactManifestEntry::new(
+                "schema",
+                "target-b/missing-schema.json",
+                Some("target-b".to_owned()),
+            ),
+            super::SmokeArtifactManifestEntry::new(
+                "replay",
+                "target-b/missing-replay.json",
+                Some("target-b".to_owned()),
+            ),
+            super::SmokeArtifactManifestEntry::new(
+                "report",
+                "target-b/missing-report.md",
+                Some("target-b".to_owned()),
+            ),
+        ]);
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            Some("target-a"),
+        )
+        .expect("target validation should run");
+
+        assert!(
+            validation.passed,
+            "selected target should validate independently, got {:?}",
+            validation.gate_failures
+        );
+        assert_eq!(validation.target_count, 1);
+        assert_eq!(validation.targets.len(), 1);
+        assert_eq!(validation.targets[0].id, "target-a");
     }
 
     #[test]
