@@ -1,3 +1,5 @@
+import {Address} from "@ton/core"
+
 export type StateFlowArtifact =
   | {readonly kind: "transaction"; readonly data: StateFlowTx}
   | {readonly kind: "retrace"; readonly data: StateFlowTx}
@@ -842,7 +844,14 @@ export function parseStateFlowArtifactBundleFromSources(
   const missingArtifacts: StateFlowArtifactManifestEntry[] = []
   if (manifest) {
     for (const manifestArtifact of manifest.artifacts) {
-      const sourceArtifact = findSourceArtifactForManifestPath(artifacts, manifestArtifact.path)
+      const manifestTarget = manifest.targets?.find(
+        target => target.id === manifestArtifact.targetId,
+      )
+      const sourceArtifact = findSourceArtifactForManifestArtifact(
+        artifacts,
+        manifestArtifact,
+        manifestTarget,
+      )
       if (!sourceArtifact) {
         missingArtifacts.push(manifestArtifact)
         continue
@@ -964,10 +973,12 @@ function isArtifactBundleSource(value: unknown): value is StateFlowArtifactSourc
   return isRecord(value) && typeof value.name === "string" && typeof value.raw === "string"
 }
 
-function findSourceArtifactForManifestPath(
+function findSourceArtifactForManifestArtifact(
   artifacts: readonly ParsedStateFlowArtifactSource[],
-  manifestPath: string,
+  manifestArtifact: StateFlowArtifactManifestEntry,
+  manifestTarget: StateFlowArtifactManifestTarget | undefined,
 ): ParsedStateFlowArtifactSource | undefined {
+  const manifestPath = manifestArtifact.path
   const normalizedPath = normalizeArtifactPath(manifestPath)
   const exact = artifacts.find(({source}) => normalizeArtifactPath(source.name) === normalizedPath)
   if (exact) {
@@ -985,7 +996,16 @@ function findSourceArtifactForManifestPath(
   const baseNameMatches = artifacts.filter(
     ({source}) => artifactPathBaseName(normalizeArtifactPath(source.name)) === baseName,
   )
-  return baseNameMatches.length === 1 ? baseNameMatches[0] : undefined
+  if (baseNameMatches.length === 1) {
+    return baseNameMatches[0]
+  }
+
+  const targetCandidates = baseNameMatches.length > 0 ? baseNameMatches : artifacts
+  return targetCandidates.find(
+    ({artifact}) =>
+      artifactMatchesManifestKind(artifact.kind, manifestArtifact.kind) &&
+      artifactTargetMatchesManifestTarget(artifact, manifestTarget),
+  )
 }
 
 function normalizeArtifactPath(path: string): string {
@@ -994,6 +1014,96 @@ function normalizeArtifactPath(path: string): string {
 
 function artifactPathBaseName(path: string): string {
   return path.split("/").pop() ?? path
+}
+
+function artifactMatchesManifestKind(
+  artifactKind: StateFlowArtifact["kind"],
+  manifestKind: string,
+): boolean {
+  if (artifactKind === "artifactValidation") {
+    return manifestKind === "validation"
+  }
+  if (artifactKind === "artifactManifest") {
+    return manifestKind === "manifest"
+  }
+  if (artifactKind === "artifactBundle") {
+    return false
+  }
+  return artifactKind === manifestKind
+}
+
+function artifactTargetMatchesManifestTarget(
+  artifact: StateFlowArtifact,
+  manifestTarget: StateFlowArtifactManifestTarget | undefined,
+): boolean {
+  if (!manifestTarget?.address) {
+    return false
+  }
+  const identity = artifactTargetIdentity(artifact)
+  if (
+    !identity?.address ||
+    normalizeArtifactAddress(identity.address) !== normalizeArtifactAddress(manifestTarget.address)
+  ) {
+    return false
+  }
+  return !manifestTarget.network || !identity.network || identity.network === manifestTarget.network
+}
+
+function normalizeArtifactAddress(address: string): string {
+  try {
+    return Address.parse(address).toRawString()
+  } catch {
+    return address
+  }
+}
+
+function artifactTargetIdentity(
+  artifact: StateFlowArtifact,
+): Pick<StateFlowArtifactManifestTarget, "network" | "address"> | undefined {
+  switch (artifact.kind) {
+    case "corpus":
+    case "schema": {
+      return {
+        network: artifact.data.network,
+        address: artifact.data.address,
+      }
+    }
+    case "transaction":
+    case "retrace": {
+      return {
+        network: artifact.data.network,
+        address:
+          artifact.data.transaction.account ??
+          artifact.data.state.post.accountAddress ??
+          artifact.data.inbound.dst,
+      }
+    }
+    case "replay": {
+      return {
+        address:
+          artifact.data.baseline.state?.accountAddress ??
+          artifact.data.replay.state?.accountAddress ??
+          artifact.data.baseline.inbound.dst ??
+          artifact.data.replay.inbound.dst,
+      }
+    }
+    case "report": {
+      return {
+        network: reportTargetValue(artifact.data, "Network"),
+        address: reportTargetValue(artifact.data, "Address"),
+      }
+    }
+    default: {
+      return undefined
+    }
+  }
+}
+
+function reportTargetValue(report: StateFlowReport, label: string): string | undefined {
+  const section = report.sections.find(section => section.title === "Target")
+  return reportTargetRows(section ?? {title: "Target", body: "", lineCount: 0}).find(
+    row => row.label === label,
+  )?.value
 }
 
 function summarizeTransaction(

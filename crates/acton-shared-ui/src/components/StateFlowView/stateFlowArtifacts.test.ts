@@ -685,6 +685,34 @@ assert(
     ) === true,
   "expected artifact bundle loaded rows to include target replay artifacts",
 )
+const schemaForTargetB = {
+  ...schema,
+  address: "account-b",
+}
+const basenameBundle = parseStateFlowArtifactBundleFromSources([
+  {
+    name: "artifacts.json",
+    raw: JSON.stringify({
+      ...artifactManifest,
+      targets: [
+        {id: "target-a", network: "mainnet", address: "account"},
+        {id: "target-b", network: "mainnet", address: "account-b"},
+      ],
+      artifacts: [
+        {kind: "schema", path: "target-a/schema.json", targetId: "target-a"},
+        {kind: "schema", path: "target-b/schema.json", targetId: "target-b"},
+      ],
+    }),
+  },
+  {name: "schema.json", raw: JSON.stringify(schema)},
+  {name: "schema.json", raw: JSON.stringify(schemaForTargetB)},
+])
+assert(
+  basenameBundle.kind === "artifactBundle" &&
+    basenameBundle.data.missingArtifacts.length === 0 &&
+    basenameBundle.data.targets.every(target => target.loadedArtifacts.length === 1),
+  "expected basename-only bundle sources to resolve duplicate target artifacts by target identity",
+)
 const reportView = summarizeStateFlowArtifact(parseStateFlowArtifact(reportMarkdown))
 assert(reportView.title === "TON State Flow Reverse Report", "expected report summary title")
 assert(
