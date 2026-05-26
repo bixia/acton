@@ -2501,11 +2501,18 @@ fn validate_state_flow_corpus_artifact(
         Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
             Ok(value) => {
                 validate_state_flow_corpus_evidence_keys(&value, artifact, gate_failures);
-                if let Err(err) = serde_json::from_value::<StateFlowCorpus>(value) {
-                    gate_failures.push(format!(
-                        "invalid {} artifact {}: {err}",
-                        artifact.kind, artifact.path
-                    ));
+                match serde_json::from_value::<StateFlowCorpus>(value) {
+                    Ok(corpus) => {
+                        for flow in &corpus.transactions {
+                            validate_state_flow_tx_cell_consistency(flow, artifact, gate_failures);
+                        }
+                    }
+                    Err(err) => {
+                        gate_failures.push(format!(
+                            "invalid {} artifact {}: {err}",
+                            artifact.kind, artifact.path
+                        ));
+                    }
                 }
             }
             Err(err) => gate_failures.push(format!(
@@ -16725,6 +16732,33 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_corpus_validation_rejects_malformed_transaction_message_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let corpus_path = temp_dir.path().join("corpus.json");
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][0]["inbound"]["messageBoc64"] = serde_json::json!("not-a-boc");
+        fs::write(&corpus_path, corpus.to_string()).expect("corpus artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "corpus",
+            "corpus.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_corpus_artifact(&corpus_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("corpus artifact corpus.json inbound messageBoc64")
+                    && failure.contains("for tx-a is not a decodable message")
+            }),
+            "expected malformed corpus transaction message BoC failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -17511,7 +17545,12 @@ mod tests {
         let mut corpus: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&corpus_path).expect("corpus should exist"))
                 .expect("corpus should parse");
-        corpus["transactions"][1]["inbound"]["body"]["bits"] = serde_json::json!(40);
+        corpus["transactions"][1]["inbound"] =
+            test_internal_message_artifact_40_bit_json(0x0000_0001, 0);
+        let tx_b_body_hash = corpus["transactions"][1]["inbound"]["body"]["hash"]
+            .as_str()
+            .expect("tx-b body hash should be a string")
+            .to_owned();
         write_sample_validation_artifact(
             temp_dir.path(),
             "target-a/corpus.json",
@@ -17522,6 +17561,9 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
                 .expect("schema should parse");
         schema["opcodeCandidates"][0]["inboundBody"]["maxBits"] = serde_json::json!(40);
+        let mut body_hashes = vec![sample_inbound_body_hash(), tx_b_body_hash];
+        body_hashes.sort();
+        schema["opcodeCandidates"][0]["inboundBody"]["bodyHashes"] = serde_json::json!(body_hashes);
         schema["opTable"]["entries"][0]["bodyMaxBits"] = serde_json::json!(40);
         schema["messageSurface"]["messages"][0]["bodyMaxBits"] = serde_json::json!(40);
         write_sample_validation_artifact(
@@ -23021,6 +23063,23 @@ mod tests {
             .store_u32(body_word)
             .expect("body word should store");
         let body = body_builder.build().expect("body should build");
+        test_internal_message_artifact_from_body_json(body_word, body)
+    }
+
+    fn test_internal_message_artifact_40_bit_json(body_word: u32, tail: u8) -> serde_json::Value {
+        let mut body_builder = CellBuilder::new();
+        body_builder
+            .store_u32(body_word)
+            .expect("body word should store");
+        body_builder.store_u8(tail).expect("body tail should store");
+        let body = body_builder.build().expect("body should build");
+        test_internal_message_artifact_from_body_json(body_word, body)
+    }
+
+    fn test_internal_message_artifact_from_body_json(
+        opcode_word: u32,
+        body: Cell,
+    ) -> serde_json::Value {
         let info = IntMsgInfo::default();
         let src = super::format_int_addr(&info.src);
         let dst = super::format_int_addr(&info.dst);
@@ -23034,6 +23093,7 @@ mod tests {
             layout: None,
         };
         let message = test_to_cell(&message);
+        let body_slice = body.as_slice_allow_exotic();
 
         serde_json::json!({
             "direction": "inbound",
@@ -23044,13 +23104,13 @@ mod tests {
             "valueNanotons": value_nanotons,
             "bounced": bounced,
             "bounce": bounce,
-            "opcode": format!("0x{body_word:08x}"),
+            "opcode": format!("0x{opcode_word:08x}"),
             "messageBoc64": Boc::encode_base64(message),
             "body": {
                 "boc64": Boc::encode_base64(body.clone()),
                 "hash": hex::encode(body.hash(0)),
-                "bits": 32,
-                "refs": 0
+                "bits": body_slice.size_bits(),
+                "refs": body_slice.size_refs()
             }
         })
     }
