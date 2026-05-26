@@ -2526,6 +2526,7 @@ fn validate_schema_state_transition_evidence_keys(
     else {
         return;
     };
+    let mut seen_transitions = HashSet::<(String, String)>::new();
     for (index, transition) in transitions.iter().enumerate() {
         let transition_prefix = format!("{prefix} stateTransitions[{index}]");
         for (label, path) in [
@@ -2536,6 +2537,20 @@ fn validate_schema_state_transition_evidence_keys(
             if !json_path_exists(transition, path) {
                 gate_failures.push(format!("{transition_prefix} missing {label} evidence key"));
             }
+        }
+        let Some(from_status) = transition
+            .get("fromStatus")
+            .and_then(|value| value.as_str())
+        else {
+            continue;
+        };
+        let Some(to_status) = transition.get("toStatus").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !seen_transitions.insert((from_status.to_owned(), to_status.to_owned())) {
+            gate_failures.push(format!(
+                "{transition_prefix} duplicates state transition {from_status} -> {to_status}"
+            ));
         }
     }
 }
@@ -9278,6 +9293,44 @@ mod tests {
                 )
             }),
             "expected missing schema state transition count key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_duplicate_state_transition() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["stateTransitions"] = serde_json::json!([
+            {"fromStatus": "none", "toStatus": "active", "count": 2},
+            {"fromStatus": "none", "toStatus": "active", "count": 2}
+        ]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] stateTransitions[1] duplicates state transition none -> active",
+                )
+            }),
+            "expected duplicate schema state transition failure, got {:?}",
             validation.gate_failures
         );
     }
