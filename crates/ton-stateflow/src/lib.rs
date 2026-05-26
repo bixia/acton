@@ -76,6 +76,8 @@ pub struct StateFlowSchemaReport {
     #[serde(default)]
     pub op_table: OpTableCandidate,
     #[serde(default)]
+    pub message_surface: MessageSurfaceCandidate,
+    #[serde(default)]
     pub effect_surface: EffectSurfaceCandidate,
     #[serde(default)]
     pub storage_layout: StorageLayoutCandidate,
@@ -141,6 +143,45 @@ pub struct OpTableEntry {
     pub confidence: String,
     pub evidence: Vec<String>,
     pub unknowns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSurfaceCandidate {
+    pub messages: Vec<MessageSurfaceMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSurfaceMessage {
+    pub opcode: Option<String>,
+    pub name: String,
+    pub source_function: String,
+    pub transaction_count: usize,
+    pub body_min_bits: u16,
+    pub body_max_bits: u16,
+    pub body_min_refs: u8,
+    pub body_max_refs: u8,
+    pub fields: Vec<MessageSurfaceField>,
+    pub unknowns: Vec<String>,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSurfaceField {
+    pub name: String,
+    pub kind: String,
+    pub source: String,
+    pub bit_offset: u16,
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
+    pub present_count: usize,
+    pub value_samples: Vec<String>,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -651,6 +692,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
         .collect();
     let op_table = op_table_from_candidates(&opcode_candidates);
+    let message_surface = message_surface_from_candidates(&opcode_candidates);
     let effect_surface = effect_surface_from_candidates(&opcode_candidates);
     let storage_layout = storage_layout_from_candidates(&opcode_candidates);
 
@@ -661,6 +703,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         transaction_count: corpus.transactions.len(),
         state_machine: state_machine_graph(&corpus.transactions),
         op_table,
+        message_surface,
         effect_surface,
         storage_layout,
         audit_signals: infer_schema_audit_signals(corpus, &opcode_candidates),
@@ -863,6 +906,36 @@ pub fn render_state_flow_report(
                 markdown_escape(&format_kind_list(&surface.unknowns)),
                 markdown_escape(&surface.confidence),
                 markdown_code_list(&surface.evidence),
+            )
+            .ok();
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Message Surface").ok();
+    if schema.message_surface.messages.is_empty() {
+        writeln!(report, "- No message surfaces were inferred.").ok();
+    } else {
+        writeln!(report, "| Opcode | Name | Source function | Transactions | Body bits | Body refs | Fields | Unknowns | Confidence | Evidence |").ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- |"
+        )
+        .ok();
+        for message in &schema.message_surface.messages {
+            writeln!(
+                report,
+                "| {} | `{}` | {} | {} | {} | {} | {} | {} | {} | {} |",
+                markdown_code_opt(message.opcode.as_deref()),
+                markdown_escape(&message.name),
+                markdown_escape(&message.source_function),
+                message.transaction_count,
+                format_field_range(message.body_min_bits, message.body_max_bits),
+                format_field_range(message.body_min_refs, message.body_max_refs),
+                markdown_code_list(&message_surface_field_labels(&message.fields)),
+                markdown_code_list_or_none(&message.unknowns),
+                markdown_escape(&message.confidence),
+                markdown_code_list(&message.evidence),
             )
             .ok();
         }
@@ -1729,6 +1802,18 @@ fn method_surface_field_labels(fields: &[MethodSurfaceField]) -> Vec<String> {
         .collect()
 }
 
+fn message_surface_field_labels(fields: &[MessageSurfaceField]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}@{}:{}",
+                field.name, field.kind, field.source, field.bit_offset
+            )
+        })
+        .collect()
+}
+
 fn write_effect_row(
     report: &mut String,
     opcode: Option<&str>,
@@ -2349,6 +2434,74 @@ fn op_table_entry(candidate: &OpcodeSchemaCandidate) -> OpTableEntry {
         confidence: candidate.confidence.clone(),
         evidence,
         unknowns,
+    }
+}
+
+pub fn message_surface_from_candidates(
+    candidates: &[OpcodeSchemaCandidate],
+) -> MessageSurfaceCandidate {
+    MessageSurfaceCandidate {
+        messages: candidates.iter().map(message_surface_message).collect(),
+    }
+}
+
+fn message_surface_message(candidate: &OpcodeSchemaCandidate) -> MessageSurfaceMessage {
+    let opcode_label = plain_opcode_label(candidate.opcode.as_deref());
+    let name = if candidate.method_surface.name.is_empty() {
+        format!("op::{opcode_label}")
+    } else {
+        candidate.method_surface.name.clone()
+    };
+    let source_function = if candidate.method_surface.source_function.is_empty() {
+        "recv_internal".to_owned()
+    } else {
+        candidate.method_surface.source_function.clone()
+    };
+    let unknowns = if candidate.method_surface.unknowns.is_empty() {
+        candidate.unknown_fields.clone()
+    } else {
+        candidate.method_surface.unknowns.clone()
+    };
+    let evidence = if candidate.examples.is_empty() {
+        candidate.method_surface.evidence.clone()
+    } else {
+        candidate.examples.clone()
+    };
+
+    MessageSurfaceMessage {
+        opcode: candidate.opcode.clone(),
+        name,
+        source_function,
+        transaction_count: candidate.count,
+        body_min_bits: candidate.inbound_body.min_bits,
+        body_max_bits: candidate.inbound_body.max_bits,
+        body_min_refs: candidate.inbound_body.min_refs,
+        body_max_refs: candidate.inbound_body.max_refs,
+        fields: candidate
+            .inbound_body
+            .field_candidates
+            .iter()
+            .map(message_surface_field)
+            .collect(),
+        unknowns,
+        confidence: candidate.confidence.clone(),
+        evidence,
+    }
+}
+
+fn message_surface_field(field: &BodyFieldCandidate) -> MessageSurfaceField {
+    MessageSurfaceField {
+        name: field.name.clone(),
+        kind: field.kind.clone(),
+        source: "body".to_owned(),
+        bit_offset: field.bit_offset,
+        min_bits: field.min_bits,
+        max_bits: field.max_bits,
+        min_refs: field.min_refs,
+        max_refs: field.max_refs,
+        present_count: field.present_count,
+        value_samples: field.value_samples.clone(),
+        confidence: field.confidence.clone(),
     }
 }
 
@@ -3871,6 +4024,90 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_persists_message_surface() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_body_fields("tx-a", 0x0000_0001, 7, 0xaa),
+                sample_flow_with_body_fields("tx-b", 0x0000_0001, 8, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["messageSurface"]["messages"][0],
+            serde_json::json!({
+                "opcode": "0x00000001",
+                "name": "op::0x00000001",
+                "sourceFunction": "recv_internal",
+                "transactionCount": 2,
+                "bodyMinBits": 104,
+                "bodyMaxBits": 104,
+                "bodyMinRefs": 0,
+                "bodyMaxRefs": 0,
+                "fields": [{
+                    "name": "opcode",
+                    "kind": "uint32",
+                    "source": "body",
+                    "bitOffset": 0,
+                    "minBits": 32,
+                    "maxBits": 32,
+                    "minRefs": 0,
+                    "maxRefs": 0,
+                    "presentCount": 2,
+                    "valueSamples": ["0x00000001"],
+                    "confidence": "high"
+                }, {
+                    "name": "query_id",
+                    "kind": "uint64",
+                    "source": "body",
+                    "bitOffset": 32,
+                    "minBits": 64,
+                    "maxBits": 64,
+                    "minRefs": 0,
+                    "maxRefs": 0,
+                    "presentCount": 2,
+                    "valueSamples": ["0x0000000000000007", "0x0000000000000008"],
+                    "confidence": "high"
+                }, {
+                    "name": "payload_tail",
+                    "kind": "raw",
+                    "source": "body",
+                    "bitOffset": 96,
+                    "minBits": 8,
+                    "maxBits": 8,
+                    "minRefs": 0,
+                    "maxRefs": 0,
+                    "presentCount": 2,
+                    "valueSamples": ["8 bits, 0 refs"],
+                    "confidence": "low"
+                }],
+                "unknowns": [
+                    "message body field names require TL-B recovery",
+                    "storage field names require typed storage decoding"
+                ],
+                "confidence": "medium",
+                "evidence": ["tx-a", "tx-b"]
+            })
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("## Message Surface"));
+        assert!(report.contains("| Opcode | Name | Source function | Transactions | Body bits | Body refs | Fields | Unknowns | Confidence | Evidence |"));
+        assert!(report.contains("| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 104..104 | 0..0 | `opcode:uint32@body:0`, `query_id:uint64@body:32`, `payload_tail:raw@body:96` | `message body field names require TL-B recovery`, `storage field names require typed storage decoding` | medium | `tx-a`, `tx-b` |"));
+    }
+
+    #[test]
     fn infer_schema_candidates_reports_storage_field_candidates() {
         let corpus = StateFlowCorpus {
             schema_version: 1,
@@ -4494,6 +4731,10 @@ mod tests {
         assert_eq!(serialized["opTable"]["entries"], serde_json::json!([]));
         assert_eq!(
             serialized["effectSurface"]["effects"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            serialized["messageSurface"]["messages"],
             serde_json::json!([])
         );
         assert_eq!(serialized["storageLayout"]["fields"], serde_json::json!([]));

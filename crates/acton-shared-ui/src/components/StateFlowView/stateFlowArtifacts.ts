@@ -91,6 +91,7 @@ export interface StateFlowSchemaReport {
   readonly transactionCount: number
   readonly stateMachine?: StateMachineGraph | null
   readonly opTable?: OpTableCandidate | null
+  readonly messageSurface?: MessageSurfaceCandidate | null
   readonly effectSurface?: EffectSurfaceCandidate | null
   readonly storageLayout?: StorageLayoutCandidate | null
   readonly auditSignals?: readonly AuditSignal[] | null
@@ -148,6 +149,39 @@ export interface OpTableEntry {
   readonly confidence: string
   readonly evidence: readonly string[]
   readonly unknowns: readonly string[]
+}
+
+export interface MessageSurfaceCandidate {
+  readonly messages: readonly MessageSurfaceMessage[]
+}
+
+export interface MessageSurfaceMessage {
+  readonly opcode?: string | null
+  readonly name: string
+  readonly sourceFunction: string
+  readonly transactionCount: number
+  readonly bodyMinBits: number
+  readonly bodyMaxBits: number
+  readonly bodyMinRefs: number
+  readonly bodyMaxRefs: number
+  readonly fields: readonly MessageSurfaceField[]
+  readonly unknowns: readonly string[]
+  readonly confidence: string
+  readonly evidence: readonly string[]
+}
+
+export interface MessageSurfaceField {
+  readonly name: string
+  readonly kind: string
+  readonly source: string
+  readonly bitOffset: number
+  readonly minBits: number
+  readonly maxBits: number
+  readonly minRefs: number
+  readonly maxRefs: number
+  readonly presentCount: number
+  readonly valueSamples: readonly string[]
+  readonly confidence: string
 }
 
 export interface EffectSurfaceCandidate {
@@ -775,6 +809,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const stateNodes = stateMachineNodes(schema, stateEdges)
   const auditSignals = schemaAuditSignals(schema)
   const opTableRows = schemaOpTableRows(schema)
+  const messageSurfaceRows = schemaMessageSurfaceRows(schema)
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const methodSurfaceRows = schemaMethodSurfaceRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
@@ -791,6 +826,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Network", value: schema.network},
       {label: "Transactions", value: schema.transactionCount.toString()},
       {label: "Ops", value: opTableRows.length.toString()},
+      {label: "Message Surface", value: messageSurfaceRows.length.toString()},
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
@@ -826,6 +862,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Op Table",
               rows: opTableRows,
+            },
+          ]
+        : []),
+      ...(messageSurfaceRows.length > 0
+        ? [
+            {
+              title: "Message Surface",
+              rows: messageSurfaceRows,
             },
           ]
         : []),
@@ -1132,6 +1176,7 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
   const opTableRows = reportOpTableRows(report)
+  const messageSurfaceRows = reportMessageSurfaceRows(report)
   const opcodeCandidateRows = reportOpcodeCandidateRows(report)
   const schemaEvidenceRows = reportSchemaEvidenceRows(report)
   const runtimeEvidenceRows = reportRuntimeEvidenceRows(report)
@@ -1167,6 +1212,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Op Table",
               rows: opTableRows,
+            },
+          ]
+        : []),
+      ...(messageSurfaceRows.length > 0
+        ? [
+            {
+              title: "Message Surface",
+              rows: messageSurfaceRows,
             },
           ]
         : []),
@@ -1570,6 +1623,23 @@ function reportOpTableRows(report: StateFlowReport): readonly SummaryRow[] {
       }`,
       tableValueLabel("effects", rowValue(row, "Effects")),
       tableValueLabel("transitions", rowValue(row, "State transitions")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+      tableValueLabel("unknowns", rowValue(row, "Unknowns")),
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(" · "),
+  }))
+}
+
+function reportMessageSurfaceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Message Surface").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Name"]),
+    value: rowValue(row, "Source function") || "n/a",
+    detail: [
+      tableCountLabel(rowValue(row, "Transactions"), "transaction"),
+      `body ${rowValue(row, "Body bits") || "n/a"} bits/${rowValue(row, "Body refs") || "n/a"} refs`,
+      tableValueLabel("fields", rowValue(row, "Fields")),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
       tableValueLabel("evidence", rowValue(row, "Evidence")),
       tableValueLabel("unknowns", rowValue(row, "Unknowns")),
@@ -2181,6 +2251,87 @@ function opTableEntryFromCandidate(candidate: OpcodeSchemaCandidate): OpTableEnt
     evidence: candidate.examples,
     unknowns,
   }
+}
+
+function schemaMessageSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schemaMessageSurfaceMessages(schema).map(messageSurfaceRow)
+}
+
+function schemaMessageSurfaceMessages(
+  schema: StateFlowSchemaReport,
+): readonly MessageSurfaceMessage[] {
+  const structured = schema.messageSurface?.messages ?? []
+  if (structured.length > 0) {
+    return structured
+  }
+  return schema.opcodeCandidates.map(messageSurfaceMessageFromCandidate)
+}
+
+function messageSurfaceMessageFromCandidate(
+  candidate: OpcodeSchemaCandidate,
+): MessageSurfaceMessage {
+  const opcode = candidate.opcode ?? null
+  const unknowns =
+    candidate.methodSurface?.unknowns && candidate.methodSurface.unknowns.length > 0
+      ? candidate.methodSurface.unknowns
+      : candidate.unknownFields
+  return {
+    opcode,
+    name: candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`,
+    sourceFunction: candidate.methodSurface?.sourceFunction || "recv_internal",
+    transactionCount: candidate.count,
+    bodyMinBits: candidate.inboundBody.minBits,
+    bodyMaxBits: candidate.inboundBody.maxBits,
+    bodyMinRefs: candidate.inboundBody.minRefs,
+    bodyMaxRefs: candidate.inboundBody.maxRefs,
+    fields: (candidate.inboundBody.fieldCandidates ?? []).map(messageSurfaceFieldFromCandidate),
+    unknowns,
+    confidence: candidate.confidence,
+    evidence: candidate.examples,
+  }
+}
+
+function messageSurfaceFieldFromCandidate(field: BodyFieldCandidate): MessageSurfaceField {
+  return {
+    name: field.name,
+    kind: field.kind,
+    source: "body",
+    bitOffset: field.bitOffset,
+    minBits: field.minBits,
+    maxBits: field.maxBits,
+    minRefs: field.minRefs,
+    maxRefs: field.maxRefs,
+    presentCount: field.presentCount,
+    valueSamples: field.valueSamples,
+    confidence: field.confidence,
+  }
+}
+
+function messageSurfaceRow(message: MessageSurfaceMessage): SummaryRow {
+  return {
+    label: `${formatOpcode(message.opcode ?? null)} ${message.name}`,
+    value: message.sourceFunction,
+    detail: [
+      `${message.transactionCount} ${plural(message.transactionCount, "transaction")}`,
+      `body ${formatFieldRange(message.bodyMinBits, message.bodyMaxBits)} bits/${formatFieldRange(
+        message.bodyMinRefs,
+        message.bodyMaxRefs,
+      )} refs`,
+      `${message.fields.length} ${plural(message.fields.length, "field")}`,
+      `confidence ${message.confidence}`,
+      `evidence ${message.evidence.map(hash => shortHash(hash)).join(", ")}`,
+      message.unknowns.length > 0 ? `unknowns ${message.unknowns.join("; ")}` : undefined,
+      message.fields.length > 0
+        ? `fields ${message.fields.map(messageSurfaceFieldLabel).join(", ")}`
+        : undefined,
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(" · "),
+  }
+}
+
+function messageSurfaceFieldLabel(field: MessageSurfaceField): string {
+  return `${field.name}:${field.kind}@${field.source}:${field.bitOffset}`
 }
 
 function schemaMethodSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

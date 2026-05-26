@@ -2255,6 +2255,7 @@ fn validate_state_flow_schema_evidence_keys(
         ("transaction count", &["transactionCount"][..]),
         ("state machine", &["stateMachine"][..]),
         ("op table", &["opTable"][..]),
+        ("message surface", &["messageSurface"][..]),
         ("effect surface", &["effectSurface"][..]),
         ("storage layout", &["storageLayout"][..]),
         ("audit signals", &["auditSignals"][..]),
@@ -2270,6 +2271,7 @@ fn validate_state_flow_schema_evidence_keys(
 
     validate_schema_state_machine_evidence_keys(value, artifact, gate_failures);
     validate_schema_op_table_evidence_keys(value, artifact, gate_failures);
+    validate_schema_message_surface_evidence_keys(value, artifact, gate_failures);
     validate_schema_effect_surface_evidence_keys(value, artifact, gate_failures);
     validate_schema_storage_layout_evidence_keys(value, artifact, gate_failures);
     validate_schema_audit_signal_evidence_keys(value, artifact, gate_failures);
@@ -2403,6 +2405,77 @@ fn validate_schema_op_table_evidence_keys(
             }
         }
         validate_schema_confidence_label(entry, &prefix, gate_failures);
+    }
+}
+
+fn validate_schema_message_surface_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(surface) = value.get("messageSurface") else {
+        return;
+    };
+    for (label, path) in [("messages", &["messages"][..])] {
+        if !json_path_exists(surface, path) {
+            gate_failures.push(format!(
+                "schema artifact {} messageSurface missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+    let Some(messages) = surface.get("messages").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, message) in messages.iter().enumerate() {
+        let prefix = format!(
+            "schema artifact {} messageSurface.messages[{index}]",
+            artifact.path
+        );
+        for (label, path) in [
+            ("opcode", &["opcode"][..]),
+            ("name", &["name"][..]),
+            ("source function", &["sourceFunction"][..]),
+            ("transaction count", &["transactionCount"][..]),
+            ("body min bits", &["bodyMinBits"][..]),
+            ("body max bits", &["bodyMaxBits"][..]),
+            ("body min refs", &["bodyMinRefs"][..]),
+            ("body max refs", &["bodyMaxRefs"][..]),
+            ("fields", &["fields"][..]),
+            ("unknowns", &["unknowns"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(message, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_confidence_label(message, &prefix, gate_failures);
+
+        let Some(fields) = message.get("fields").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for (field_index, field) in fields.iter().enumerate() {
+            let field_prefix = format!("{prefix}.fields[{field_index}]");
+            for (label, path) in [
+                ("name", &["name"][..]),
+                ("kind", &["kind"][..]),
+                ("source", &["source"][..]),
+                ("bit offset", &["bitOffset"][..]),
+                ("min bits", &["minBits"][..]),
+                ("max bits", &["maxBits"][..]),
+                ("min refs", &["minRefs"][..]),
+                ("max refs", &["maxRefs"][..]),
+                ("present count", &["presentCount"][..]),
+                ("value samples", &["valueSamples"][..]),
+                ("confidence", &["confidence"][..]),
+            ] {
+                if !json_path_exists(field, path) {
+                    gate_failures.push(format!("{field_prefix} missing {label} evidence key"));
+                }
+            }
+            validate_schema_confidence_label(field, &field_prefix, gate_failures);
+        }
     }
 }
 
@@ -4615,6 +4688,17 @@ fn validate_schema_corpus_membership(
         }
     }
     validate_schema_op_table_matches_candidates(schema, gate_failures);
+    for message in &schema.message_surface.messages {
+        for evidence in &message.evidence {
+            validate_corpus_hash_membership(
+                "schema message-surface evidence",
+                evidence,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+    }
+    validate_schema_message_surface_matches_candidates(schema, gate_failures);
     for effect in &schema.effect_surface.effects {
         for evidence in &effect.evidence {
             validate_corpus_hash_membership(
@@ -5006,6 +5090,22 @@ fn validate_schema_method_surface_matches_candidate(
 }
 
 fn report_method_surface_field_list(fields: &[ton_stateflow::MethodSurfaceField]) -> String {
+    if fields.is_empty() {
+        return "none".to_owned();
+    }
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}@{}:{}",
+                field.name, field.kind, field.source, field.bit_offset
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn report_message_surface_field_list(fields: &[ton_stateflow::MessageSurfaceField]) -> String {
     if fields.is_empty() {
         return "none".to_owned();
     }
@@ -6107,6 +6207,110 @@ fn validate_schema_op_table_matches_candidates(
     }
 }
 
+fn validate_schema_message_surface_matches_candidates(
+    schema: &StateFlowSchemaReport,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected = ton_stateflow::message_surface_from_candidates(&schema.opcode_candidates);
+    let expected_by_opcode = expected
+        .messages
+        .iter()
+        .map(|message| (message.opcode.clone(), message))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = HashSet::new();
+
+    for message in &schema.message_surface.messages {
+        let opcode_label = report_opcode_label(message.opcode.as_deref());
+        seen.insert(message.opcode.clone());
+        let expected = expected_by_opcode.get(&message.opcode).copied();
+        let expected_transaction_count = expected.map_or(0, |message| message.transaction_count);
+        validate_evidence_value_field(
+            "schema message-surface message transaction count",
+            message.transaction_count,
+            "opcode candidate transaction count",
+            expected_transaction_count,
+            &opcode_label,
+            gate_failures,
+        );
+        let Some(expected) = expected else {
+            continue;
+        };
+        validate_evidence_text_field(
+            "schema message-surface message name",
+            &message.name,
+            "opcode candidate message name",
+            &expected.name,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message source function",
+            &message.source_function,
+            "opcode candidate source function",
+            &expected.source_function,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message body bits",
+            &report_field_range(message.body_min_bits, message.body_max_bits),
+            "opcode candidate body bits",
+            &report_field_range(expected.body_min_bits, expected.body_max_bits),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message body refs",
+            &report_field_range(message.body_min_refs, message.body_max_refs),
+            "opcode candidate body refs",
+            &report_field_range(expected.body_min_refs, expected.body_max_refs),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message fields",
+            &report_message_surface_field_list(&message.fields),
+            "opcode candidate message fields",
+            &report_message_surface_field_list(&expected.fields),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message unknowns",
+            &report_sample_list(&message.unknowns),
+            "opcode candidate unknowns",
+            &report_sample_list(&expected.unknowns),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message confidence",
+            &message.confidence,
+            "opcode candidate confidence",
+            &expected.confidence,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema message-surface message evidence",
+            &report_sample_list(&message.evidence),
+            "opcode candidate examples",
+            &report_sample_list(&expected.evidence),
+            &opcode_label,
+            gate_failures,
+        );
+    }
+
+    for expected in &expected.messages {
+        if !seen.contains(&expected.opcode) {
+            gate_failures.push(format!(
+                "schema message-surface message {} is missing",
+                report_opcode_label(expected.opcode.as_deref())
+            ));
+        }
+    }
+}
+
 fn validate_schema_effect_surface_matches_candidates(
     schema: &StateFlowSchemaReport,
     gate_failures: &mut Vec<String>,
@@ -6599,6 +6803,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Op Table",
         "## Opcode Candidates",
         "## Method Surface",
+        "## Message Surface",
         "## Schema Evidence",
         "## Runtime Evidence",
         "## Message Body Fields",
@@ -7228,6 +7433,37 @@ fn method_surface_report_header() -> Vec<String> {
     .collect()
 }
 
+fn validate_report_message_surface_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = message_surface_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report message surface header {expected:?} is missing"
+        ));
+    }
+}
+
+fn message_surface_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Name",
+        "Source function",
+        "Transactions",
+        "Body bits",
+        "Body refs",
+        "Fields",
+        "Unknowns",
+        "Confidence",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_report_schema_evidence_header(section: &str, gate_failures: &mut Vec<String>) {
     let expected = schema_evidence_report_header();
     let header = section
@@ -7325,6 +7561,22 @@ fn validate_report_schema_deliverables(
                     &row,
                     gate_failures,
                 );
+            }
+        }
+    }
+
+    if let Some(section) = markdown_section(markdown, "## Message Surface") {
+        if !schema.message_surface.messages.is_empty() {
+            validate_report_message_surface_header(section, gate_failures);
+        }
+        for message in &schema.message_surface.messages {
+            let opcode = report_opcode_label(message.opcode.as_deref());
+            let row = report_message_surface_row(section, &opcode, message);
+            if row.is_none() {
+                gate_failures.push(format!("report message surface {opcode} is missing"));
+            }
+            if let Some(row) = row {
+                validate_report_message_surface_values(message, &opcode, &row, gate_failures);
             }
         }
     }
@@ -8132,6 +8384,97 @@ fn validate_report_method_surface_cell(
     if actual.is_none_or(|actual| actual != &expected) {
         gate_failures.push(format!(
             "report method surface {label} {expected} for {opcode} is missing"
+        ));
+    }
+}
+
+fn report_message_surface_row(
+    section: &str,
+    opcode: &str,
+    message: &ton_stateflow::MessageSurfaceMessage,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == opcode)
+            && cells.get(1).is_some_and(|cell| cell == &message.name))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_message_surface_values(
+    message: &ton_stateflow::MessageSurfaceMessage,
+    opcode: &str,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_message_surface_cell(
+        "source function",
+        message.source_function.clone(),
+        opcode,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "transaction count",
+        message.transaction_count.to_string(),
+        opcode,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "body bits",
+        report_field_range(message.body_min_bits, message.body_max_bits),
+        opcode,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "body refs",
+        report_field_range(message.body_min_refs, message.body_max_refs),
+        opcode,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "fields",
+        report_code_list_from_strings(message_surface_field_labels_for_report(&message.fields)),
+        opcode,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "unknowns",
+        report_kind_list(&message.unknowns),
+        opcode,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "confidence",
+        message.confidence.clone(),
+        opcode,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_message_surface_cell(
+        "evidence",
+        report_sample_list(&message.evidence),
+        opcode,
+        row.get(9),
+        gate_failures,
+    );
+}
+
+fn validate_report_message_surface_cell(
+    label: &str,
+    expected: String,
+    opcode: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report message surface {label} {expected} for {opcode} is missing"
         ));
     }
 }
@@ -9005,6 +9348,20 @@ fn report_code_list_from_strings(samples: Vec<String>) -> String {
 
 fn method_surface_field_labels_for_report(
     fields: &[ton_stateflow::MethodSurfaceField],
+) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}@{}:{}",
+                field.name, field.kind, field.source, field.bit_offset
+            )
+        })
+        .collect()
+}
+
+fn message_surface_field_labels_for_report(
+    fields: &[ton_stateflow::MessageSurfaceField],
 ) -> Vec<String> {
     fields
         .iter()
@@ -11334,6 +11691,96 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_message_surface_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("messageSurface");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json missing message surface evidence key",
+                )
+            }),
+            "expected missing schema message surface key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_message_surface_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["messageSurface"] = serde_json::json!({
+            "messages": [{
+                "opcode": "0x00000001",
+                "name": "op::0x00000001",
+                "sourceFunction": "recv_internal",
+                "transactionCount": 9,
+                "bodyMinBits": 32,
+                "bodyMaxBits": 32,
+                "bodyMinRefs": 0,
+                "bodyMaxRefs": 0,
+                "fields": [],
+                "unknowns": [],
+                "confidence": "medium",
+                "evidence": ["tx-a", "tx-b"]
+            }]
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema message-surface message transaction count 9 for 0x00000001 does not match opcode candidate transaction count 2",
+                )
+            }),
+            "expected schema message surface transaction count failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_missing_effect_surface_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -13407,6 +13854,7 @@ mod tests {
                 .expect("schema should parse");
         schema["opcodeCandidates"][0]["inboundBody"]["maxBits"] = serde_json::json!(40);
         schema["opTable"]["entries"][0]["bodyMaxBits"] = serde_json::json!(40);
+        schema["messageSurface"]["messages"][0]["bodyMaxBits"] = serde_json::json!(40);
         write_sample_validation_artifact(
             temp_dir.path(),
             "target-a/schema.json",
@@ -14813,6 +15261,22 @@ mod tests {
                         "unknowns": []
                     }]
                 },
+                "messageSurface": {
+                    "messages": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 32,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "fields": [],
+                        "unknowns": [],
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"]
+                    }]
+                },
                 "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
@@ -15193,6 +15657,22 @@ mod tests {
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"],
                         "unknowns": []
+                    }]
+                },
+                "messageSurface": {
+                    "messages": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 32,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "fields": [],
+                        "unknowns": [],
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"]
                     }]
                 },
                 "effectSurface": {"effects": []},
@@ -16924,6 +17404,22 @@ mod tests {
                         "unknowns": []
                     }]
                 },
+                "messageSurface": {
+                    "messages": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 32,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "fields": [],
+                        "unknowns": [],
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"]
+                    }]
+                },
                 "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
@@ -17119,6 +17615,10 @@ mod tests {
             .replace(
                 "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |",
                 "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |",
+            )
+            .replace(
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | none | none | medium | tx-a, tx-b |",
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | none | none | medium | tx-a, tx-b |",
             )
             .replace(
                 "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
@@ -17361,6 +17861,11 @@ mod tests {
         } else {
             ""
         };
+        let message_surface_row = if include_schema_summary_rows {
+            "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | none | none | medium | tx-a, tx-b |\n"
+        } else {
+            ""
+        };
         let schema_evidence_row = if include_schema_evidence {
             "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
         } else {
@@ -17414,6 +17919,11 @@ mod tests {
              | Opcode | Name | Source function | Fields | Unknowns | Confidence | Evidence |\n\
              | --- | --- | --- | --- | --- | --- | --- |\n\
              {method_surface_row}\
+             \n\
+             ## Message Surface\n\
+             | Opcode | Name | Source function | Transactions | Body bits | Body refs | Fields | Unknowns | Confidence | Evidence |\n\
+             | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- |\n\
+             {message_surface_row}\
              \n\
              ## Schema Evidence\n\
              | Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |\n\
