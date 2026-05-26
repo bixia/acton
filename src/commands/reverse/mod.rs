@@ -1506,6 +1506,12 @@ struct ArtifactManifestValidation {
     expected_absolute_path_count: usize,
     passed: bool,
     gate_failures: Vec<String>,
+    #[serde(default)]
+    capability_count: usize,
+    #[serde(default)]
+    capability_passed_count: usize,
+    #[serde(default)]
+    capability_failed_count: usize,
     targets: Vec<ArtifactManifestTargetValidation>,
 }
 
@@ -1517,6 +1523,12 @@ struct ArtifactManifestTargetValidation {
     replay_count: usize,
     passed: bool,
     gate_failures: Vec<String>,
+    #[serde(default)]
+    capability_count: usize,
+    #[serde(default)]
+    capability_passed_count: usize,
+    #[serde(default)]
+    capability_failed_count: usize,
     #[serde(default)]
     capability_checks: Vec<ArtifactCapabilityCheck>,
 }
@@ -1642,6 +1654,15 @@ fn validate_artifact_manifest_bundle_with_mode(
             )
         })
         .collect::<Vec<_>>();
+    let capability_count = targets.iter().map(|target| target.capability_count).sum();
+    let capability_passed_count = targets
+        .iter()
+        .map(|target| target.capability_passed_count)
+        .sum();
+    let capability_failed_count = targets
+        .iter()
+        .map(|target| target.capability_failed_count)
+        .sum();
     gate_failures.extend(targets.iter().flat_map(|target| {
         target
             .gate_failures
@@ -1658,6 +1679,9 @@ fn validate_artifact_manifest_bundle_with_mode(
         expected_absolute_path_count,
         passed: gate_failures.is_empty(),
         gate_failures: gate_failures.clone(),
+        capability_count,
+        capability_passed_count,
+        capability_failed_count,
         targets: targets.clone(),
     };
 
@@ -1804,6 +1828,9 @@ fn pending_artifact_manifest_validation(
         ),
         passed: false,
         gate_failures: vec!["artifact manifest validation pending".to_owned()],
+        capability_count: 0,
+        capability_passed_count: 0,
+        capability_failed_count: 0,
         targets: Vec::new(),
     }
 }
@@ -1909,9 +1936,38 @@ fn validate_manifest_validation_artifact(
             actual.gate_failures, expected.gate_failures
         ));
     }
+    if !validation_uses_legacy_capability_counts(&actual.targets) {
+        validate_target_usize_field(
+            "validation capability count",
+            actual.capability_count,
+            "expected capability count",
+            expected.capability_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "validation capability passed count",
+            actual.capability_passed_count,
+            "expected capability passed count",
+            expected.capability_passed_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "validation capability failed count",
+            actual.capability_failed_count,
+            "expected capability failed count",
+            expected.capability_failed_count,
+            gate_failures,
+        );
+    }
     if !validation_targets_match_expected(&actual.targets, &expected.targets) {
         gate_failures.push("validation targets do not match expected targets".to_owned());
     }
+}
+
+fn validation_uses_legacy_capability_counts(targets: &[ArtifactManifestTargetValidation]) -> bool {
+    targets
+        .iter()
+        .all(|target| target.capability_checks.is_empty())
 }
 
 fn validation_targets_match_expected(
@@ -1925,6 +1981,12 @@ fn validation_targets_match_expected(
                 && actual.replay_count == expected.replay_count
                 && actual.passed == expected.passed
                 && actual.gate_failures == expected.gate_failures
+                && (actual.capability_count == expected.capability_count
+                    || actual.capability_checks.is_empty())
+                && (actual.capability_passed_count == expected.capability_passed_count
+                    || actual.capability_checks.is_empty())
+                && (actual.capability_failed_count == expected.capability_failed_count
+                    || actual.capability_checks.is_empty())
                 && (actual.capability_checks == expected.capability_checks
                     || actual.capability_checks.is_empty())
         })
@@ -3157,6 +3219,12 @@ fn validate_artifact_manifest_target(
     }
 
     let capability_checks = artifact_capability_checks(&artifacts, &gate_failures);
+    let capability_count = capability_checks.len();
+    let capability_passed_count = capability_checks
+        .iter()
+        .filter(|check| check.passed)
+        .count();
+    let capability_failed_count = capability_count - capability_passed_count;
 
     ArtifactManifestTargetValidation {
         id: target_id.to_owned(),
@@ -3167,6 +3235,9 @@ fn validate_artifact_manifest_target(
             .count(),
         passed: gate_failures.is_empty(),
         gate_failures,
+        capability_count,
+        capability_passed_count,
+        capability_failed_count,
         capability_checks,
     }
 }
@@ -8196,8 +8267,14 @@ mod tests {
         assert!(validation.passed);
         assert_eq!(validation.absolute_path_count, 0);
         assert_eq!(validation.gate_failures, Vec::<String>::new());
+        assert_eq!(validation.capability_count, 5);
+        assert_eq!(validation.capability_passed_count, 5);
+        assert_eq!(validation.capability_failed_count, 0);
         assert_eq!(validation.targets[0].id, "target-a");
         assert!(validation.targets[0].passed);
+        assert_eq!(validation.targets[0].capability_count, 5);
+        assert_eq!(validation.targets[0].capability_passed_count, 5);
+        assert_eq!(validation.targets[0].capability_failed_count, 0);
         let capability_ids = validation.targets[0]
             .capability_checks
             .iter()

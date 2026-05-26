@@ -269,6 +269,9 @@ const artifactValidation = {
   expectedAbsolutePathCount: 0,
   passed: true,
   gateFailures: [],
+  capabilityCount: 2,
+  capabilityPassedCount: 2,
+  capabilityFailedCount: 0,
   targets: [
     {
       id: "target-a",
@@ -276,6 +279,9 @@ const artifactValidation = {
       replayCount: 2,
       passed: true,
       gateFailures: [],
+      capabilityCount: 2,
+      capabilityPassedCount: 2,
+      capabilityFailedCount: 0,
       capabilityChecks: [
         {
           id: "stateFlowTx",
@@ -510,6 +516,12 @@ assert(
     metric => metric.label === "Capability Checks" && metric.value === "2",
   ),
   "expected artifact validation capability check metric",
+)
+assert(
+  validationView.metrics.some(
+    metric => metric.label === "Capability Failures" && metric.value === "0",
+  ),
+  "expected artifact validation capability failure metric",
 )
 assert(
   validationView.sections

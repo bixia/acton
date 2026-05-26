@@ -172,6 +172,9 @@ export interface StateFlowArtifactValidation {
   readonly expectedAbsolutePathCount: number
   readonly passed: boolean
   readonly gateFailures: readonly string[]
+  readonly capabilityCount?: number | null
+  readonly capabilityPassedCount?: number | null
+  readonly capabilityFailedCount?: number | null
   readonly targets: readonly StateFlowArtifactValidationTarget[]
 }
 
@@ -181,6 +184,9 @@ export interface StateFlowArtifactValidationTarget {
   readonly replayCount: number
   readonly passed: boolean
   readonly gateFailures: readonly string[]
+  readonly capabilityCount?: number | null
+  readonly capabilityPassedCount?: number | null
+  readonly capabilityFailedCount?: number | null
   readonly capabilityChecks?: readonly StateFlowArtifactCapabilityCheck[] | null
 }
 
@@ -844,6 +850,7 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
 function summarizeArtifactValidation(validation: StateFlowArtifactValidation): ArtifactSummary {
   const targetGateFailureRows = validationTargetGateFailureRows(validation)
   const capabilityRows = validationCapabilityRows(validation)
+  const capabilityCounts = validationCapabilityCounts(validation, capabilityRows)
   return {
     title: "State Flow Artifact Validation",
     subtitle: validation.manifest,
@@ -852,7 +859,8 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
       {label: "Targets", value: validation.targetCount.toString()},
       {label: "Gate Failures", value: validation.gateFailures.length.toString()},
       {label: "Absolute Paths", value: validation.absolutePathCount.toString()},
-      {label: "Capability Checks", value: capabilityRows.length.toString()},
+      {label: "Capability Checks", value: capabilityCounts.total.toString()},
+      {label: "Capability Failures", value: capabilityCounts.failed.toString()},
     ],
     sections: [
       {
@@ -863,6 +871,7 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
           detail: [
             `${target.artifactCount} ${plural(target.artifactCount, "artifact")}`,
             `${target.replayCount} ${plural(target.replayCount, "replay")}`,
+            targetCapabilityDetail(target),
           ].join(" · "),
         })),
       },
@@ -1044,6 +1053,50 @@ function validationTargetGateFailureRows(
       ].join(" · "),
     })),
   )
+}
+
+function validationCapabilityCounts(
+  validation: StateFlowArtifactValidation,
+  capabilityRows: readonly SummaryRow[],
+): {readonly total: number; readonly passed: number; readonly failed: number} {
+  const total =
+    validation.capabilityCount ??
+    validation.targets.reduce(
+      (sum, target) => sum + (target.capabilityCount ?? target.capabilityChecks?.length ?? 0),
+      0,
+    ) ??
+    capabilityRows.length
+  const failed =
+    validation.capabilityFailedCount ??
+    validation.targets.reduce(
+      (sum, target) =>
+        sum +
+        (target.capabilityFailedCount ??
+          target.capabilityChecks?.filter(check => !check.passed).length ??
+          0),
+      0,
+    )
+  const passed =
+    validation.capabilityPassedCount ??
+    validation.targets.reduce(
+      (sum, target) =>
+        sum +
+        (target.capabilityPassedCount ??
+          target.capabilityChecks?.filter(check => check.passed).length ??
+          0),
+      0,
+    )
+  return {total, passed, failed}
+}
+
+function targetCapabilityDetail(target: StateFlowArtifactValidationTarget): string {
+  const total = target.capabilityCount ?? target.capabilityChecks?.length
+  const passed =
+    target.capabilityPassedCount ?? target.capabilityChecks?.filter(check => check.passed).length
+  if (total === undefined || passed === undefined) {
+    return "capabilities n/a"
+  }
+  return `capabilities ${passed}/${total}`
 }
 
 function validationCapabilityRows(validation: StateFlowArtifactValidation): readonly SummaryRow[] {
