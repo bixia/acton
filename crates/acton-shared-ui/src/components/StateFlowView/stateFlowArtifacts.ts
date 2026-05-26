@@ -74,6 +74,8 @@ export interface StateFlowArtifactBundleEntry {
   readonly targetId?: string | null
   readonly sourceName: string
   readonly artifactKind: StateFlowArtifact["kind"]
+  readonly opcodeCandidateCount?: number
+  readonly stateEdgeCount?: number
   readonly auditSignalCount?: number
   readonly unknownFieldCount?: number
   readonly replayRiskSignalCount?: number
@@ -876,7 +878,7 @@ export function parseStateFlowArtifactBundleFromSources(
         targetId: manifestArtifact.targetId,
         sourceName: sourceArtifact.source.name,
         artifactKind: sourceArtifact.artifact.kind,
-        ...stateFlowArtifactRiskCounts(sourceArtifact.artifact),
+        ...stateFlowArtifactBundleCounts(sourceArtifact.artifact),
       })
     }
   } else {
@@ -885,7 +887,7 @@ export function parseStateFlowArtifactBundleFromSources(
         kind: artifact.kind,
         sourceName: source.name,
         artifactKind: artifact.kind,
-        ...stateFlowArtifactRiskCounts(artifact),
+        ...stateFlowArtifactBundleCounts(artifact),
       })),
     )
   }
@@ -1863,13 +1865,42 @@ function bundleTargetRiskCounts(target: StateFlowArtifactBundleTarget): {
   }
 }
 
-function stateFlowArtifactRiskCounts(artifact: StateFlowArtifact): {
+function bundleTargetAuditCounts(target: StateFlowArtifactBundleTarget): {
+  readonly opcodeCandidateCount: number
+  readonly stateEdgeCount: number
+} {
+  const schemaArtifacts = target.loadedArtifacts.filter(
+    artifact => artifact.artifactKind === "schema",
+  )
+  const opcodeCandidateCount = schemaArtifacts.reduce(
+    (count, artifact) => count + (artifact.opcodeCandidateCount ?? 0),
+    0,
+  )
+  const stateEdgeCount = schemaArtifacts.reduce(
+    (count, artifact) => count + (artifact.stateEdgeCount ?? 0),
+    0,
+  )
+  return {
+    opcodeCandidateCount:
+      schemaArtifacts.length > 0
+        ? opcodeCandidateCount
+        : (target.summaryTarget?.opcodeCandidateCount ?? 0),
+    stateEdgeCount:
+      schemaArtifacts.length > 0 ? stateEdgeCount : (target.summaryTarget?.stateEdgeCount ?? 0),
+  }
+}
+
+function stateFlowArtifactBundleCounts(artifact: StateFlowArtifact): {
+  readonly opcodeCandidateCount?: number
+  readonly stateEdgeCount?: number
   readonly auditSignalCount?: number
   readonly unknownFieldCount?: number
   readonly replayRiskSignalCount?: number
 } {
   if (artifact.kind === "schema") {
     return {
+      opcodeCandidateCount: artifact.data.opcodeCandidates.length,
+      stateEdgeCount: stateMachineEdges(artifact.data).length,
       auditSignalCount: schemaAuditSignals(artifact.data).length,
       unknownFieldCount: schemaUnknownFieldCount(artifact.data),
     }
@@ -2180,6 +2211,7 @@ function bundleTargetStatus(target: StateFlowArtifactBundleTarget): string {
 
 function bundleTargetSummaryDetail(target: StateFlowArtifactBundleTarget): string {
   const riskCounts = bundleTargetRiskCounts(target)
+  const auditCounts = bundleTargetAuditCounts(target)
   const parts = [
     target.manifestArtifacts.length > 0
       ? `loaded ${target.loadedArtifacts.length}/${target.manifestArtifacts.length}`
@@ -2189,6 +2221,9 @@ function bundleTargetSummaryDetail(target: StateFlowArtifactBundleTarget): strin
     parts.push(
       `${target.summaryTarget.retracedCount}/${target.summaryTarget.sourceTxCount} retraced`,
       `${target.summaryTarget.replayCount} ${plural(target.summaryTarget.replayCount, "replay")}`,
+      `opcodes ${auditCounts.opcodeCandidateCount}`,
+      `state edges ${auditCounts.stateEdgeCount}`,
+      `audit signals ${riskCounts.auditSignalCount}`,
       `unknown fields ${riskCounts.unknownFieldCount}`,
       `replay risks ${riskCounts.replayRiskSignalCount}`,
       `${target.summaryTarget.failureCount} failures`,

@@ -686,6 +686,9 @@ assert(
         row.value === "passed" &&
         row.detail?.includes("sample-protocol sample-category sample contract") === true &&
         row.detail?.includes("loaded 7/7") === true &&
+        row.detail?.includes("opcodes 1") === true &&
+        row.detail?.includes("state edges 1") === true &&
+        row.detail?.includes("audit signals 1") === true &&
         row.detail?.includes("unknown fields 1") === true &&
         row.detail?.includes("replay risks 2") === true &&
         row.detail?.includes("capabilities 2/2") === true,
@@ -720,6 +723,9 @@ const legacySummary = {
   ...runSummary,
   targets: runSummary.targets.map(
     ({
+      opcodeCandidateCount: _opcodeCandidateCount,
+      stateEdgeCount: _stateEdgeCount,
+      auditSignalCount: _auditSignalCount,
       unknownFieldCount: _unknownFieldCount,
       replayRiskSignalCount: _replayRiskSignalCount,
       ...target
@@ -746,6 +752,9 @@ assert(
     ?.rows.some(
       row =>
         row.label === "target-a" &&
+        row.detail?.includes("opcodes 1") === true &&
+        row.detail?.includes("state edges 1") === true &&
+        row.detail?.includes("audit signals 1") === true &&
         row.detail?.includes("unknown fields 1") === true &&
         row.detail?.includes("replay risks 2") === true,
     ) === true,
