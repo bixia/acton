@@ -704,6 +704,7 @@ const artifactManifest = {
       network: "mainnet",
       address: "addr-a",
       sourceUrl: "https://tonviewer.com/addr-a",
+      retraceTxHash: "bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566",
       notes:
         "Known full-chain smoke target used to validate collect, infer, replay, and report artifacts.",
     },
@@ -1301,6 +1302,12 @@ assert(
     "mainnet addr-a · https://tonviewer.com/addr-a · Known full-chain smoke target used to validate collect, infer, replay, and report artifacts.",
   ) === true,
   "expected manifest target row to include source context",
+)
+assert(
+  manifestTargetRows[0]?.detail?.includes(
+    "retrace bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566",
+  ) === true,
+  "expected manifest target row to include retrace transaction hash",
 )
 assert(manifestTargetRows[1]?.label === "target-b", "expected second manifest target row")
 assert(manifestTargetRows[1]?.value === "3 artifacts", "expected target-b artifact count")

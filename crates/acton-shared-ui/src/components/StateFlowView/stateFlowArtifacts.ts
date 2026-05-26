@@ -365,6 +365,7 @@ export interface StateFlowRunTargetSummary {
   readonly contractType?: string | null
   readonly sourceUrl?: string | null
   readonly notes?: string | null
+  readonly retraceTxHash?: string | null
   readonly collectLimit: number
   readonly sourceTxCount: number
   readonly retracedCount: number
@@ -406,6 +407,7 @@ export interface StateFlowArtifactManifestTarget {
   readonly contractType?: string | null
   readonly sourceUrl?: string | null
   readonly notes?: string | null
+  readonly retraceTxHash?: string | null
 }
 
 export interface StateFlowArtifactManifestEntry {
@@ -438,6 +440,7 @@ export interface StateFlowArtifactValidationTarget {
   readonly contractType?: string | null
   readonly sourceUrl?: string | null
   readonly notes?: string | null
+  readonly retraceTxHash?: string | null
   readonly artifactCount: number
   readonly replayCount: number
   readonly passed: boolean
@@ -2246,7 +2249,14 @@ function targetSourceDetail(
   target:
     | Pick<
         StateFlowArtifactManifestTarget,
-        "network" | "address" | "protocol" | "category" | "contractType" | "sourceUrl" | "notes"
+        | "network"
+        | "address"
+        | "protocol"
+        | "category"
+        | "contractType"
+        | "sourceUrl"
+        | "notes"
+        | "retraceTxHash"
       >
     | undefined,
 ): string | undefined {
@@ -2268,6 +2278,7 @@ function targetSourceDetail(
     targetType || undefined,
     target.sourceUrl ?? undefined,
     target.notes ?? undefined,
+    target.retraceTxHash ? `retrace ${target.retraceTxHash}` : undefined,
   ]
     .filter((value): value is string => value !== undefined && value.length > 0)
     .join(" · ")
