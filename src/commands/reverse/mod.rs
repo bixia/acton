@@ -2254,6 +2254,7 @@ fn validate_state_flow_schema_evidence_keys(
         ("address", &["address"][..]),
         ("transaction count", &["transactionCount"][..]),
         ("state machine", &["stateMachine"][..]),
+        ("op table", &["opTable"][..]),
         ("storage layout", &["storageLayout"][..]),
         ("audit signals", &["auditSignals"][..]),
         ("opcode candidates", &["opcodeCandidates"][..]),
@@ -2267,6 +2268,7 @@ fn validate_state_flow_schema_evidence_keys(
     }
 
     validate_schema_state_machine_evidence_keys(value, artifact, gate_failures);
+    validate_schema_op_table_evidence_keys(value, artifact, gate_failures);
     validate_schema_storage_layout_evidence_keys(value, artifact, gate_failures);
     validate_schema_audit_signal_evidence_keys(value, artifact, gate_failures);
 
@@ -2352,6 +2354,53 @@ fn validate_schema_state_machine_evidence_keys(
             }
         }
         validate_schema_confidence_label(edge, &prefix, gate_failures);
+    }
+}
+
+fn validate_schema_op_table_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(op_table) = value.get("opTable") else {
+        return;
+    };
+    for (label, path) in [("entries", &["entries"][..])] {
+        if !json_path_exists(op_table, path) {
+            gate_failures.push(format!(
+                "schema artifact {} opTable missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+    let Some(entries) = op_table.get("entries").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let prefix = format!("schema artifact {} opTable.entries[{index}]", artifact.path);
+        for (label, path) in [
+            ("opcode", &["opcode"][..]),
+            ("name", &["name"][..]),
+            ("source function", &["sourceFunction"][..]),
+            ("transaction count", &["transactionCount"][..]),
+            ("body min bits", &["bodyMinBits"][..]),
+            ("body max bits", &["bodyMaxBits"][..]),
+            ("body min refs", &["bodyMinRefs"][..]),
+            ("body max refs", &["bodyMaxRefs"][..]),
+            ("body field count", &["bodyFieldCount"][..]),
+            ("storage field count", &["storageFieldCount"][..]),
+            ("outbound effect count", &["outboundEffectCount"][..]),
+            ("out action count", &["outActionCount"][..]),
+            ("state transition count", &["stateTransitionCount"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+            ("unknowns", &["unknowns"][..]),
+        ] {
+            if !json_path_exists(entry, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_confidence_label(entry, &prefix, gate_failures);
     }
 }
 
@@ -4493,6 +4542,17 @@ fn validate_schema_corpus_membership(
         }
         validate_schema_state_machine_node_matches_corpus(node, corpus, gate_failures);
     }
+    for entry in &schema.op_table.entries {
+        for evidence in &entry.evidence {
+            validate_corpus_hash_membership(
+                "schema op-table evidence",
+                evidence,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+    }
+    validate_schema_op_table_matches_candidates(schema, gate_failures);
     for field in &schema.storage_layout.fields {
         for evidence in &field.evidence {
             validate_corpus_hash_membership(
@@ -5838,6 +5898,142 @@ fn validate_schema_state_machine_node_matches_corpus(
     }
 }
 
+fn validate_schema_op_table_matches_candidates(
+    schema: &StateFlowSchemaReport,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected = ton_stateflow::op_table_from_candidates(&schema.opcode_candidates);
+    let expected_by_opcode = expected
+        .entries
+        .iter()
+        .map(|entry| (entry.opcode.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = HashSet::new();
+
+    for entry in &schema.op_table.entries {
+        let opcode_label = report_opcode_label(entry.opcode.as_deref());
+        seen.insert(entry.opcode.clone());
+        let expected = expected_by_opcode.get(&entry.opcode).copied();
+        let expected_transaction_count = expected.map_or(0, |entry| entry.transaction_count);
+        validate_evidence_value_field(
+            "schema op-table entry transaction count",
+            entry.transaction_count,
+            "opcode candidate transaction count",
+            expected_transaction_count,
+            &opcode_label,
+            gate_failures,
+        );
+        let Some(expected) = expected else {
+            continue;
+        };
+        validate_evidence_text_field(
+            "schema op-table entry name",
+            &entry.name,
+            "opcode candidate method name",
+            &expected.name,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema op-table entry source function",
+            &entry.source_function,
+            "opcode candidate source function",
+            &expected.source_function,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema op-table entry body bits",
+            &report_field_range(entry.body_min_bits, entry.body_max_bits),
+            "opcode candidate body bits",
+            &report_field_range(expected.body_min_bits, expected.body_max_bits),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema op-table entry body refs",
+            &report_field_range(entry.body_min_refs, entry.body_max_refs),
+            "opcode candidate body refs",
+            &report_field_range(expected.body_min_refs, expected.body_max_refs),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema op-table entry body field count",
+            entry.body_field_count,
+            "opcode candidate body field count",
+            expected.body_field_count,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema op-table entry storage field count",
+            entry.storage_field_count,
+            "opcode candidate storage field count",
+            expected.storage_field_count,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema op-table entry outbound effect count",
+            entry.outbound_effect_count,
+            "opcode candidate outbound effect count",
+            expected.outbound_effect_count,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema op-table entry out-action count",
+            entry.out_action_count,
+            "opcode candidate out-action count",
+            expected.out_action_count,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_value_field(
+            "schema op-table entry state transition count",
+            entry.state_transition_count,
+            "opcode candidate state transition count",
+            expected.state_transition_count,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema op-table entry confidence",
+            &entry.confidence,
+            "opcode candidate confidence",
+            &expected.confidence,
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema op-table entry evidence",
+            &report_sample_list(&entry.evidence),
+            "opcode candidate examples",
+            &report_sample_list(&expected.evidence),
+            &opcode_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema op-table entry unknowns",
+            &report_sample_list(&entry.unknowns),
+            "opcode candidate unknowns",
+            &report_sample_list(&expected.unknowns),
+            &opcode_label,
+            gate_failures,
+        );
+    }
+
+    for expected in &expected.entries {
+        if !seen.contains(&expected.opcode) {
+            gate_failures.push(format!(
+                "schema op-table entry {} is missing",
+                report_opcode_label(expected.opcode.as_deref())
+            ));
+        }
+    }
+}
+
 fn validate_schema_storage_layout_matches_candidates(
     schema: &StateFlowSchemaReport,
     gate_failures: &mut Vec<String>,
@@ -6194,6 +6390,7 @@ fn validate_manifest_report_content_matches_summary(
     for section in [
         "# TON State Flow Reverse Report",
         "## Target",
+        "## Op Table",
         "## Opcode Candidates",
         "## Method Surface",
         "## Schema Evidence",
@@ -6733,6 +6930,38 @@ fn report_kind_list(kinds: &[String]) -> String {
     kinds.join(", ")
 }
 
+fn validate_report_op_table_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = op_table_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!("report op-table header {expected:?} is missing"));
+    }
+}
+
+fn op_table_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Name",
+        "Source function",
+        "Transactions",
+        "Body bits",
+        "Body refs",
+        "Body fields",
+        "Storage fields",
+        "Effects",
+        "State transitions",
+        "Confidence",
+        "Evidence",
+        "Unknowns",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_report_opcode_candidate_header(section: &str, gate_failures: &mut Vec<String>) {
     let expected = opcode_candidate_report_header();
     let header = section
@@ -6837,6 +7066,22 @@ fn validate_report_schema_deliverables(
     schema: &StateFlowSchemaReport,
     gate_failures: &mut Vec<String>,
 ) {
+    if let Some(section) = markdown_section(markdown, "## Op Table") {
+        if !schema.op_table.entries.is_empty() {
+            validate_report_op_table_header(section, gate_failures);
+        }
+        for entry in &schema.op_table.entries {
+            let opcode = report_opcode_label(entry.opcode.as_deref());
+            let entry_row = report_op_table_row(section, entry);
+            if entry_row.is_none() {
+                gate_failures.push(format!("report op-table entry {opcode} is missing"));
+            }
+            if let Some(row) = entry_row {
+                validate_report_op_table_values(entry, &opcode, &row, gate_failures);
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## Opcode Candidates") {
         if !schema.opcode_candidates.is_empty() {
             validate_report_opcode_candidate_header(section, gate_failures);
@@ -7434,6 +7679,122 @@ fn report_opcode_option_list(opcodes: &[Option<String>]) -> String {
         .map(|opcode| report_opcode_label(opcode.as_deref()))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn report_op_table_row(section: &str, entry: &ton_stateflow::OpTableEntry) -> Option<Vec<String>> {
+    let opcode = report_opcode_label(entry.opcode.as_deref());
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == &opcode)
+            && cells.get(1).is_some_and(|cell| cell == &entry.name))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_op_table_values(
+    entry: &ton_stateflow::OpTableEntry,
+    opcode: &str,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_op_table_cell(
+        "source function",
+        entry.source_function.clone(),
+        opcode,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "transaction count",
+        entry.transaction_count.to_string(),
+        opcode,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "body bits",
+        report_field_range(entry.body_min_bits, entry.body_max_bits),
+        opcode,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "body refs",
+        report_field_range(entry.body_min_refs, entry.body_max_refs),
+        opcode,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "body fields",
+        entry.body_field_count.to_string(),
+        opcode,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "storage fields",
+        entry.storage_field_count.to_string(),
+        opcode,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "effects",
+        report_op_table_effect_counts(entry),
+        opcode,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "state transitions",
+        entry.state_transition_count.to_string(),
+        opcode,
+        row.get(9),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "confidence",
+        entry.confidence.clone(),
+        opcode,
+        row.get(10),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "evidence",
+        report_sample_list(&entry.evidence),
+        opcode,
+        row.get(11),
+        gate_failures,
+    );
+    validate_report_op_table_cell(
+        "unknowns",
+        report_kind_list(&entry.unknowns),
+        opcode,
+        row.get(12),
+        gate_failures,
+    );
+}
+
+fn report_op_table_effect_counts(entry: &ton_stateflow::OpTableEntry) -> String {
+    format!(
+        "outbound {}; actions {}",
+        entry.outbound_effect_count, entry.out_action_count
+    )
+}
+
+fn validate_report_op_table_cell(
+    label: &str,
+    expected: String,
+    opcode: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report op-table {label} {expected} for {opcode} is missing"
+        ));
+    }
 }
 
 fn report_opcode_candidate_row(section: &str, opcode: &str) -> Option<Vec<String>> {
@@ -10517,6 +10878,99 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_op_table_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("opTable");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("schema artifact target-a/schema.json missing op table evidence key")
+            }),
+            "expected missing schema op table key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_op_table_entry_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["opTable"] = serde_json::json!({
+            "entries": [{
+                "opcode": "0x00000001",
+                "name": "op::0x00000001",
+                "sourceFunction": "recv_internal",
+                "transactionCount": 9,
+                "bodyMinBits": 32,
+                "bodyMaxBits": 32,
+                "bodyMinRefs": 0,
+                "bodyMaxRefs": 0,
+                "bodyFieldCount": 0,
+                "storageFieldCount": 0,
+                "outboundEffectCount": 0,
+                "outActionCount": 0,
+                "stateTransitionCount": 0,
+                "confidence": "medium",
+                "evidence": ["tx-a", "tx-b"],
+                "unknowns": []
+            }]
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema op-table entry transaction count 9 for 0x00000001 does not match opcode candidate transaction count 2",
+                )
+            }),
+            "expected schema op table transaction count failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_missing_storage_layout_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -12497,6 +12951,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
                 .expect("schema should parse");
         schema["opcodeCandidates"][0]["inboundBody"]["maxBits"] = serde_json::json!(40);
+        schema["opTable"]["entries"][0]["bodyMaxBits"] = serde_json::json!(40);
         write_sample_validation_artifact(
             temp_dir.path(),
             "target-a/schema.json",
@@ -13883,6 +14338,26 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "opTable": {
+                    "entries": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 32,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "bodyFieldCount": 0,
+                        "storageFieldCount": 0,
+                        "outboundEffectCount": 0,
+                        "outActionCount": 0,
+                        "stateTransitionCount": 0,
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"],
+                        "unknowns": []
+                    }]
+                },
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -14107,6 +14582,26 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "opTable": {
+                    "entries": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 96,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "bodyFieldCount": 1,
+                        "storageFieldCount": 0,
+                        "outboundEffectCount": 0,
+                        "outActionCount": 0,
+                        "stateTransitionCount": 0,
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"],
+                        "unknowns": ["message body field names require TL-B recovery"]
+                    }]
+                },
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -14223,6 +14718,26 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "opTable": {
+                    "entries": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 32,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "bodyFieldCount": 0,
+                        "storageFieldCount": 0,
+                        "outboundEffectCount": 0,
+                        "outActionCount": 0,
+                        "stateTransitionCount": 0,
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"],
+                        "unknowns": []
+                    }]
+                },
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -15931,6 +16446,26 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "opTable": {
+                    "entries": [{
+                        "opcode": "0x00000001",
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "transactionCount": 2,
+                        "bodyMinBits": 32,
+                        "bodyMaxBits": 32,
+                        "bodyMinRefs": 0,
+                        "bodyMaxRefs": 0,
+                        "bodyFieldCount": 0,
+                        "storageFieldCount": 0,
+                        "outboundEffectCount": 0,
+                        "outActionCount": 0,
+                        "stateTransitionCount": 0,
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"],
+                        "unknowns": []
+                    }]
+                },
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -16121,10 +16656,15 @@ mod tests {
     }
 
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
-        sample_report_markdown(address).replace(
-            "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
-            "| `0x00000001` | 2 | medium | 32-40 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
-        )
+        sample_report_markdown(address)
+            .replace(
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |",
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |",
+            )
+            .replace(
+                "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
+                "| `0x00000001` | 2 | medium | 32-40 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
+            )
     }
 
     fn sample_report_markdown_with_wrong_message_body_field(address: &str) -> String {
@@ -16352,6 +16892,11 @@ mod tests {
         } else {
             ""
         };
+        let op_table_row = if include_schema_summary_rows {
+            "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |\n"
+        } else {
+            ""
+        };
         let method_surface_row = if include_schema_summary_rows {
             "| `0x00000001` | `op::0x00000001` | recv_internal | none | none | medium | tx-a, tx-b |\n"
         } else {
@@ -16395,6 +16940,11 @@ mod tests {
              - Opcode candidates: 1\n\
              - State machine edges: 1\n\
              - Audit signals: 1\n\
+             \n\
+             ## Op Table\n\
+             | Opcode | Name | Source function | Transactions | Body bits | Body refs | Body fields | Storage fields | Effects | State transitions | Confidence | Evidence | Unknowns |\n\
+             | --- | --- | --- | ---: | --- | --- | ---: | ---: | --- | ---: | --- | --- | --- |\n\
+             {op_table_row}\
              \n\
              ## Opcode Candidates\n\
              | Opcode | Count | Confidence | Body bits | Body refs | Storage | State transitions | Outbound effects | Out actions | Evidence |\n\

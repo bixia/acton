@@ -90,6 +90,7 @@ export interface StateFlowSchemaReport {
   readonly address: string
   readonly transactionCount: number
   readonly stateMachine?: StateMachineGraph | null
+  readonly opTable?: OpTableCandidate | null
   readonly storageLayout?: StorageLayoutCandidate | null
   readonly auditSignals?: readonly AuditSignal[] | null
   readonly opcodeCandidates: readonly OpcodeSchemaCandidate[]
@@ -123,6 +124,29 @@ export interface AuditSignal {
   readonly severity: string
   readonly description: string
   readonly evidence: readonly string[]
+}
+
+export interface OpTableCandidate {
+  readonly entries: readonly OpTableEntry[]
+}
+
+export interface OpTableEntry {
+  readonly opcode?: string | null
+  readonly name: string
+  readonly sourceFunction: string
+  readonly transactionCount: number
+  readonly bodyMinBits: number
+  readonly bodyMaxBits: number
+  readonly bodyMinRefs: number
+  readonly bodyMaxRefs: number
+  readonly bodyFieldCount: number
+  readonly storageFieldCount: number
+  readonly outboundEffectCount: number
+  readonly outActionCount: number
+  readonly stateTransitionCount: number
+  readonly confidence: string
+  readonly evidence: readonly string[]
+  readonly unknowns: readonly string[]
 }
 
 export interface StorageLayoutCandidate {
@@ -728,6 +752,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const stateEdges = stateMachineEdges(schema)
   const stateNodes = stateMachineNodes(schema, stateEdges)
   const auditSignals = schemaAuditSignals(schema)
+  const opTableRows = schemaOpTableRows(schema)
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const methodSurfaceRows = schemaMethodSurfaceRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
@@ -742,6 +767,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
     metrics: [
       {label: "Network", value: schema.network},
       {label: "Transactions", value: schema.transactionCount.toString()},
+      {label: "Ops", value: opTableRows.length.toString()},
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
@@ -771,6 +797,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
           ].join(" · "),
         })),
       },
+      ...(opTableRows.length > 0
+        ? [
+            {
+              title: "Op Table",
+              rows: opTableRows,
+            },
+          ]
+        : []),
       ...(bodyFieldRows.length > 0
         ? [
             {
@@ -1065,6 +1099,7 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
 
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
+  const opTableRows = reportOpTableRows(report)
   const opcodeCandidateRows = reportOpcodeCandidateRows(report)
   const schemaEvidenceRows = reportSchemaEvidenceRows(report)
   const runtimeEvidenceRows = reportRuntimeEvidenceRows(report)
@@ -1091,6 +1126,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Target",
               rows: reportTargetRows(targetSection),
+            },
+          ]
+        : []),
+      ...(opTableRows.length > 0
+        ? [
+            {
+              title: "Op Table",
+              rows: opTableRows,
             },
           ]
         : []),
@@ -1469,6 +1512,28 @@ function reportStorageFieldRows(report: StateFlowReport): readonly SummaryRow[] 
       tableValueLabel("confidence", rowValue(row, "Confidence")),
     ]
       .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportOpTableRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Op Table").map(row => ({
+    label: rowValue(row, "Opcode") || "<none>",
+    value: rowValue(row, "Name") || "n/a",
+    detail: [
+      rowValue(row, "Source function"),
+      tableCountLabel(rowValue(row, "Transactions"), "transaction"),
+      `body ${rowValue(row, "Body bits") || "n/a"} bits/${rowValue(row, "Body refs") || "n/a"} refs`,
+      `fields body ${rowValue(row, "Body fields") || "n/a"}, storage ${
+        rowValue(row, "Storage fields") || "n/a"
+      }`,
+      tableValueLabel("effects", rowValue(row, "Effects")),
+      tableValueLabel("transitions", rowValue(row, "State transitions")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+      tableValueLabel("unknowns", rowValue(row, "Unknowns")),
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
       .join(" · "),
   }))
 }
@@ -1996,6 +2061,65 @@ function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow
         .join(" · "),
     }))
   })
+}
+
+function schemaOpTableRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schemaOpTableEntries(schema).map(entry => ({
+    label: formatOpcode(entry.opcode ?? null),
+    value: entry.name,
+    detail: [
+      entry.sourceFunction,
+      `${entry.transactionCount} ${plural(entry.transactionCount, "transaction")}`,
+      `body ${formatFieldRange(entry.bodyMinBits, entry.bodyMaxBits)} bits/${formatFieldRange(
+        entry.bodyMinRefs,
+        entry.bodyMaxRefs,
+      )} refs`,
+      `fields body ${entry.bodyFieldCount}, storage ${entry.storageFieldCount}`,
+      `effects outbound ${entry.outboundEffectCount}, actions ${entry.outActionCount}`,
+      `transitions ${entry.stateTransitionCount}`,
+      `confidence ${entry.confidence}`,
+      `evidence ${entry.evidence.map(hash => shortHash(hash)).join(", ")}`,
+      entry.unknowns.length > 0 ? `unknowns ${entry.unknowns.join("; ")}` : undefined,
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(" · "),
+  }))
+}
+
+function schemaOpTableEntries(schema: StateFlowSchemaReport): readonly OpTableEntry[] {
+  const structured = schema.opTable?.entries ?? []
+  if (structured.length > 0) {
+    return structured
+  }
+  return schema.opcodeCandidates.map(opTableEntryFromCandidate)
+}
+
+function opTableEntryFromCandidate(candidate: OpcodeSchemaCandidate): OpTableEntry {
+  const opcode = candidate.opcode ?? null
+  const name = candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`
+  const sourceFunction = candidate.methodSurface?.sourceFunction || "recv_internal"
+  const unknowns =
+    candidate.methodSurface?.unknowns && candidate.methodSurface.unknowns.length > 0
+      ? candidate.methodSurface.unknowns
+      : candidate.unknownFields
+  return {
+    opcode,
+    name,
+    sourceFunction,
+    transactionCount: candidate.count,
+    bodyMinBits: candidate.inboundBody.minBits,
+    bodyMaxBits: candidate.inboundBody.maxBits,
+    bodyMinRefs: candidate.inboundBody.minRefs,
+    bodyMaxRefs: candidate.inboundBody.maxRefs,
+    bodyFieldCount: candidate.inboundBody.fieldCandidates?.length ?? 0,
+    storageFieldCount: candidate.storage?.fields?.length ?? 0,
+    outboundEffectCount: candidate.outboundEffects.length,
+    outActionCount: candidate.outActions.length,
+    stateTransitionCount: candidate.stateTransitions.length,
+    confidence: candidate.confidence,
+    evidence: candidate.examples,
+    unknowns,
+  }
 }
 
 function schemaMethodSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

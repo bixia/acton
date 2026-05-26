@@ -74,6 +74,8 @@ pub struct StateFlowSchemaReport {
     #[serde(default)]
     pub state_machine: StateMachineGraph,
     #[serde(default)]
+    pub op_table: OpTableCandidate,
+    #[serde(default)]
     pub storage_layout: StorageLayoutCandidate,
     #[serde(default)]
     pub audit_signals: Vec<AuditSignal>,
@@ -110,6 +112,33 @@ pub struct StateMachineEdge {
     #[serde(default = "default_state_machine_confidence")]
     pub confidence: String,
     pub examples: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpTableCandidate {
+    pub entries: Vec<OpTableEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpTableEntry {
+    pub opcode: Option<String>,
+    pub name: String,
+    pub source_function: String,
+    pub transaction_count: usize,
+    pub body_min_bits: u16,
+    pub body_max_bits: u16,
+    pub body_min_refs: u8,
+    pub body_max_refs: u8,
+    pub body_field_count: usize,
+    pub storage_field_count: usize,
+    pub outbound_effect_count: usize,
+    pub out_action_count: usize,
+    pub state_transition_count: usize,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+    pub unknowns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -594,6 +623,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         .into_iter()
         .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
         .collect();
+    let op_table = op_table_from_candidates(&opcode_candidates);
     let storage_layout = storage_layout_from_candidates(&opcode_candidates);
 
     StateFlowSchemaReport {
@@ -602,6 +632,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         address: corpus.address.clone(),
         transaction_count: corpus.transactions.len(),
         state_machine: state_machine_graph(&corpus.transactions),
+        op_table,
         storage_layout,
         audit_signals: infer_schema_audit_signals(corpus, &opcode_candidates),
         opcode_candidates,
@@ -710,6 +741,39 @@ pub fn render_state_flow_report(
     )
     .ok();
     writeln!(report, "- Audit signals: {}", schema.audit_signals.len()).ok();
+    writeln!(report).ok();
+
+    writeln!(report, "## Op Table").ok();
+    if schema.op_table.entries.is_empty() {
+        writeln!(report, "- No opcode table entries were inferred.").ok();
+    } else {
+        writeln!(report, "| Opcode | Name | Source function | Transactions | Body bits | Body refs | Body fields | Storage fields | Effects | State transitions | Confidence | Evidence | Unknowns |").ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | ---: | --- | --- | ---: | ---: | --- | ---: | --- | --- | --- |"
+        )
+        .ok();
+        for entry in &schema.op_table.entries {
+            writeln!(
+                report,
+                "| {} | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                markdown_code_opt(entry.opcode.as_deref()),
+                markdown_escape(&entry.name),
+                markdown_escape(&entry.source_function),
+                entry.transaction_count,
+                format_field_range(entry.body_min_bits, entry.body_max_bits),
+                format_field_range(entry.body_min_refs, entry.body_max_refs),
+                entry.body_field_count,
+                entry.storage_field_count,
+                format_op_effect_counts(entry),
+                entry.state_transition_count,
+                markdown_escape(&entry.confidence),
+                markdown_code_list(&entry.evidence),
+                markdown_code_list_or_none(&entry.unknowns),
+            )
+            .ok();
+        }
+    }
     writeln!(report).ok();
 
     writeln!(report, "## Opcode Candidates").ok();
@@ -1767,6 +1831,13 @@ fn markdown_code_list_or_none(values: &[String]) -> String {
     markdown_code_list(values)
 }
 
+fn format_op_effect_counts(entry: &OpTableEntry) -> String {
+    format!(
+        "outbound {}; actions {}",
+        entry.outbound_effect_count, entry.out_action_count
+    )
+}
+
 fn markdown_escape(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
@@ -2159,6 +2230,55 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
         fields,
         post_data_hashes: post_data_hashes.into_iter().collect(),
         post_code_hashes: post_code_hashes.into_iter().collect(),
+    }
+}
+
+pub fn op_table_from_candidates(candidates: &[OpcodeSchemaCandidate]) -> OpTableCandidate {
+    OpTableCandidate {
+        entries: candidates.iter().map(op_table_entry).collect(),
+    }
+}
+
+fn op_table_entry(candidate: &OpcodeSchemaCandidate) -> OpTableEntry {
+    let opcode_label = plain_opcode_label(candidate.opcode.as_deref());
+    let name = if candidate.method_surface.name.is_empty() {
+        format!("op::{opcode_label}")
+    } else {
+        candidate.method_surface.name.clone()
+    };
+    let source_function = if candidate.method_surface.source_function.is_empty() {
+        "recv_internal".to_owned()
+    } else {
+        candidate.method_surface.source_function.clone()
+    };
+    let unknowns = if candidate.method_surface.unknowns.is_empty() {
+        candidate.unknown_fields.clone()
+    } else {
+        candidate.method_surface.unknowns.clone()
+    };
+    let evidence = if candidate.examples.is_empty() {
+        candidate.method_surface.evidence.clone()
+    } else {
+        candidate.examples.clone()
+    };
+
+    OpTableEntry {
+        opcode: candidate.opcode.clone(),
+        name,
+        source_function,
+        transaction_count: candidate.count,
+        body_min_bits: candidate.inbound_body.min_bits,
+        body_max_bits: candidate.inbound_body.max_bits,
+        body_min_refs: candidate.inbound_body.min_refs,
+        body_max_refs: candidate.inbound_body.max_refs,
+        body_field_count: candidate.inbound_body.field_candidates.len(),
+        storage_field_count: candidate.storage.fields.len(),
+        outbound_effect_count: candidate.outbound_effects.len(),
+        out_action_count: candidate.out_actions.len(),
+        state_transition_count: candidate.state_transitions.len(),
+        confidence: candidate.confidence.clone(),
+        evidence,
+        unknowns,
     }
 }
 
@@ -3450,6 +3570,58 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_persists_op_table() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow("tx-a", Some("0x00000001")),
+                sample_flow("tx-b", Some("0x00000001")),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["opTable"]["entries"][0],
+            serde_json::json!({
+                "opcode": "0x00000001",
+                "name": "op::0x00000001",
+                "sourceFunction": "recv_internal",
+                "transactionCount": 2,
+                "bodyMinBits": 32,
+                "bodyMaxBits": 32,
+                "bodyMinRefs": 0,
+                "bodyMaxRefs": 0,
+                "bodyFieldCount": 1,
+                "storageFieldCount": 0,
+                "outboundEffectCount": 0,
+                "outActionCount": 0,
+                "stateTransitionCount": 1,
+                "confidence": "medium",
+                "evidence": ["tx-a", "tx-b"],
+                "unknowns": [
+                    "message body field names require TL-B recovery",
+                    "storage field names require typed storage decoding"
+                ]
+            })
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("## Op Table"));
+        assert!(report.contains("| Opcode | Name | Source function | Transactions | Body bits | Body refs | Body fields | Storage fields | Effects | State transitions | Confidence | Evidence | Unknowns |"));
+        assert!(report.contains("| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 1 | 0 | outbound 0; actions 0 | 1 | medium | `tx-a`, `tx-b` | `message body field names require TL-B recovery`, `storage field names require typed storage decoding` |"));
+    }
+
+    #[test]
     fn infer_schema_candidates_records_transaction_evidence_sources() {
         let mut flow = sample_flow("tx-a", Some("0x00000001"));
         let mut outbound = flow.inbound.clone();
@@ -4137,6 +4309,7 @@ mod tests {
         assert_eq!(report.opcode_candidates[0].evidence.len(), 0);
         let serialized = serde_json::to_value(&report).unwrap();
         assert_eq!(serialized["stateMachine"]["edges"], serde_json::json!([]));
+        assert_eq!(serialized["opTable"]["entries"], serde_json::json!([]));
         assert_eq!(serialized["storageLayout"]["fields"], serde_json::json!([]));
         assert_eq!(serialized["auditSignals"], serde_json::json!([]));
     }

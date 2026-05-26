@@ -102,6 +102,28 @@ const schema = {
   network: "mainnet",
   address: "account",
   transactionCount: 2,
+  opTable: {
+    entries: [
+      {
+        opcode: "0x00000001",
+        name: "op::0x00000001",
+        sourceFunction: "recv_internal",
+        transactionCount: 2,
+        bodyMinBits: 32,
+        bodyMaxBits: 96,
+        bodyMinRefs: 0,
+        bodyMaxRefs: 0,
+        bodyFieldCount: 2,
+        storageFieldCount: 1,
+        outboundEffectCount: 1,
+        outActionCount: 1,
+        stateTransitionCount: 1,
+        confidence: "medium",
+        evidence: ["tx-a", "tx-b"],
+        unknowns: ["message body field names require TL-B recovery"],
+      },
+    ],
+  },
   storageLayout: {
     fields: [
       {
@@ -560,6 +582,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | ---: | --- |
 | \`0x00000001\` | 2 | low |
 
+## Op Table
+| Opcode | Name | Source function | Transactions | Body bits | Body refs | Body fields | Storage fields | Effects | State transitions | Confidence | Evidence | Unknowns |
+| --- | --- | --- | ---: | --- | --- | ---: | ---: | --- | ---: | --- | --- | --- |
+| \`0x00000001\` | \`op::0x00000001\` | recv_internal | 2 | 32..96 | 0..0 | 2 | 1 | outbound 1; actions 1 | 1 | medium | \`tx-a\`, \`tx-b\` | \`message body field names require TL-B recovery\` |
+
 ## Schema Evidence
 | Opcode | Tx | Body hash | Body bits/refs | State |
 | --- | --- | --- | ---: | --- |
@@ -706,6 +733,14 @@ assert(
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("code 8/0") === true,
   "expected candidate summary to include storage code shape",
+)
+const opTableRows = sectionRows(schemaSummary, "Op Table")
+assert(opTableRows[0]?.label === "0x00000001", "expected op table row")
+assert(opTableRows[0]?.value === "op::0x00000001", "expected op table name")
+assert(
+  opTableRows[0]?.detail ===
+    "recv_internal · 2 transactions · body 32..96 bits/0..0 refs · fields body 2, storage 1 · effects outbound 1, actions 1 · transitions 1 · confidence medium · evidence tx-a, tx-b · unknowns message body field names require TL-B recovery",
+  "expected op table detail",
 )
 const stateMachineRows = sectionRows(schemaSummary, "State Machine")
 assert(stateMachineRows[0]?.label === "0x00000001", "expected opcode on state machine row")
@@ -1015,7 +1050,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "15"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "16"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1027,6 +1062,14 @@ assert(reportOpcodeRows[0]?.value === "low confidence", "expected report opcode 
 assert(
   reportOpcodeRows[0]?.detail?.includes("2 transactions") === true,
   "expected report opcode count detail",
+)
+const reportOpTableRows = sectionRows(reportSummary, "Op Table")
+assert(reportOpTableRows[0]?.label === "0x00000001", "expected report op table row")
+assert(reportOpTableRows[0]?.value === "op::0x00000001", "expected report op table name")
+assert(
+  reportOpTableRows[0]?.detail ===
+    "recv_internal · 2 transactions · body 32..96 bits/0..0 refs · fields body 2, storage 1 · effects outbound 1; actions 1 · transitions 1 · confidence medium · evidence tx-a, tx-b · unknowns message body field names require TL-B recovery",
+  "expected report op table detail",
 )
 const reportSectionRows = sectionRows(reportSummary, "Report Sections")
 assert(
