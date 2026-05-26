@@ -320,6 +320,7 @@ const runSummary = {
       corpus: "out/target-a/corpus.json",
       schema: "out/target-a/schema.json",
       transaction: "out/target-a/transaction-0.json",
+      retrace: "out/target-a/retrace.json",
       replay: "out/target-a/replay.json",
       replays: ["out/target-a/replay.json", "out/target-a/replay-probe-query-id-32-64.json"],
       report: "out/target-a/report.md",
@@ -343,6 +344,7 @@ const runSummary = {
       corpus: "out/target-b/corpus.json",
       schema: "out/target-b/schema.json",
       transaction: undefined,
+      retrace: undefined,
       replay: undefined,
       replays: [],
       report: "out/target-b/report.md",
@@ -361,6 +363,7 @@ const artifactManifest = {
     {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
     {kind: "schema", path: "out/target-a/schema.json", targetId: "target-a"},
     {kind: "transaction", path: "out/target-a/transaction-0.json", targetId: "target-a"},
+    {kind: "retrace", path: "out/target-a/retrace.json", targetId: "target-a"},
     {kind: "replay", path: "out/target-a/replay.json", targetId: "target-a"},
     {kind: "replay", path: "out/target-a/replay-probe-query-id-32-64.json", targetId: "target-a"},
     {kind: "report", path: "out/target-a/report.md", targetId: "target-a"},
@@ -514,6 +517,17 @@ assert(traceRows[0]?.label === "VM trace", "expected vm trace row")
 assert(traceRows[0]?.detail === "vm step 1", "expected vm trace preview")
 assert(traceRows[1]?.label === "Executor trace", "expected executor trace row")
 assert(traceRows[1]?.detail === "executor accepted", "expected executor trace preview")
+
+const retraceArtifact = parseStateFlowArtifact(JSON.stringify(stateFlowTx), {
+  artifactKind: "retrace",
+})
+assert(retraceArtifact.kind === "retrace", "expected retrace artifact kind")
+const retraceSummary = summarizeStateFlowArtifact(retraceArtifact)
+assert(retraceSummary.title === "State Flow Retrace", "expected retrace summary title")
+assert(
+  sectionRows(retraceSummary, "Traces")[0]?.detail === "vm step 1",
+  "expected retrace summary to keep VM trace evidence",
+)
 
 const schemaSummary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(schema)))
 assert(
@@ -702,6 +716,12 @@ assert(
 )
 assert(
   runArtifactRows.some(
+    row => row.label === "target-a retrace" && row.value === "out/target-a/retrace.json",
+  ),
+  "expected run summary to include retrace artifact path",
+)
+assert(
+  runArtifactRows.some(
     row => row.label === "target-b report" && row.value === "out/target-b/report.md",
   ),
   "expected failed target report artifact path",
@@ -715,7 +735,7 @@ assert(manifestArtifact.kind === "artifactManifest", "expected artifact manifest
 const manifestSummary = summarizeStateFlowArtifact(manifestArtifact)
 assert(manifestSummary.title === "State Flow Artifact Manifest", "expected manifest title")
 assert(
-  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "10"),
+  manifestSummary.metrics.some(metric => metric.label === "Artifacts" && metric.value === "11"),
   "expected manifest artifact count metric",
 )
 assert(
@@ -724,10 +744,14 @@ assert(
 )
 const manifestTargetRows = sectionRows(manifestSummary, "Targets")
 assert(manifestTargetRows[0]?.label === "target-a", "expected first manifest target row")
-assert(manifestTargetRows[0]?.value === "6 artifacts", "expected target-a artifact count")
+assert(manifestTargetRows[0]?.value === "7 artifacts", "expected target-a artifact count")
 assert(
   manifestTargetRows[0]?.detail?.includes("replay x2") === true,
   "expected target-a replay artifact coverage",
+)
+assert(
+  manifestTargetRows[0]?.detail?.includes("retrace x1") === true,
+  "expected target-a retrace artifact coverage",
 )
 assert(manifestTargetRows[1]?.label === "target-b", "expected second manifest target row")
 assert(manifestTargetRows[1]?.value === "3 artifacts", "expected target-b artifact count")

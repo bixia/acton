@@ -1,5 +1,6 @@
 export type StateFlowArtifact =
   | {readonly kind: "transaction"; readonly data: StateFlowTx}
+  | {readonly kind: "retrace"; readonly data: StateFlowTx}
   | {readonly kind: "corpus"; readonly data: StateFlowCorpus}
   | {readonly kind: "schema"; readonly data: StateFlowSchemaReport}
   | {readonly kind: "replay"; readonly data: StateFlowReplayDiff}
@@ -29,6 +30,10 @@ export interface SummaryRow {
   readonly label: string
   readonly value: string
   readonly detail?: string
+}
+
+export interface ParseStateFlowArtifactOptions {
+  readonly artifactKind?: string | null
 }
 
 export interface StateFlowTx {
@@ -145,6 +150,7 @@ export interface StateFlowRunTargetSummary {
   readonly corpus: string
   readonly schema: string
   readonly transaction?: string | null
+  readonly retrace?: string | null
   readonly replay?: string | null
   readonly replays?: readonly string[] | null
   readonly report: string
@@ -455,7 +461,10 @@ export interface ReplayDiffSummary {
   readonly c5Changed?: boolean | null
 }
 
-export function parseStateFlowArtifact(raw: string): StateFlowArtifact {
+export function parseStateFlowArtifact(
+  raw: string,
+  options: ParseStateFlowArtifactOptions = {},
+): StateFlowArtifact {
   const report = parseReportMarkdown(raw)
   if (report) {
     return {kind: "report", data: report}
@@ -514,7 +523,10 @@ export function parseStateFlowArtifact(raw: string): StateFlowArtifact {
     isRecord(parsed.transaction) &&
     isRecord(parsed.state)
   ) {
-    return {kind: "transaction", data: parsed as unknown as StateFlowTx}
+    return {
+      kind: options.artifactKind === "retrace" ? "retrace" : "transaction",
+      data: parsed as unknown as StateFlowTx,
+    }
   }
 
   throw new Error("Unsupported StateFlow artifact shape")
@@ -524,6 +536,9 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
   switch (artifact.kind) {
     case "transaction": {
       return summarizeTransaction(artifact.data)
+    }
+    case "retrace": {
+      return summarizeTransaction(artifact.data, "State Flow Retrace")
     }
     case "corpus": {
       return summarizeCorpus(artifact.data)
@@ -549,9 +564,12 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
   }
 }
 
-function summarizeTransaction(tx: StateFlowTx): ArtifactSummary {
+function summarizeTransaction(
+  tx: StateFlowTx,
+  title: "State Flow Transaction" | "State Flow Retrace" = "State Flow Transaction",
+): ArtifactSummary {
   return {
-    title: "State Flow Transaction",
+    title,
     subtitle: shortHash(tx.queryHash),
     metrics: [
       {label: "Network", value: tx.network},
@@ -1587,6 +1605,7 @@ function targetArtifactRows(target: StateFlowRunTargetSummary): readonly Summary
     ...(target.transaction
       ? [{label: `${target.id} transaction`, value: target.transaction, detail}]
       : []),
+    ...(target.retrace ? [{label: `${target.id} retrace`, value: target.retrace, detail}] : []),
     ...replayPaths.map((path, index) => ({
       label: `${target.id} replay ${index}`,
       value: path,

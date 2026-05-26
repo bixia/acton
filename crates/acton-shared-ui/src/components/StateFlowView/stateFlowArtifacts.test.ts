@@ -238,6 +238,7 @@ const runSummary = {
       corpus: "out/target-a/corpus.json",
       schema: "out/target-a/schema.json",
       transaction: "out/target-a/transaction-0.json",
+      retrace: "out/target-a/retrace.json",
       replay: "out/target-a/replay.json",
       replays: ["out/target-a/replay.json", "out/target-a/replay-probe-query-id-32-64.json"],
       report: "out/target-a/report.md",
@@ -256,6 +257,7 @@ const artifactManifest = {
     {kind: "corpus", path: "out/target-a/corpus.json", targetId: "target-a"},
     {kind: "schema", path: "out/target-a/schema.json", targetId: "target-a"},
     {kind: "transaction", path: "out/target-a/transaction-0.json", targetId: "target-a"},
+    {kind: "retrace", path: "out/target-a/retrace.json", targetId: "target-a"},
     {kind: "replay", path: "out/target-a/replay.json", targetId: "target-a"},
     {kind: "replay", path: "out/target-a/replay-probe-query-id-32-64.json", targetId: "target-a"},
     {kind: "report", path: "out/target-a/report.md", targetId: "target-a"},
@@ -369,6 +371,7 @@ stateDiagram-v2
 
 const artifacts: StateFlowArtifact[] = [
   parseStateFlowArtifact(JSON.stringify(stateFlowTx)),
+  parseStateFlowArtifact(JSON.stringify(stateFlowTx), {artifactKind: "retrace"}),
   parseStateFlowArtifact(JSON.stringify(corpus)),
   parseStateFlowArtifact(JSON.stringify(schema)),
   parseStateFlowArtifact(JSON.stringify(replay)),
@@ -380,6 +383,7 @@ const artifacts: StateFlowArtifact[] = [
 
 const artifactKinds: Array<StateFlowArtifact["kind"]> = [
   "transaction",
+  "retrace",
   "corpus",
   "schema",
   "replay",
@@ -413,6 +417,16 @@ assert(
     .find(section => section.title === "Actions")
     ?.rows.some(row => row.label === "c5" && row.value === "c5-hash") === true,
   "expected transaction summary to include c5 action evidence",
+)
+const retraceSummary = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(stateFlowTx), {artifactKind: "retrace"}),
+)
+assert(retraceSummary.title === "State Flow Retrace", "expected retrace summary title")
+assert(
+  retraceSummary.sections
+    .find(section => section.title === "Traces")
+    ?.rows[0]?.detail?.includes("vm step") === true,
+  "expected retrace summary to include VM trace evidence",
 )
 
 const summary = summarizeStateFlowArtifact(parseStateFlowArtifact(JSON.stringify(corpus)))
@@ -494,6 +508,14 @@ assert(
     ) === true,
   "expected run summary to include replay artifact paths",
 )
+assert(
+  runSummaryView.sections
+    .find(section => section.title === "Target Artifacts")
+    ?.rows.some(
+      row => row.label === "target-a retrace" && row.value === "out/target-a/retrace.json",
+    ) === true,
+  "expected run summary to include retrace artifact path",
+)
 const manifestView = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(artifactManifest)),
 )
@@ -507,6 +529,12 @@ assert(
     .find(section => section.title === "Targets")
     ?.rows[0]?.detail?.includes("replay x2") === true,
   "expected artifact manifest target coverage",
+)
+assert(
+  manifestView.sections
+    .find(section => section.title === "Targets")
+    ?.rows[0]?.detail?.includes("retrace x1") === true,
+  "expected artifact manifest retrace coverage",
 )
 const validationView = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(artifactValidation)),
