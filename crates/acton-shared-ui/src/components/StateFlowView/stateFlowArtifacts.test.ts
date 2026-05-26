@@ -285,6 +285,16 @@ const artifactManifest = {
   kind: "stateFlowArtifactManifest",
   summary: "out/summary.json",
   targetCount: 1,
+  targets: [
+    {
+      id: "target-a",
+      network: "mainnet",
+      address: "account",
+      protocol: "sample-protocol",
+      category: "sample-category",
+      contractType: "sample contract",
+    },
+  ],
   absolutePathCount: 0,
   artifacts: [
     {kind: "runSummary", path: "out/summary.json", targetId: undefined},
@@ -672,6 +682,7 @@ assert(
       row =>
         row.label === "target-a" &&
         row.value === "passed" &&
+        row.detail?.includes("sample-protocol sample-category sample contract") === true &&
         row.detail?.includes("loaded 7/7") === true &&
         row.detail?.includes("capabilities 2/2") === true,
     ) === true,

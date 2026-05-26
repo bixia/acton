@@ -1012,6 +1012,9 @@ fn run_state_flow_targets(
             id: target.id.clone(),
             network: target.network.clone(),
             address: target.address.clone(),
+            protocol: target.protocol.clone(),
+            category: target.category.clone(),
+            contract_type: target.contract_type.clone(),
             source_url: target.source_url.clone(),
             notes: target.notes.clone(),
             collect_limit: target.collect_limit,
@@ -1263,6 +1266,12 @@ struct SmokeTarget {
     id: String,
     network: String,
     address: String,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    contract_type: Option<String>,
     source_url: Option<String>,
     #[serde(default)]
     notes: Option<String>,
@@ -1295,6 +1304,9 @@ fn analysis_target_from_args(
             .unwrap_or_else(|| "analysis".to_owned()),
         network: net.to_owned(),
         address: address.to_owned(),
+        protocol: None,
+        category: None,
+        contract_type: None,
         source_url: options.source_url,
         notes: options.notes,
         collect_limit: limit,
@@ -1525,6 +1537,12 @@ struct SmokeTargetRunSummary {
     id: String,
     network: String,
     address: String,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    contract_type: Option<String>,
     source_url: Option<String>,
     #[serde(default)]
     notes: Option<String>,
@@ -1570,6 +1588,12 @@ struct SmokeArtifactManifestTarget {
     id: String,
     network: String,
     address: String,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    contract_type: Option<String>,
     source_url: Option<String>,
     notes: Option<String>,
 }
@@ -1580,6 +1604,9 @@ impl SmokeArtifactManifestTarget {
             id: target.id.clone(),
             network: target.network.clone(),
             address: target.address.clone(),
+            protocol: target.protocol.clone(),
+            category: target.category.clone(),
+            contract_type: target.contract_type.clone(),
             source_url: target.source_url.clone(),
             notes: target.notes.clone(),
         }
@@ -1810,6 +1837,12 @@ struct ArtifactManifestTargetValidation {
     network: Option<String>,
     #[serde(default)]
     address: Option<String>,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    contract_type: Option<String>,
     #[serde(default)]
     source_url: Option<String>,
     #[serde(default)]
@@ -2153,6 +2186,27 @@ fn validate_manifest_target_context(
             gate_failures,
         );
         validate_target_optional_text_field(
+            "manifest target protocol",
+            manifest_target.protocol.as_deref(),
+            "summary protocol",
+            target.protocol.as_deref(),
+            gate_failures,
+        );
+        validate_target_optional_text_field(
+            "manifest target category",
+            manifest_target.category.as_deref(),
+            "summary category",
+            target.category.as_deref(),
+            gate_failures,
+        );
+        validate_target_optional_text_field(
+            "manifest target contract type",
+            manifest_target.contract_type.as_deref(),
+            "summary contract type",
+            target.contract_type.as_deref(),
+            gate_failures,
+        );
+        validate_target_optional_text_field(
             "manifest target source URL",
             manifest_target.source_url.as_deref(),
             "summary source URL",
@@ -2384,6 +2438,9 @@ fn validation_targets_match_expected(
             actual.id == expected.id
                 && actual.network == expected.network
                 && actual.address == expected.address
+                && actual.protocol == expected.protocol
+                && actual.category == expected.category
+                && actual.contract_type == expected.contract_type
                 && actual.source_url == expected.source_url
                 && actual.notes == expected.notes
                 && actual.artifact_count == expected.artifact_count
@@ -4430,6 +4487,9 @@ fn validate_artifact_manifest_target(
         id: target_id.to_owned(),
         network: summary_target.map(|target| target.network.clone()),
         address: summary_target.map(|target| target.address.clone()),
+        protocol: summary_target.and_then(|target| target.protocol.clone()),
+        category: summary_target.and_then(|target| target.category.clone()),
+        contract_type: summary_target.and_then(|target| target.contract_type.clone()),
         source_url: summary_target.and_then(|target| target.source_url.clone()),
         notes: summary_target.and_then(|target| target.notes.clone()),
         artifact_count: artifacts.len(),
@@ -11727,10 +11787,25 @@ mod tests {
                     .as_ref()
                     .is_some_and(|plan| plan.ignore_chksig)
         }));
-        for vault_id in ["dedust-native-vault", "dedust-usdt-vault"] {
+        for bounded_failure_target_id in [
+            "stonfi-v1-ton-usdt-pool",
+            "dedust-native-vault",
+            "dedust-usdt-vault",
+        ] {
             assert!(manifest.targets.iter().any(|target| {
-                target.id == vault_id && target.allowed_collection_failures == 1
+                target.id == bounded_failure_target_id && target.allowed_collection_failures == 1
             }));
+        }
+        let protocols = manifest
+            .targets
+            .iter()
+            .filter_map(|target| target.protocol.as_deref())
+            .collect::<HashSet<_>>();
+        for protocol in ["stonfi", "dedust", "tonco", "swapcoffee", "tether"] {
+            assert!(
+                protocols.contains(protocol),
+                "high-confidence validation targets should cover protocol {protocol}"
+            );
         }
 
         let incomplete_targets = manifest
@@ -11739,6 +11814,13 @@ mod tests {
             .filter(|target| {
                 target.source_url.as_deref().unwrap_or_default().is_empty()
                     || target.notes.as_deref().unwrap_or_default().is_empty()
+                    || target.protocol.as_deref().unwrap_or_default().is_empty()
+                    || target.category.as_deref().unwrap_or_default().is_empty()
+                    || target
+                        .contract_type
+                        .as_deref()
+                        .unwrap_or_default()
+                        .is_empty()
                     || target.replay_mutation.is_none()
             })
             .map(|target| target.id.as_str())
@@ -11746,7 +11828,7 @@ mod tests {
 
         assert!(
             incomplete_targets.is_empty(),
-            "high-confidence validation targets should be source-linked, annotated, and replayable: {:?}",
+            "high-confidence validation targets should be source-linked, annotated, typed, and replayable: {:?}",
             incomplete_targets
         );
     }
@@ -12010,6 +12092,9 @@ mod tests {
                 "id": "target-a",
                 "network": "mainnet",
                 "address": "addr",
+                "protocol": "sample-protocol",
+                "category": "sample-category",
+                "contractType": "sample contract",
                 "sourceUrl": "https://tonviewer.com/addr",
                 "notes": "sample target note"
             }])
@@ -12333,6 +12418,18 @@ mod tests {
         assert_eq!(validation.capability_passed_count, 5);
         assert_eq!(validation.capability_failed_count, 0);
         assert_eq!(validation.targets[0].id, "target-a");
+        assert_eq!(
+            validation.targets[0].protocol.as_deref(),
+            Some("sample-protocol")
+        );
+        assert_eq!(
+            validation.targets[0].category.as_deref(),
+            Some("sample-category")
+        );
+        assert_eq!(
+            validation.targets[0].contract_type.as_deref(),
+            Some("sample contract")
+        );
         assert!(validation.targets[0].passed);
         assert_eq!(validation.targets[0].capability_count, 5);
         assert_eq!(validation.targets[0].capability_passed_count, 5);
@@ -12436,6 +12533,9 @@ mod tests {
             id: "target-b".to_owned(),
             network: "mainnet".to_owned(),
             address: "addr".to_owned(),
+            protocol: Some("sample-protocol".to_owned()),
+            category: Some("sample-category".to_owned()),
+            contract_type: Some("sample contract".to_owned()),
             source_url: None,
             notes: Some("sample target note".to_owned()),
         });
@@ -12529,6 +12629,9 @@ mod tests {
                 "id": "target-a",
                 "network": "mainnet",
                 "address": "addr",
+                "protocol": "sample-protocol",
+                "category": "sample-category",
+                "contractType": "sample contract",
                 "sourceUrl": null,
                 "notes": "sample target note"
             }],
@@ -19050,6 +19153,9 @@ mod tests {
             id: "target-a".to_owned(),
             network: "mainnet".to_owned(),
             address: "addr".to_owned(),
+            protocol: None,
+            category: None,
+            contract_type: None,
             source_url: None,
             notes: None,
             collect_limit: 2,
@@ -19146,6 +19252,9 @@ mod tests {
             id: "target-a".to_owned(),
             network: "mainnet".to_owned(),
             address: "addr".to_owned(),
+            protocol: Some("sample-protocol".to_owned()),
+            category: Some("sample-category".to_owned()),
+            contract_type: Some("sample contract".to_owned()),
             source_url: None,
             notes: Some("sample target note".to_owned()),
             collect_limit: 2,
@@ -19220,6 +19329,9 @@ mod tests {
                 "id": "target-a",
                 "network": "mainnet",
                 "address": "addr",
+                "protocol": "sample-protocol",
+                "category": "sample-category",
+                "contractType": "sample contract",
                 "sourceUrl": null,
                 "notes": "sample target note"
             }],

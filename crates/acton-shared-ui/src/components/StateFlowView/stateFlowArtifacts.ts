@@ -355,6 +355,9 @@ export interface StateFlowRunTargetSummary {
   readonly id: string
   readonly network: string
   readonly address: string
+  readonly protocol?: string | null
+  readonly category?: string | null
+  readonly contractType?: string | null
   readonly sourceUrl?: string | null
   readonly notes?: string | null
   readonly collectLimit: number
@@ -391,6 +394,9 @@ export interface StateFlowArtifactManifestTarget {
   readonly id: string
   readonly network?: string | null
   readonly address?: string | null
+  readonly protocol?: string | null
+  readonly category?: string | null
+  readonly contractType?: string | null
   readonly sourceUrl?: string | null
   readonly notes?: string | null
 }
@@ -420,6 +426,9 @@ export interface StateFlowArtifactValidationTarget {
   readonly id: string
   readonly network?: string | null
   readonly address?: string | null
+  readonly protocol?: string | null
+  readonly category?: string | null
+  readonly contractType?: string | null
   readonly sourceUrl?: string | null
   readonly notes?: string | null
   readonly artifactCount: number
@@ -1967,7 +1976,10 @@ function bundleTargetCapabilityDetail(target: StateFlowArtifactBundleTarget): st
 
 function targetSourceDetail(
   target:
-    | Pick<StateFlowArtifactManifestTarget, "network" | "address" | "sourceUrl" | "notes">
+    | Pick<
+        StateFlowArtifactManifestTarget,
+        "network" | "address" | "protocol" | "category" | "contractType" | "sourceUrl" | "notes"
+      >
     | undefined,
 ): string | undefined {
   if (!target) {
@@ -1976,7 +1988,19 @@ function targetSourceDetail(
   const location = [target.network ?? undefined, target.address ?? undefined]
     .filter((value): value is string => value !== undefined && value.length > 0)
     .join(" ")
-  return [location || undefined, target.sourceUrl ?? undefined, target.notes ?? undefined]
+  const targetType = [
+    target.protocol ?? undefined,
+    target.category ?? undefined,
+    target.contractType ?? undefined,
+  ]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .join(" ")
+  return [
+    location || undefined,
+    targetType || undefined,
+    target.sourceUrl ?? undefined,
+    target.notes ?? undefined,
+  ]
     .filter((value): value is string => value !== undefined && value.length > 0)
     .join(" · ")
 }
