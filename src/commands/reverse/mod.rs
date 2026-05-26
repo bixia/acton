@@ -11836,19 +11836,19 @@ fn validate_replay_baseline_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_evidence_value_field(
-        "replay baseline outbound count",
-        replay.baseline.outbound.len(),
-        "corpus outbound count",
-        corpus_flow.outbound.len(),
+    validate_message_list_matches_corpus(
+        "replay baseline outbound",
+        &replay.baseline.outbound,
+        "corpus outbound",
+        &corpus_flow.outbound,
         tx_hash,
         gate_failures,
     );
-    validate_evidence_value_field(
-        "replay baseline out-action count",
-        replay.baseline.out_actions.len(),
-        "corpus out-action count",
-        corpus_flow.out_actions.len(),
+    validate_action_list_matches_corpus(
+        "replay baseline out-action",
+        &replay.baseline.out_actions,
+        "corpus out-action",
+        &corpus_flow.out_actions,
         tx_hash,
         gate_failures,
     );
@@ -19139,6 +19139,92 @@ mod tests {
                 )
             }),
             "expected replay baseline state balance mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_baseline_effect_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let corpus_path = temp_dir.path().join("target-a/corpus.json");
+        let mut corpus: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&corpus_path).expect("corpus artifact should be readable"),
+        )
+        .expect("corpus artifact should parse");
+        corpus["transactions"][0]["outbound"] =
+            serde_json::json!([sample_outbound_message_json("out-dst", "out-body-hash",)]);
+        corpus["transactions"][0]["outActions"] =
+            serde_json::json!([sample_out_action_json("64", "out-dst", "action-body-hash",)]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["outbound"] =
+            serde_json::json!([sample_outbound_message_json("out-dst", "out-body-hash",)]);
+        tx["outActions"] =
+            serde_json::json!([sample_out_action_json("64", "out-dst", "action-body-hash",)]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["baseline"]["outbound"] = serde_json::json!([sample_outbound_message_json(
+            "other-dst",
+            "wrong-out-body-hash",
+        )]);
+        replay["baseline"]["outActions"] = serde_json::json!([sample_out_action_json(
+            "128",
+            "other-dst",
+            "wrong-action-body-hash",
+        )]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline outbound[0] dst other-dst for tx-a does not match corpus outbound[0] dst out-dst",
+                )
+            }),
+            "expected replay baseline outbound destination mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline out-action[0] mode 128 for tx-a does not match corpus out-action[0] mode 64",
+                )
+            }),
+            "expected replay baseline out-action mode mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline out-action[0] body hash wrong-action-body-hash for tx-a does not match corpus out-action[0] body hash action-body-hash",
+                )
+            }),
+            "expected replay baseline out-action body mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
