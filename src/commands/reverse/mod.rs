@@ -5185,6 +5185,11 @@ fn validate_replay_observation_evidence_keys(
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
     {
+        validate_accepted_replay_observation_has_success_artifacts(
+            observation,
+            &observation_prefix,
+            gate_failures,
+        );
         validate_required_log_artifact_non_empty(
             observation,
             &["vmTrace"],
@@ -5207,6 +5212,24 @@ fn validate_replay_observation_evidence_keys(
     );
     validate_out_action_evidence_keys(observation, &observation_prefix, gate_failures);
     validate_replay_error_evidence_keys(observation, &observation_prefix, gate_failures);
+}
+
+fn validate_accepted_replay_observation_has_success_artifacts(
+    observation: &serde_json::Value,
+    observation_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    for (key, label) in [
+        ("state", "state"),
+        ("compute", "compute"),
+        ("money", "money"),
+    ] {
+        if !matches!(observation.get(key), Some(serde_json::Value::Object(_))) {
+            gate_failures.push(format!(
+                "{observation_prefix} accepted observation must include {label} evidence"
+            ));
+        }
+    }
 }
 
 fn validate_rejected_replay_observation_has_no_success_artifacts(
@@ -16887,6 +16910,49 @@ mod tests {
             "expected accepted replay error failure, got {:?}",
             validation.gate_failures
         );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_accepted_replay_missing_success_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["replay"]["state"] = serde_json::Value::Null;
+        replay["replay"]["compute"] = serde_json::Value::Null;
+        replay["replay"]["money"] = serde_json::Value::Null;
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        for expected in [
+            "replay artifact target-a/replay.json replay accepted observation must include state evidence",
+            "replay artifact target-a/replay.json replay accepted observation must include compute evidence",
+            "replay artifact target-a/replay.json replay accepted observation must include money evidence",
+        ] {
+            assert!(
+                validation
+                    .gate_failures
+                    .iter()
+                    .any(|failure| failure.contains(expected)),
+                "expected accepted replay missing success artifact failure {expected}, got {:?}",
+                validation.gate_failures
+            );
+        }
     }
 
     #[test]
