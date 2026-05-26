@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use ton_retrace::Network;
 use ton_stateflow::{
-    LogArtifact, ReplayMutation, ShardAccountSnapshot, StateFlowCorpus, StateFlowReplayDiff,
+    ActionEffect, CellArtifact, LibraryEffect, LogArtifact, MessageArtifact, MessageDirection,
+    ReplayMutation, ShardAccountSnapshot, StateFlowCorpus, StateFlowReplayDiff,
     StateFlowSchemaReport, StateFlowTx,
 };
 use tycho_types::boc::Boc;
@@ -10857,6 +10858,14 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
+    validate_message_list_matches_corpus(
+        "transaction outbound",
+        &flow.outbound,
+        "corpus outbound",
+        &corpus_flow.outbound,
+        tx_hash,
+        gate_failures,
+    );
     validate_evidence_value_field(
         "transaction VM trace line count",
         flow.vm_trace.line_count,
@@ -10873,11 +10882,11 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_evidence_value_field(
-        "transaction out-action count",
-        flow.out_actions.len(),
-        "corpus out-action count",
-        corpus_flow.out_actions.len(),
+    validate_action_list_matches_corpus(
+        "transaction out-action",
+        &flow.out_actions,
+        "corpus out-action",
+        &corpus_flow.out_actions,
         tx_hash,
         gate_failures,
     );
@@ -10966,6 +10975,357 @@ fn validate_transaction_replay_context_matches_corpus(
     );
 }
 
+fn validate_message_list_matches_corpus(
+    actual_label: &str,
+    actual: &[MessageArtifact],
+    expected_label: &str,
+    expected: &[MessageArtifact],
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_evidence_value_field(
+        &format!("{actual_label} count"),
+        actual.len(),
+        &format!("{expected_label} count"),
+        expected.len(),
+        tx_hash,
+        gate_failures,
+    );
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        validate_message_artifact_matches_corpus(
+            &format!("{actual_label}[{index}]"),
+            actual,
+            &format!("{expected_label}[{index}]"),
+            expected,
+            tx_hash,
+            gate_failures,
+        );
+    }
+}
+
+fn validate_message_artifact_matches_corpus(
+    actual_label: &str,
+    actual: &MessageArtifact,
+    expected_label: &str,
+    expected: &MessageArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_evidence_text_field(
+        &format!("{actual_label} direction"),
+        message_direction_label(&actual.direction),
+        &format!("{expected_label} direction"),
+        message_direction_label(&expected.direction),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        &format!("{actual_label} index"),
+        actual.index,
+        &format!("{expected_label} index"),
+        expected.index,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("{actual_label} kind"),
+        &actual.kind,
+        &format!("{expected_label} kind"),
+        &expected.kind,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} src"),
+        actual.src.as_deref(),
+        &format!("{expected_label} src"),
+        expected.src.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} dst"),
+        actual.dst.as_deref(),
+        &format!("{expected_label} dst"),
+        expected.dst.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} value"),
+        actual.value_nanotons.as_deref(),
+        &format!("{expected_label} value"),
+        expected.value_nanotons.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        &format!("{actual_label} bounced"),
+        actual.bounced,
+        &format!("{expected_label} bounced"),
+        expected.bounced,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        &format!("{actual_label} bounce"),
+        actual.bounce,
+        &format!("{expected_label} bounce"),
+        expected.bounce,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} opcode"),
+        actual.opcode.as_deref(),
+        &format!("{expected_label} opcode"),
+        expected.opcode.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_blob_field(
+        &format!("{actual_label} message boc64"),
+        &actual.message_boc64,
+        &format!("{expected_label} message boc64"),
+        &expected.message_boc64,
+        tx_hash,
+        gate_failures,
+    );
+    validate_cell_artifact_matches_corpus(
+        &format!("{actual_label} body"),
+        &actual.body,
+        &format!("{expected_label} body"),
+        &expected.body,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn message_direction_label(direction: &MessageDirection) -> &'static str {
+    match direction {
+        MessageDirection::Inbound => "inbound",
+        MessageDirection::Outbound => "outbound",
+    }
+}
+
+fn validate_action_list_matches_corpus(
+    actual_label: &str,
+    actual: &[ActionEffect],
+    expected_label: &str,
+    expected: &[ActionEffect],
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_evidence_value_field(
+        &format!("{actual_label} count"),
+        actual.len(),
+        &format!("{expected_label} count"),
+        expected.len(),
+        tx_hash,
+        gate_failures,
+    );
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        validate_action_effect_matches_corpus(
+            &format!("{actual_label}[{index}]"),
+            actual,
+            &format!("{expected_label}[{index}]"),
+            expected,
+            tx_hash,
+            gate_failures,
+        );
+    }
+}
+
+fn validate_action_effect_matches_corpus(
+    actual_label: &str,
+    actual: &ActionEffect,
+    expected_label: &str,
+    expected: &ActionEffect,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_evidence_value_field(
+        &format!("{actual_label} index"),
+        actual.index,
+        &format!("{expected_label} index"),
+        expected.index,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("{actual_label} kind"),
+        &actual.kind,
+        &format!("{expected_label} kind"),
+        &expected.kind,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} mode"),
+        actual.mode.as_deref(),
+        &format!("{expected_label} mode"),
+        expected.mode.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} value"),
+        actual.value_nanotons.as_deref(),
+        &format!("{expected_label} value"),
+        expected.value_nanotons.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} destination"),
+        actual.destination.as_deref(),
+        &format!("{expected_label} destination"),
+        expected.destination.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_optional_cell_artifact_matches_corpus(
+        &format!("{actual_label} body"),
+        actual.body.as_ref(),
+        &format!("{expected_label} body"),
+        expected.body.as_ref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_optional_cell_artifact_matches_corpus(
+        &format!("{actual_label} code"),
+        actual.code.as_ref(),
+        &format!("{expected_label} code"),
+        expected.code.as_ref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_optional_library_effect_matches_corpus(
+        &format!("{actual_label} library"),
+        actual.library.as_ref(),
+        &format!("{expected_label} library"),
+        expected.library.as_ref(),
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_optional_library_effect_matches_corpus(
+    actual_label: &str,
+    actual: Option<&LibraryEffect>,
+    expected_label: &str,
+    expected: Option<&LibraryEffect>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let (Some(actual), Some(expected)) = (actual, expected) else {
+        validate_evidence_optional_text_field(
+            actual_label,
+            actual.map(|_| "<present>"),
+            expected_label,
+            expected.map(|_| "<present>"),
+            tx_hash,
+            gate_failures,
+        );
+        return;
+    };
+    validate_evidence_text_field(
+        &format!("{actual_label} mode"),
+        &actual.mode,
+        &format!("{expected_label} mode"),
+        &expected.mode,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{actual_label} hash"),
+        actual.hash.as_deref(),
+        &format!("{expected_label} hash"),
+        expected.hash.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_optional_cell_artifact_matches_corpus(
+        &format!("{actual_label} cell"),
+        actual.cell.as_ref(),
+        &format!("{expected_label} cell"),
+        expected.cell.as_ref(),
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_optional_cell_artifact_matches_corpus(
+    actual_label: &str,
+    actual: Option<&CellArtifact>,
+    expected_label: &str,
+    expected: Option<&CellArtifact>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let (Some(actual), Some(expected)) = (actual, expected) else {
+        validate_evidence_optional_text_field(
+            actual_label,
+            actual.map(|_| "<present>"),
+            expected_label,
+            expected.map(|_| "<present>"),
+            tx_hash,
+            gate_failures,
+        );
+        return;
+    };
+    validate_cell_artifact_matches_corpus(
+        actual_label,
+        actual,
+        expected_label,
+        expected,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_cell_artifact_matches_corpus(
+    actual_label: &str,
+    actual: &CellArtifact,
+    expected_label: &str,
+    expected: &CellArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_evidence_blob_field(
+        &format!("{actual_label} boc64"),
+        &actual.boc64,
+        &format!("{expected_label} boc64"),
+        &expected.boc64,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("{actual_label} hash"),
+        &actual.hash,
+        &format!("{expected_label} hash"),
+        &expected.hash,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{actual_label} bits"),
+        actual.bits,
+        &format!("{expected_label} bits"),
+        expected.bits,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{actual_label} refs"),
+        actual.refs,
+        &format!("{expected_label} refs"),
+        expected.refs,
+        tx_hash,
+        gate_failures,
+    );
+}
+
 fn validate_evidence_text_field(
     actual_label: &str,
     actual: &str,
@@ -10977,6 +11337,23 @@ fn validate_evidence_text_field(
     if actual != expected {
         gate_failures.push(format!(
             "{actual_label} {actual} for {tx_hash} does not match {expected_label} {expected}"
+        ));
+    }
+}
+
+fn validate_evidence_optional_text_field(
+    actual_label: &str,
+    actual: Option<&str>,
+    expected_label: &str,
+    expected: Option<&str>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {} for {tx_hash} does not match {expected_label} {}",
+            option_text_label(actual),
+            option_text_label(expected)
         ));
     }
 }
@@ -15824,6 +16201,78 @@ mod tests {
                 )
             }),
             "expected transaction replay block config mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_effect_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let corpus_path = temp_dir.path().join("target-a/corpus.json");
+        let mut corpus: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&corpus_path).expect("corpus artifact should be readable"),
+        )
+        .expect("corpus artifact should parse");
+        corpus["transactions"][0]["outbound"] =
+            serde_json::json!([sample_outbound_message_json("out-dst", "out-body-hash",)]);
+        corpus["transactions"][0]["outActions"] =
+            serde_json::json!([sample_out_action_json("64", "out-dst", "action-body-hash",)]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["outbound"] = serde_json::json!([sample_outbound_message_json(
+            "other-dst",
+            "wrong-out-body-hash",
+        )]);
+        tx["outActions"] = serde_json::json!([sample_out_action_json(
+            "128",
+            "other-dst",
+            "wrong-action-body-hash",
+        )]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction outbound[0] dst other-dst for tx-a does not match corpus outbound[0] dst out-dst",
+                )
+            }),
+            "expected transaction outbound destination mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction out-action[0] mode 128 for tx-a does not match corpus out-action[0] mode 64",
+                )
+            }),
+            "expected transaction out-action mode mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction out-action[0] body hash wrong-action-body-hash for tx-a does not match corpus out-action[0] body hash action-body-hash",
+                )
+            }),
+            "expected transaction out-action body mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -20793,6 +21242,35 @@ mod tests {
         observation["c5"] =
             serde_json::json!({"boc64": "c5", "hash": "c5-hash", "bits": 0, "refs": 0});
         observation
+    }
+
+    fn sample_outbound_message_json(dst: &str, body_hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "direction": "outbound",
+            "index": 0,
+            "kind": "internal",
+            "src": "addr",
+            "dst": dst,
+            "valueNanotons": "11",
+            "bounced": false,
+            "bounce": true,
+            "opcode": "0x00000002",
+            "messageBoc64": "out-msg",
+            "body": {"boc64": "out-body", "hash": body_hash, "bits": 40, "refs": 1}
+        })
+    }
+
+    fn sample_out_action_json(mode: &str, destination: &str, body_hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "index": 0,
+            "kind": "sendMsg",
+            "mode": mode,
+            "valueNanotons": "11",
+            "destination": destination,
+            "body": {"boc64": "action-body", "hash": body_hash, "bits": 40, "refs": 1},
+            "code": null,
+            "library": null
+        })
     }
 
     fn sample_state_flow_json(query_hash: &str) -> serde_json::Value {
