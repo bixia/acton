@@ -694,6 +694,23 @@ const artifactManifest = {
   kind: "stateFlowArtifactManifest",
   summary: "out/summary.json",
   targetCount: 2,
+  targets: [
+    {
+      id: "target-a",
+      network: "mainnet",
+      address: "addr-a",
+      sourceUrl: "https://tonviewer.com/addr-a",
+      notes:
+        "Known full-chain smoke target used to validate collect, infer, replay, and report artifacts.",
+    },
+    {
+      id: "target-b",
+      network: "mainnet",
+      address: "addr-b",
+      sourceUrl: "https://tonviewer.com/addr-b",
+      notes: "User-requested Tonviewer account that must remain in live state-flow smoke coverage.",
+    },
+  ],
   absolutePathCount: 0,
   artifacts: [
     {kind: "runSummary", path: "out/summary.json", targetId: undefined},
@@ -1274,6 +1291,12 @@ assert(
 assert(
   manifestTargetRows[0]?.detail?.includes("retrace x1") === true,
   "expected target-a retrace artifact coverage",
+)
+assert(
+  manifestTargetRows[0]?.detail?.includes(
+    "mainnet addr-a · https://tonviewer.com/addr-a · Known full-chain smoke target used to validate collect, infer, replay, and report artifacts.",
+  ) === true,
+  "expected manifest target row to include source context",
 )
 assert(manifestTargetRows[1]?.label === "target-b", "expected second manifest target row")
 assert(manifestTargetRows[1]?.value === "3 artifacts", "expected target-b artifact count")

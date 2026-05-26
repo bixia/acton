@@ -335,8 +335,17 @@ export interface StateFlowArtifactManifest {
   readonly kind: "stateFlowArtifactManifest"
   readonly summary: string
   readonly targetCount: number
+  readonly targets?: readonly StateFlowArtifactManifestTarget[] | null
   readonly absolutePathCount?: number
   readonly artifacts: readonly StateFlowArtifactManifestEntry[]
+}
+
+export interface StateFlowArtifactManifestTarget {
+  readonly id: string
+  readonly network?: string | null
+  readonly address?: string | null
+  readonly sourceUrl?: string | null
+  readonly notes?: string | null
 }
 
 export interface StateFlowArtifactManifestEntry {
@@ -1222,7 +1231,7 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
           label: target.id,
           value: target.passed ? "passed" : "failed",
           detail: [
-            validationTargetSourceDetail(target),
+            targetSourceDetail(target),
             `${target.artifactCount} ${plural(target.artifactCount, "artifact")}`,
             `${target.replayCount} ${plural(target.replayCount, "replay")}`,
             targetCapabilityDetail(target),
@@ -1461,6 +1470,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
 
 function artifactManifestTargetRows(manifest: StateFlowArtifactManifest): readonly SummaryRow[] {
   const artifactsByTarget = new Map<string, StateFlowArtifactManifestEntry[]>()
+  const contextByTarget = new Map((manifest.targets ?? []).map(target => [target.id, target]))
   for (const artifact of manifest.artifacts) {
     if (!artifact.targetId) {
       continue
@@ -1473,7 +1483,9 @@ function artifactManifestTargetRows(manifest: StateFlowArtifactManifest): readon
   return [...artifactsByTarget.entries()].map(([targetId, artifacts]) => ({
     label: targetId,
     value: `${artifacts.length} ${plural(artifacts.length, "artifact")}`,
-    detail: artifactKindCoverage(artifacts),
+    detail: [targetSourceDetail(contextByTarget.get(targetId)), artifactKindCoverage(artifacts)]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(" · "),
   }))
 }
 
@@ -1536,9 +1548,14 @@ function targetCapabilityDetail(target: StateFlowArtifactValidationTarget): stri
   return `capabilities ${passed}/${total}`
 }
 
-function validationTargetSourceDetail(
-  target: StateFlowArtifactValidationTarget,
+function targetSourceDetail(
+  target:
+    | Pick<StateFlowArtifactManifestTarget, "network" | "address" | "sourceUrl" | "notes">
+    | undefined,
 ): string | undefined {
+  if (!target) {
+    return undefined
+  }
   const location = [target.network ?? undefined, target.address ?? undefined]
     .filter((value): value is string => value !== undefined && value.length > 0)
     .join(" ")

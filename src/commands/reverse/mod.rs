@@ -1386,8 +1386,32 @@ struct SmokeArtifactManifest {
     summary: String,
     target_count: usize,
     #[serde(default)]
+    targets: Vec<SmokeArtifactManifestTarget>,
+    #[serde(default)]
     absolute_path_count: usize,
     artifacts: Vec<SmokeArtifactManifestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeArtifactManifestTarget {
+    id: String,
+    network: String,
+    address: String,
+    source_url: Option<String>,
+    notes: Option<String>,
+}
+
+impl SmokeArtifactManifestTarget {
+    fn from_summary(target: &SmokeTargetRunSummary) -> Self {
+        Self {
+            id: target.id.clone(),
+            network: target.network.clone(),
+            address: target.address.clone(),
+            source_url: target.source_url.clone(),
+            notes: target.notes.clone(),
+        }
+    }
 }
 
 impl SmokeArtifactManifest {
@@ -1453,6 +1477,11 @@ impl SmokeArtifactManifest {
             kind: "stateFlowArtifactManifest".to_owned(),
             summary: summary_artifact_path,
             target_count: summary.target_count,
+            targets: summary
+                .targets
+                .iter()
+                .map(SmokeArtifactManifestTarget::from_summary)
+                .collect(),
             absolute_path_count,
             artifacts,
         }
@@ -1906,7 +1935,72 @@ fn validate_manifest_summary_targets(
         ));
     }
 
+    validate_manifest_target_context(manifest, summary, gate_failures);
     validate_manifest_summary_bundle_paths(manifest, manifest_path, summary, gate_failures);
+}
+
+fn validate_manifest_target_context(
+    manifest: &SmokeArtifactManifest,
+    summary: &SmokeRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    if manifest.targets.len() != summary.targets.len() {
+        gate_failures.push(format!(
+            "manifest target context count {} does not match summary target count {}",
+            manifest.targets.len(),
+            summary.targets.len()
+        ));
+    }
+    for target in &summary.targets {
+        let Some(manifest_target) = manifest
+            .targets
+            .iter()
+            .find(|manifest_target| manifest_target.id == target.id)
+        else {
+            gate_failures.push(format!("manifest target context {} is missing", target.id));
+            continue;
+        };
+        validate_target_text_field(
+            "manifest target network",
+            &manifest_target.network,
+            "summary network",
+            &target.network,
+            gate_failures,
+        );
+        validate_target_text_field(
+            "manifest target address",
+            &manifest_target.address,
+            "summary address",
+            &target.address,
+            gate_failures,
+        );
+        validate_target_optional_text_field(
+            "manifest target source URL",
+            manifest_target.source_url.as_deref(),
+            "summary source URL",
+            target.source_url.as_deref(),
+            gate_failures,
+        );
+        validate_target_optional_text_field(
+            "manifest target notes",
+            manifest_target.notes.as_deref(),
+            "summary notes",
+            target.notes.as_deref(),
+            gate_failures,
+        );
+    }
+    for manifest_target in &manifest.targets {
+        if !summary
+            .targets
+            .iter()
+            .any(|target| target.id == manifest_target.id)
+        {
+            gate_failures.push(format!(
+                "manifest target context {} has no summary target",
+                manifest_target.id
+            ));
+        }
+    }
 }
 
 fn validate_manifest_summary_bundle_paths(
@@ -4330,6 +4424,7 @@ fn validate_artifact_manifest_evidence_keys(manifest_path: &Path, gate_failures:
         ("kind", &["kind"][..]),
         ("summary", &["summary"][..]),
         ("target count", &["targetCount"][..]),
+        ("targets", &["targets"][..]),
         ("absolute path count", &["absolutePathCount"][..]),
         ("artifacts", &["artifacts"][..]),
     ] {
@@ -4337,6 +4432,25 @@ fn validate_artifact_manifest_evidence_keys(manifest_path: &Path, gate_failures:
             gate_failures.push(format!(
                 "artifact manifest {manifest_name} missing {label} evidence key"
             ));
+        }
+    }
+
+    let Some(targets) = value.get("targets").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, target) in targets.iter().enumerate() {
+        for (label, path) in [
+            ("id", &["id"][..]),
+            ("network", &["network"][..]),
+            ("address", &["address"][..]),
+            ("source URL", &["sourceUrl"][..]),
+            ("notes", &["notes"][..]),
+        ] {
+            if !json_path_exists(target, path) {
+                gate_failures.push(format!(
+                    "artifact manifest {manifest_name} target[{index}] missing {label} evidence key"
+                ));
+            }
         }
     }
 
@@ -11079,6 +11193,22 @@ fn validate_target_text_field(
     }
 }
 
+fn validate_target_optional_text_field(
+    actual_label: &str,
+    actual: Option<&str>,
+    expected_label: &str,
+    expected: Option<&str>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {} does not match {expected_label} {}",
+            actual.unwrap_or("<none>"),
+            expected.unwrap_or("<none>")
+        ));
+    }
+}
+
 fn validate_target_usize_field(
     actual_label: &str,
     actual: usize,
@@ -11559,6 +11689,7 @@ mod tests {
     #[test]
     fn smoke_artifact_manifest_indexes_target_outputs() {
         let mut summary = sample_smoke_summary();
+        summary.targets[0].source_url = Some("https://tonviewer.com/addr".to_owned());
         summary.targets[0].replay_count = 2;
         summary.targets[0].replays = vec![
             "out/target-a/replay.json".to_owned(),
@@ -11572,6 +11703,16 @@ mod tests {
         assert_eq!(json["kind"], "stateFlowArtifactManifest");
         assert_eq!(json["summary"], "summary.json");
         assert_eq!(json["targetCount"], 1);
+        assert_eq!(
+            json["targets"],
+            serde_json::json!([{
+                "id": "target-a",
+                "network": "mainnet",
+                "address": "addr",
+                "sourceUrl": "https://tonviewer.com/addr",
+                "notes": "sample target note"
+            }])
+        );
         assert_eq!(json["absolutePathCount"], 0);
         assert_eq!(json["artifacts"].as_array().unwrap().len(), 8);
         assert_eq!(
@@ -11937,6 +12078,13 @@ mod tests {
 
         let mut manifest = sample_validation_manifest();
         manifest.target_count = 2;
+        manifest.targets.push(super::SmokeArtifactManifestTarget {
+            id: "target-b".to_owned(),
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            source_url: None,
+            notes: Some("sample target note".to_owned()),
+        });
         manifest.artifacts.extend([
             super::SmokeArtifactManifestEntry::new(
                 "corpus",
@@ -12023,6 +12171,13 @@ mod tests {
             "kind": "stateFlowArtifactManifest",
             "summary": "summary.json",
             "targetCount": 1,
+            "targets": [{
+                "id": "target-a",
+                "network": "mainnet",
+                "address": "addr",
+                "sourceUrl": null,
+                "notes": "sample target note"
+            }],
             "absolutePathCount": 0,
             "artifacts": [
                 {"kind": "runSummary", "path": "summary.json", "targetId": null},
@@ -18562,6 +18717,13 @@ mod tests {
             "kind": "stateFlowArtifactManifest",
             "summary": "summary.json",
             "targetCount": 1,
+            "targets": [{
+                "id": "target-a",
+                "network": "mainnet",
+                "address": "addr",
+                "sourceUrl": null,
+                "notes": "sample target note"
+            }],
             "absolutePathCount": 0,
             "artifacts": [
                 {"kind": "runSummary", "path": "summary.json", "targetId": null},
