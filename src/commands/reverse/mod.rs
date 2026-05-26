@@ -1026,6 +1026,7 @@ fn run_state_flow_targets(
             state_edge_count: schema.state_machine.edges.len(),
             audit_signal_count: schema.audit_signals.len(),
             unknown_field_count: ton_stateflow::schema_unknown_field_count(&schema),
+            replay_risk_signal_count: ton_stateflow::replay_risk_signal_count(&replays),
             replay_count: replays.len(),
             passed: false,
             gate_failures: Vec::new(),
@@ -1557,6 +1558,8 @@ struct SmokeTargetRunSummary {
     state_edge_count: usize,
     audit_signal_count: usize,
     unknown_field_count: usize,
+    #[serde(default)]
+    replay_risk_signal_count: usize,
     replay_count: usize,
     passed: bool,
     gate_failures: Vec<String>,
@@ -4768,6 +4771,7 @@ fn validate_smoke_target_summary_evidence_keys(
         ("state edge count", &["stateEdgeCount"][..]),
         ("audit signal count", &["auditSignalCount"][..]),
         ("unknown field count", &["unknownFieldCount"][..]),
+        ("replay risk signal count", &["replayRiskSignalCount"][..]),
         ("replay count", &["replayCount"][..]),
         ("passed", &["passed"][..]),
         ("gate failures", &["gateFailures"][..]),
@@ -5069,6 +5073,17 @@ fn validate_manifest_target_content_matches_summary(
         );
         validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
         validate_schema_replay_probe_artifacts(&schema, manifest_path, artifacts, gate_failures);
+    }
+    let replays =
+        read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay");
+    if !replays.is_empty() {
+        validate_target_usize_field(
+            "replay risk signal count",
+            ton_stateflow::replay_risk_signal_count(&replays),
+            "summary replay risk signal count",
+            target.replay_risk_signal_count,
+            gate_failures,
+        );
     }
     validate_manifest_report_content_matches_summary(
         manifest_path,
@@ -7605,6 +7620,13 @@ fn validate_manifest_report_content_matches_summary(
         "unknown field count",
         "- Unknown fields:",
         target.unknown_field_count,
+        gate_failures,
+    );
+    validate_optional_report_target_count(
+        &markdown,
+        "replay risk signal count",
+        "- Replay risk signals:",
+        target.replay_risk_signal_count,
         gate_failures,
     );
 
@@ -11970,6 +11992,7 @@ mod tests {
         assert_eq!(json["targets"][0]["passed"], true);
         assert_eq!(json["targets"][0]["gateFailures"], serde_json::json!([]));
         assert_eq!(json["targets"][0]["unknownFieldCount"], 1);
+        assert_eq!(json["targets"][0]["replayRiskSignalCount"], 1);
         assert_eq!(
             json["targets"][0]["replays"],
             serde_json::json!(["out/target-a/replay.json"])
@@ -15376,6 +15399,13 @@ mod tests {
                 failure.contains("target-a: report unknown field count 1 is missing")
             }),
             "expected report unknown field count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report replay risk signal count 1 is missing")
+            }),
+            "expected report replay risk signal count failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -18915,6 +18945,38 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_summary_replay_risk_count_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let summary_path = temp_dir.path().join("summary.json");
+        let mut summary: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("summary should be readable"),
+        )
+        .expect("summary should parse");
+        summary["targets"][0]["replayRiskSignalCount"] = serde_json::json!(99);
+        write_sample_validation_artifact(temp_dir.path(), "summary.json", &summary.to_string());
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay risk signal count 1 does not match summary replay risk signal count 99",
+                )
+            }),
+            "expected summary replay risk count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_summary_missing_transaction_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -19303,6 +19365,7 @@ mod tests {
             state_edge_count: 1,
             audit_signal_count: 1,
             unknown_field_count: 1,
+            replay_risk_signal_count: 1,
             replay_count: 1,
             passed: false,
             gate_failures: Vec::new(),
@@ -19707,6 +19770,7 @@ mod tests {
             .replace("- State machine edges: 1", "- State machine edges: 9")
             .replace("- Audit signals: 1", "- Audit signals: 9")
             .replace("- Unknown fields: 1", "- Unknown fields: 9")
+            .replace("- Replay risk signals: 1", "- Replay risk signals: 9")
     }
 
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
@@ -20020,6 +20084,7 @@ mod tests {
              - Retraced transactions: 2\n\
              - Replay failures while collecting: 0\n\
              - Replay diffs: 1\n\
+             - Replay risk signals: 1\n\
              - Opcode candidates: 1\n\
              - State machine edges: 1\n\
              - Audit signals: 1\n\

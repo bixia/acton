@@ -884,6 +884,12 @@ pub fn render_state_flow_report(
     writeln!(report, "- Replay diffs: {}", replays.len()).ok();
     writeln!(
         report,
+        "- Replay risk signals: {}",
+        replay_risk_signal_count(replays)
+    )
+    .ok();
+    writeln!(
+        report,
         "- Opcode candidates: {}",
         schema.opcode_candidates.len()
     )
@@ -2802,6 +2808,13 @@ pub fn schema_unknown_field_count(schema: &StateFlowSchemaReport) -> usize {
         .opcode_candidates
         .iter()
         .map(|candidate| candidate_unknown_field_evidence(candidate).len())
+        .sum()
+}
+
+pub fn replay_risk_signal_count(replays: &[StateFlowReplayDiff]) -> usize {
+    replays
+        .iter()
+        .map(|replay| effective_replay_audit_signals(replay).len())
         .sum()
 }
 
@@ -5524,6 +5537,7 @@ mod tests {
         let report = super::render_state_flow_report(&corpus, &schema, &replays);
 
         assert!(report.contains("- Replay diffs: 1"));
+        assert!(report.contains("- Replay risk signals: 1"));
         assert!(report.contains("| Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |"));
         assert!(report.contains(
             "| `tx-a` | flip body bit 32 | true | true | true | false | false | 0 | false | 0 | 0 | false |"

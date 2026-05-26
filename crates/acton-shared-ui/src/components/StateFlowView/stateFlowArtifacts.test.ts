@@ -266,6 +266,7 @@ const runSummary = {
       stateEdgeCount: 1,
       auditSignalCount: 1,
       unknownFieldCount: 1,
+      replayRiskSignalCount: 2,
       replayCount: 1,
       passed: true,
       gateFailures: [],
@@ -686,6 +687,7 @@ assert(
         row.detail?.includes("sample-protocol sample-category sample contract") === true &&
         row.detail?.includes("loaded 7/7") === true &&
         row.detail?.includes("unknown fields 1") === true &&
+        row.detail?.includes("replay risks 2") === true &&
         row.detail?.includes("capabilities 2/2") === true,
     ) === true,
   "expected artifact bundle target rows to merge manifest, summary, and validation evidence",
@@ -709,13 +711,20 @@ assert(
       row =>
         row.label === "sample-protocol / sample-category" &&
         row.detail?.includes("audit signals 1") === true &&
-        row.detail?.includes("unknown fields 1") === true,
+        row.detail?.includes("unknown fields 1") === true &&
+        row.detail?.includes("replay risks 2") === true,
     ) === true,
   "expected artifact bundle risk matrix to use run summary unknown-field counts when schema artifacts are not loaded",
 )
 const legacySummary = {
   ...runSummary,
-  targets: runSummary.targets.map(({unknownFieldCount: _unknownFieldCount, ...target}) => target),
+  targets: runSummary.targets.map(
+    ({
+      unknownFieldCount: _unknownFieldCount,
+      replayRiskSignalCount: _replayRiskSignalCount,
+      ...target
+    }) => target,
+  ),
 }
 const legacySummaryWithSchemaBundleView = summarizeStateFlowArtifact(
   parseStateFlowArtifactBundleFromSources([
@@ -735,9 +744,12 @@ assert(
   legacySummaryWithSchemaBundleView.sections
     .find(section => section.title === "Targets")
     ?.rows.some(
-      row => row.label === "target-a" && row.detail?.includes("unknown fields 1") === true,
+      row =>
+        row.label === "target-a" &&
+        row.detail?.includes("unknown fields 1") === true &&
+        row.detail?.includes("replay risks 2") === true,
     ) === true,
-  "expected artifact bundle target rows to compute unknown-field counts from loaded schema artifacts when run summary lacks the field",
+  "expected artifact bundle target rows to compute risk counts from loaded artifacts when run summary lacks the fields",
 )
 assert(
   bundleView.sections
@@ -762,7 +774,8 @@ assert(
         row.value === "1 target" &&
         row.detail?.includes("sample contract") === true &&
         row.detail?.includes("audit signals 1") === true &&
-        row.detail?.includes("unknown fields 1") === true,
+        row.detail?.includes("unknown fields 1") === true &&
+        row.detail?.includes("replay risks 2") === true,
     ) === true,
   "expected artifact bundle risk matrix rows to group schema risk markers by protocol and category",
 )

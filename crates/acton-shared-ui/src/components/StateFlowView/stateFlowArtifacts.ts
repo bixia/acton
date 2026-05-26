@@ -76,6 +76,7 @@ export interface StateFlowArtifactBundleEntry {
   readonly artifactKind: StateFlowArtifact["kind"]
   readonly auditSignalCount?: number
   readonly unknownFieldCount?: number
+  readonly replayRiskSignalCount?: number
 }
 
 export interface StateFlowArtifactBundleParseFailure {
@@ -370,6 +371,7 @@ export interface StateFlowRunTargetSummary {
   readonly stateEdgeCount: number
   readonly auditSignalCount: number
   readonly unknownFieldCount?: number | null
+  readonly replayRiskSignalCount?: number | null
   readonly replayCount: number
   readonly passed: boolean
   readonly gateFailures: readonly string[]
@@ -1462,6 +1464,7 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
             `state edges ${target.stateEdgeCount}`,
             `audit signals ${target.auditSignalCount}`,
             `unknown fields ${target.unknownFieldCount ?? 0}`,
+            `replay risks ${target.replayRiskSignalCount ?? 0}`,
             `replay ${target.replayCount}`,
             `${targetReplayArtifactCount(target)} ${plural(targetReplayArtifactCount(target), "replay artifact")}`,
           ].join(" · "),
@@ -1763,6 +1766,7 @@ function bundleRiskRows(bundle: StateFlowArtifactBundle): readonly SummaryRow[] 
       riskTargetCount: number
       auditSignalCount: number
       unknownFieldCount: number
+      replayRiskSignalCount: number
     }
   >()
   for (const target of bundle.targets) {
@@ -1781,14 +1785,20 @@ function bundleRiskRows(bundle: StateFlowArtifactBundle): readonly SummaryRow[] 
       riskTargetCount: 0,
       auditSignalCount: 0,
       unknownFieldCount: 0,
+      replayRiskSignalCount: 0,
     }
     const targetRisk = bundleTargetRiskCounts(target)
     entry.targetCount += 1
-    if (targetRisk.auditSignalCount > 0 || targetRisk.unknownFieldCount > 0) {
+    if (
+      targetRisk.auditSignalCount > 0 ||
+      targetRisk.unknownFieldCount > 0 ||
+      targetRisk.replayRiskSignalCount > 0
+    ) {
       entry.riskTargetCount += 1
     }
     entry.auditSignalCount += targetRisk.auditSignalCount
     entry.unknownFieldCount += targetRisk.unknownFieldCount
+    entry.replayRiskSignalCount += targetRisk.replayRiskSignalCount
     if (context.contractType) {
       entry.contractTypes.add(context.contractType)
     }
@@ -1807,6 +1817,7 @@ function bundleRiskRows(bundle: StateFlowArtifactBundle): readonly SummaryRow[] 
         `${entry.riskTargetCount} ${plural(entry.riskTargetCount, "risk target")}`,
         `audit signals ${entry.auditSignalCount}`,
         `unknown fields ${entry.unknownFieldCount}`,
+        `replay risks ${entry.replayRiskSignalCount}`,
       ]
         .filter(value => value.length > 0)
         .join(" · "),
@@ -1816,6 +1827,7 @@ function bundleRiskRows(bundle: StateFlowArtifactBundle): readonly SummaryRow[] 
 function bundleTargetRiskCounts(target: StateFlowArtifactBundleTarget): {
   readonly auditSignalCount: number
   readonly unknownFieldCount: number
+  readonly replayRiskSignalCount: number
 } {
   const schemaArtifacts = target.loadedArtifacts.filter(
     artifact => artifact.artifactKind === "schema",
@@ -1828,6 +1840,13 @@ function bundleTargetRiskCounts(target: StateFlowArtifactBundleTarget): {
     (count, artifact) => count + (artifact.unknownFieldCount ?? 0),
     0,
   )
+  const replayArtifacts = target.loadedArtifacts.filter(
+    artifact => artifact.artifactKind === "replay",
+  )
+  const replayRiskSignalCount = replayArtifacts.reduce(
+    (count, artifact) => count + (artifact.replayRiskSignalCount ?? 0),
+    0,
+  )
   return {
     auditSignalCount:
       schemaArtifacts.length > 0
@@ -1837,21 +1856,31 @@ function bundleTargetRiskCounts(target: StateFlowArtifactBundleTarget): {
       schemaArtifacts.length > 0
         ? schemaUnknownFieldCount
         : (target.summaryTarget?.unknownFieldCount ?? 0),
+    replayRiskSignalCount:
+      replayArtifacts.length > 0
+        ? replayRiskSignalCount
+        : (target.summaryTarget?.replayRiskSignalCount ?? 0),
   }
 }
 
 function stateFlowArtifactRiskCounts(artifact: StateFlowArtifact): {
   readonly auditSignalCount?: number
   readonly unknownFieldCount?: number
+  readonly replayRiskSignalCount?: number
 } {
-  if (artifact.kind !== "schema") {
-    return {}
+  if (artifact.kind === "schema") {
+    return {
+      auditSignalCount: schemaAuditSignals(artifact.data).length,
+      unknownFieldCount: schemaUnknownFieldCount(artifact.data),
+    }
+  }
+  if (artifact.kind === "replay") {
+    return {
+      replayRiskSignalCount: replayRiskSignalCount(artifact.data),
+    }
   }
 
-  return {
-    auditSignalCount: schemaAuditSignals(artifact.data).length,
-    unknownFieldCount: schemaUnknownFieldCount(artifact.data),
-  }
+  return {}
 }
 
 function schemaUnknownFieldCount(schema: StateFlowSchemaReport): number {
@@ -2161,6 +2190,7 @@ function bundleTargetSummaryDetail(target: StateFlowArtifactBundleTarget): strin
       `${target.summaryTarget.retracedCount}/${target.summaryTarget.sourceTxCount} retraced`,
       `${target.summaryTarget.replayCount} ${plural(target.summaryTarget.replayCount, "replay")}`,
       `unknown fields ${riskCounts.unknownFieldCount}`,
+      `replay risks ${riskCounts.replayRiskSignalCount}`,
       `${target.summaryTarget.failureCount} failures`,
     )
   }
@@ -3972,6 +4002,13 @@ function replayBalanceDeltaLabel(observation: ReplayObservation): string {
 
 function replayExitCodeLabel(observation: ReplayObservation): string {
   return formatNullable(observation.compute?.exitCode)
+}
+
+function replayRiskSignalCount(replay: StateFlowReplayDiff): number {
+  if (replay.riskSignals && replay.riskSignals.length > 0) {
+    return replay.riskSignals.length
+  }
+  return replayRiskRows(replay).length
 }
 
 function replayRiskRows(replay: StateFlowReplayDiff): readonly SummaryRow[] {
