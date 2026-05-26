@@ -76,6 +76,8 @@ pub struct StateFlowSchemaReport {
     #[serde(default)]
     pub op_table: OpTableCandidate,
     #[serde(default)]
+    pub effect_surface: EffectSurfaceCandidate,
+    #[serde(default)]
     pub storage_layout: StorageLayoutCandidate,
     #[serde(default)]
     pub audit_signals: Vec<AuditSignal>,
@@ -139,6 +141,31 @@ pub struct OpTableEntry {
     pub confidence: String,
     pub evidence: Vec<String>,
     pub unknowns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectSurfaceCandidate {
+    pub effects: Vec<EffectSurfaceEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectSurfaceEntry {
+    pub opcode: Option<String>,
+    pub op_name: String,
+    pub source: String,
+    pub kind: String,
+    pub count: usize,
+    pub modes: Vec<String>,
+    pub destinations: Vec<String>,
+    pub value_nanotons_min: Option<String>,
+    pub value_nanotons_max: Option<String>,
+    pub body_shape: Option<CellShapeRange>,
+    pub code_shape: Option<CellShapeRange>,
+    pub library_hashes: Vec<String>,
+    pub confidence: String,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -624,6 +651,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
         .collect();
     let op_table = op_table_from_candidates(&opcode_candidates);
+    let effect_surface = effect_surface_from_candidates(&opcode_candidates);
     let storage_layout = storage_layout_from_candidates(&opcode_candidates);
 
     StateFlowSchemaReport {
@@ -633,6 +661,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         transaction_count: corpus.transactions.len(),
         state_machine: state_machine_graph(&corpus.transactions),
         op_table,
+        effect_surface,
         storage_layout,
         audit_signals: infer_schema_audit_signals(corpus, &opcode_candidates),
         opcode_candidates,
@@ -1038,6 +1067,39 @@ pub fn render_state_flow_report(
                 markdown_code_list(&field.value_samples),
                 markdown_escape(&field.confidence),
                 markdown_code_list(&field.evidence),
+            )
+            .ok();
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Effect Surface").ok();
+    if schema.effect_surface.effects.is_empty() {
+        writeln!(report, "- No effect surface entries were inferred.").ok();
+    } else {
+        writeln!(report, "| Opcode | Name | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Confidence | Evidence |").ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |"
+        )
+        .ok();
+        for effect in &schema.effect_surface.effects {
+            writeln!(
+                report,
+                "| {} | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                markdown_code_opt(effect.opcode.as_deref()),
+                markdown_escape(&effect.op_name),
+                markdown_escape(&effect.source),
+                markdown_escape(&effect.kind),
+                effect.count,
+                format_effect_surface_value(effect),
+                markdown_code_list_or_none(&effect.modes),
+                markdown_code_list_or_none(&effect.destinations),
+                format_optional_shape(&effect.body_shape),
+                format_optional_shape(&effect.code_shape),
+                markdown_code_list_or_none(&effect.library_hashes),
+                markdown_escape(&effect.confidence),
+                markdown_code_list(&effect.evidence),
             )
             .ok();
         }
@@ -1731,6 +1793,14 @@ fn format_effect_value(effect: &EffectCandidate) -> String {
     }
 }
 
+fn format_effect_surface_value(effect: &EffectSurfaceEntry) -> String {
+    match (&effect.value_nanotons_min, &effect.value_nanotons_max) {
+        (Some(min), Some(max)) if min == max => markdown_escape(min),
+        (Some(min), Some(max)) => markdown_escape(&format!("{min}..{max}")),
+        _ => "n/a".to_owned(),
+    }
+}
+
 fn format_optional_shape(shape: &Option<CellShapeRange>) -> String {
     shape
         .as_ref()
@@ -2279,6 +2349,63 @@ fn op_table_entry(candidate: &OpcodeSchemaCandidate) -> OpTableEntry {
         confidence: candidate.confidence.clone(),
         evidence,
         unknowns,
+    }
+}
+
+pub fn effect_surface_from_candidates(
+    candidates: &[OpcodeSchemaCandidate],
+) -> EffectSurfaceCandidate {
+    EffectSurfaceCandidate {
+        effects: candidates
+            .iter()
+            .flat_map(|candidate| {
+                candidate
+                    .outbound_effects
+                    .iter()
+                    .map(|effect| effect_surface_entry(candidate, "outbound", effect))
+                    .chain(
+                        candidate
+                            .out_actions
+                            .iter()
+                            .map(|effect| effect_surface_entry(candidate, "action", effect)),
+                    )
+            })
+            .collect(),
+    }
+}
+
+fn effect_surface_entry(
+    candidate: &OpcodeSchemaCandidate,
+    source: &str,
+    effect: &EffectCandidate,
+) -> EffectSurfaceEntry {
+    let opcode_label = plain_opcode_label(candidate.opcode.as_deref());
+    let op_name = if candidate.method_surface.name.is_empty() {
+        format!("op::{opcode_label}")
+    } else {
+        candidate.method_surface.name.clone()
+    };
+    let evidence = if effect.tx_hashes.is_empty() {
+        candidate.examples.clone()
+    } else {
+        effect.tx_hashes.clone()
+    };
+
+    EffectSurfaceEntry {
+        opcode: candidate.opcode.clone(),
+        op_name,
+        source: source.to_owned(),
+        kind: effect.kind.clone(),
+        count: effect.count,
+        modes: effect.modes.clone(),
+        destinations: effect.destinations.clone(),
+        value_nanotons_min: effect.value_nanotons_min.clone(),
+        value_nanotons_max: effect.value_nanotons_max.clone(),
+        body_shape: effect.body_shape.clone(),
+        code_shape: effect.code_shape.clone(),
+        library_hashes: effect.library_hashes.clone(),
+        confidence: candidate.confidence.clone(),
+        evidence,
     }
 }
 
@@ -3843,6 +3970,61 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_persists_effect_surface() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow_with_effects("tx-a")],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["effectSurface"]["effects"][0],
+            serde_json::json!({
+                "opcode": "0x00000001",
+                "opName": "op::0x00000001",
+                "source": "outbound",
+                "kind": "internal",
+                "count": 1,
+                "modes": [],
+                "destinations": ["out-dst"],
+                "valueNanotonsMin": "11",
+                "valueNanotonsMax": "11",
+                "bodyShape": {
+                    "minBits": 40,
+                    "maxBits": 40,
+                    "minRefs": 1,
+                    "maxRefs": 1
+                },
+                "codeShape": null,
+                "libraryHashes": [],
+                "confidence": "medium",
+                "evidence": ["tx-a"]
+            })
+        );
+        assert_eq!(json["effectSurface"]["effects"][1]["source"], "action");
+        assert_eq!(
+            json["effectSurface"]["effects"][1]["modes"],
+            serde_json::json!(["64"])
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("## Effect Surface"));
+        assert!(report.contains("| Opcode | Name | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Confidence | Evidence |"));
+        assert!(report.contains("| `0x00000001` | `op::0x00000001` | outbound | internal | 1 | 11 | none | `out-dst` | 40/1 | n/a | none | medium | `tx-a` |"));
+        assert!(report.contains("| `0x00000001` | `op::0x00000001` | action | send-message | 1 | 7 | `64` | `action-dst` | 32/0 | n/a | none | medium | `tx-a` |"));
+    }
+
+    #[test]
     fn replay_mutation_flips_message_body_bit() {
         let mut body = CellBuilder::new();
         body.store_u32(0).unwrap();
@@ -4310,6 +4492,10 @@ mod tests {
         let serialized = serde_json::to_value(&report).unwrap();
         assert_eq!(serialized["stateMachine"]["edges"], serde_json::json!([]));
         assert_eq!(serialized["opTable"]["entries"], serde_json::json!([]));
+        assert_eq!(
+            serialized["effectSurface"]["effects"],
+            serde_json::json!([])
+        );
         assert_eq!(serialized["storageLayout"]["fields"], serde_json::json!([]));
         assert_eq!(serialized["auditSignals"], serde_json::json!([]));
     }

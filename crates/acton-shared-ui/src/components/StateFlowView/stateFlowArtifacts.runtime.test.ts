@@ -124,6 +124,42 @@ const schema = {
       },
     ],
   },
+  effectSurface: {
+    effects: [
+      {
+        opcode: "0x00000001",
+        opName: "op::0x00000001",
+        source: "outbound",
+        kind: "internal",
+        count: 1,
+        modes: [],
+        destinations: ["out-dst"],
+        valueNanotonsMin: "11",
+        valueNanotonsMax: "11",
+        bodyShape: {minBits: 40, maxBits: 40, minRefs: 1, maxRefs: 1},
+        codeShape: null,
+        libraryHashes: [],
+        confidence: "medium",
+        evidence: ["tx-a"],
+      },
+      {
+        opcode: "0x00000001",
+        opName: "op::0x00000001",
+        source: "action",
+        kind: "send-message",
+        count: 1,
+        modes: ["64"],
+        destinations: ["action-dst"],
+        valueNanotonsMin: "7",
+        valueNanotonsMax: "7",
+        bodyShape: {minBits: 32, maxBits: 32, minRefs: 0, maxRefs: 0},
+        codeShape: null,
+        libraryHashes: [],
+        confidence: "medium",
+        evidence: ["tx-a"],
+      },
+    ],
+  },
   storageLayout: {
     fields: [
       {
@@ -617,6 +653,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- |
 | \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | 2 | \`0x00000001\` | \`0xcafebabe\`, \`0xdeadbeef\` | high | \`tx-a\`, \`tx-b\` |
 
+## Effect Surface
+| Opcode | Name | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Confidence | Evidence |
+| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`op::0x00000001\` | outbound | internal | 1 | 11 | none | \`dst\` | 40/1 | n/a | none | medium | \`tx-a\` |
+
 ## Outbound Effects
 | Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |
 | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |
@@ -793,6 +834,17 @@ assert(effectRows[0]?.detail?.includes("out-dst") === true, "expected outbound d
 assert(effectRows[1]?.label === "0x00000001 action", "expected action effect row")
 assert(effectRows[1]?.value === "send-message x1", "expected action effect kind")
 assert(effectRows[1]?.detail?.includes("64") === true, "expected action mode")
+const effectSurfaceRows = sectionRows(schemaSummary, "Effect Surface")
+assert(
+  effectSurfaceRows[0]?.label === "0x00000001 outbound internal",
+  "expected effect surface row",
+)
+assert(effectSurfaceRows[0]?.value === "1 effect", "expected effect surface count")
+assert(
+  effectSurfaceRows[0]?.detail ===
+    "op::0x00000001 · value 11 · body 40/1 · code n/a · destinations out-dst · confidence medium · evidence tx-a",
+  "expected effect surface detail",
+)
 const schemaEvidenceRows = sectionRows(schemaSummary, "Schema Evidence")
 assert(schemaEvidenceRows[0]?.label === "0x00000001 tx-a", "expected schema evidence row")
 assert(schemaEvidenceRows[0]?.value === "active -> frozen", "expected schema evidence transition")
@@ -1050,7 +1102,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "16"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "17"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1135,6 +1187,17 @@ assert(
   reportStorageLayoutRows[0]?.detail ===
     "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · samples 0xcafebabe, 0xdeadbeef",
   "expected report storage layout detail",
+)
+const reportEffectSurfaceRows = sectionRows(reportSummary, "Effect Surface")
+assert(
+  reportEffectSurfaceRows[0]?.label === "0x00000001 outbound internal",
+  "expected report effect surface row",
+)
+assert(reportEffectSurfaceRows[0]?.value === "1 effect", "expected report effect count")
+assert(
+  reportEffectSurfaceRows[0]?.detail ===
+    "op::0x00000001 · value 11 · body 40/1 · code n/a · modes none · destinations dst · libraries none · confidence medium · evidence tx-a",
+  "expected report effect surface detail",
 )
 const reportOutboundRows = sectionRows(reportSummary, "Outbound Effects")
 assert(

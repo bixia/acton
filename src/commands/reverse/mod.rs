@@ -2255,6 +2255,7 @@ fn validate_state_flow_schema_evidence_keys(
         ("transaction count", &["transactionCount"][..]),
         ("state machine", &["stateMachine"][..]),
         ("op table", &["opTable"][..]),
+        ("effect surface", &["effectSurface"][..]),
         ("storage layout", &["storageLayout"][..]),
         ("audit signals", &["auditSignals"][..]),
         ("opcode candidates", &["opcodeCandidates"][..]),
@@ -2269,6 +2270,7 @@ fn validate_state_flow_schema_evidence_keys(
 
     validate_schema_state_machine_evidence_keys(value, artifact, gate_failures);
     validate_schema_op_table_evidence_keys(value, artifact, gate_failures);
+    validate_schema_effect_surface_evidence_keys(value, artifact, gate_failures);
     validate_schema_storage_layout_evidence_keys(value, artifact, gate_failures);
     validate_schema_audit_signal_evidence_keys(value, artifact, gate_failures);
 
@@ -2401,6 +2403,66 @@ fn validate_schema_op_table_evidence_keys(
             }
         }
         validate_schema_confidence_label(entry, &prefix, gate_failures);
+    }
+}
+
+fn validate_schema_effect_surface_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(surface) = value.get("effectSurface") else {
+        return;
+    };
+    for (label, path) in [("effects", &["effects"][..])] {
+        if !json_path_exists(surface, path) {
+            gate_failures.push(format!(
+                "schema artifact {} effectSurface missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+    let Some(effects) = surface.get("effects").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, effect) in effects.iter().enumerate() {
+        let prefix = format!(
+            "schema artifact {} effectSurface.effects[{index}]",
+            artifact.path
+        );
+        for (label, path) in [
+            ("opcode", &["opcode"][..]),
+            ("op name", &["opName"][..]),
+            ("source", &["source"][..]),
+            ("kind", &["kind"][..]),
+            ("count", &["count"][..]),
+            ("modes", &["modes"][..]),
+            ("destinations", &["destinations"][..]),
+            ("value nanotons min", &["valueNanotonsMin"][..]),
+            ("value nanotons max", &["valueNanotonsMax"][..]),
+            ("body shape", &["bodyShape"][..]),
+            ("code shape", &["codeShape"][..]),
+            ("library hashes", &["libraryHashes"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(effect, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_confidence_label(effect, &prefix, gate_failures);
+        validate_schema_cell_shape_range_evidence_keys(
+            effect,
+            "bodyShape",
+            &format!("{prefix} bodyShape"),
+            gate_failures,
+        );
+        validate_schema_cell_shape_range_evidence_keys(
+            effect,
+            "codeShape",
+            &format!("{prefix} codeShape"),
+            gate_failures,
+        );
     }
 }
 
@@ -4553,6 +4615,17 @@ fn validate_schema_corpus_membership(
         }
     }
     validate_schema_op_table_matches_candidates(schema, gate_failures);
+    for effect in &schema.effect_surface.effects {
+        for evidence in &effect.evidence {
+            validate_corpus_hash_membership(
+                "schema effect-surface evidence",
+                evidence,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+    }
+    validate_schema_effect_surface_matches_candidates(schema, gate_failures);
     for field in &schema.storage_layout.fields {
         for evidence in &field.evidence {
             validate_corpus_hash_membership(
@@ -6034,6 +6107,139 @@ fn validate_schema_op_table_matches_candidates(
     }
 }
 
+fn validate_schema_effect_surface_matches_candidates(
+    schema: &StateFlowSchemaReport,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected = ton_stateflow::effect_surface_from_candidates(&schema.opcode_candidates);
+    let expected_by_key = expected
+        .effects
+        .iter()
+        .map(|effect| (effect_surface_key(effect), effect))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = HashSet::new();
+
+    for effect in &schema.effect_surface.effects {
+        let key = effect_surface_key(effect);
+        let effect_label = effect_surface_label(effect);
+        seen.insert(key.clone());
+        let expected = expected_by_key.get(&key).copied();
+        let expected_count = expected.map_or(0, |effect| effect.count);
+        validate_evidence_value_field(
+            "schema effect-surface effect count",
+            effect.count,
+            "opcode candidate effect count",
+            expected_count,
+            &effect_label,
+            gate_failures,
+        );
+        let Some(expected) = expected else {
+            continue;
+        };
+        validate_evidence_text_field(
+            "schema effect-surface effect op name",
+            &effect.op_name,
+            "opcode candidate op name",
+            &expected.op_name,
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect value",
+            &report_effect_surface_value(effect),
+            "opcode candidate effect value",
+            &report_effect_surface_value(expected),
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect modes",
+            &report_kind_list(&effect.modes),
+            "opcode candidate effect modes",
+            &report_kind_list(&expected.modes),
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect destinations",
+            &report_kind_list(&effect.destinations),
+            "opcode candidate effect destinations",
+            &report_kind_list(&expected.destinations),
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect body shape",
+            &report_optional_shape(&effect.body_shape),
+            "opcode candidate effect body shape",
+            &report_optional_shape(&expected.body_shape),
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect code shape",
+            &report_optional_shape(&effect.code_shape),
+            "opcode candidate effect code shape",
+            &report_optional_shape(&expected.code_shape),
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect libraries",
+            &report_kind_list(&effect.library_hashes),
+            "opcode candidate effect libraries",
+            &report_kind_list(&expected.library_hashes),
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect confidence",
+            &effect.confidence,
+            "opcode candidate confidence",
+            &expected.confidence,
+            &effect_label,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema effect-surface effect evidence",
+            &report_kind_list(&effect.evidence),
+            "opcode candidate effect evidence",
+            &report_kind_list(&expected.evidence),
+            &effect_label,
+            gate_failures,
+        );
+    }
+
+    for expected in &expected.effects {
+        let key = effect_surface_key(expected);
+        if !seen.contains(&key) {
+            gate_failures.push(format!(
+                "schema effect-surface effect {} is missing",
+                effect_surface_label(expected)
+            ));
+        }
+    }
+}
+
+fn effect_surface_key(
+    effect: &ton_stateflow::EffectSurfaceEntry,
+) -> (Option<String>, String, String) {
+    (
+        effect.opcode.clone(),
+        effect.source.clone(),
+        effect.kind.clone(),
+    )
+}
+
+fn effect_surface_label(effect: &ton_stateflow::EffectSurfaceEntry) -> String {
+    format!(
+        "{} {} {}",
+        effect.source,
+        effect.kind,
+        report_opcode_label(effect.opcode.as_deref())
+    )
+}
+
 fn validate_schema_storage_layout_matches_candidates(
     schema: &StateFlowSchemaReport,
     gate_failures: &mut Vec<String>,
@@ -6399,6 +6605,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Replay Probes",
         "## Storage Fields",
         "## Storage Layout",
+        "## Effect Surface",
         "## Outbound Effects",
         "## State Machine",
         "## State Machine Nodes",
@@ -7209,6 +7416,24 @@ fn validate_report_schema_deliverables(
         }
     }
 
+    if let Some(section) = markdown_section(markdown, "## Effect Surface") {
+        if !schema.effect_surface.effects.is_empty() {
+            validate_report_effect_surface_header(section, gate_failures);
+        }
+        for effect in &schema.effect_surface.effects {
+            let effect_row = report_effect_surface_row(section, effect);
+            if effect_row.is_none() {
+                gate_failures.push(format!(
+                    "report effect-surface effect {} is missing",
+                    effect_surface_label(effect)
+                ));
+            }
+            if let Some(row) = effect_row {
+                validate_report_effect_surface_values(effect, &row, gate_failures);
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## Unknown Fields") {
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
@@ -7463,6 +7688,40 @@ fn state_machine_nodes_report_header() -> Vec<String> {
         "Transactions",
         "Pre",
         "Post",
+        "Confidence",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
+fn validate_report_effect_surface_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = effect_surface_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report effect surface header {expected:?} is missing"
+        ));
+    }
+}
+
+fn effect_surface_report_header() -> Vec<String> {
+    [
+        "Opcode",
+        "Name",
+        "Source",
+        "Kind",
+        "Count",
+        "Value",
+        "Modes",
+        "Destinations",
+        "Body",
+        "Code",
+        "Libraries",
         "Confidence",
         "Evidence",
     ]
@@ -8492,6 +8751,106 @@ fn report_effect_row(
     })
 }
 
+fn report_effect_surface_row(
+    section: &str,
+    effect: &ton_stateflow::EffectSurfaceEntry,
+) -> Option<Vec<String>> {
+    let opcode = report_opcode_label(effect.opcode.as_deref());
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.get(0).is_some_and(|cell| cell == &opcode)
+            && cells.get(1).is_some_and(|cell| cell == &effect.op_name)
+            && cells.get(2).is_some_and(|cell| cell == &effect.source)
+            && cells.get(3).is_some_and(|cell| cell == &effect.kind))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_effect_surface_values(
+    effect: &ton_stateflow::EffectSurfaceEntry,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_effect_surface_cell(
+        "count",
+        effect.count.to_string(),
+        effect,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "value",
+        report_effect_surface_value(effect),
+        effect,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "modes",
+        report_kind_list(&effect.modes),
+        effect,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "destinations",
+        report_kind_list(&effect.destinations),
+        effect,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "body",
+        report_optional_shape(&effect.body_shape),
+        effect,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "code",
+        report_optional_shape(&effect.code_shape),
+        effect,
+        row.get(9),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "libraries",
+        report_kind_list(&effect.library_hashes),
+        effect,
+        row.get(10),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "confidence",
+        effect.confidence.clone(),
+        effect,
+        row.get(11),
+        gate_failures,
+    );
+    validate_report_effect_surface_cell(
+        "evidence",
+        report_kind_list(&effect.evidence),
+        effect,
+        row.get(12),
+        gate_failures,
+    );
+}
+
+fn validate_report_effect_surface_cell(
+    label: &str,
+    expected: String,
+    effect: &ton_stateflow::EffectSurfaceEntry,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report effect-surface {label} {expected} for {} is missing",
+            effect_surface_label(effect)
+        ));
+    }
+}
+
 fn validate_report_effect_values(
     source: &str,
     effect: &ton_stateflow::EffectCandidate,
@@ -8581,6 +8940,10 @@ fn validate_report_effect_cell(
 }
 
 fn report_effect_value(effect: &ton_stateflow::EffectCandidate) -> String {
+    report_effect_value_range(&effect.value_nanotons_min, &effect.value_nanotons_max)
+}
+
+fn report_effect_surface_value(effect: &ton_stateflow::EffectSurfaceEntry) -> String {
     report_effect_value_range(&effect.value_nanotons_min, &effect.value_nanotons_max)
 }
 
@@ -10966,6 +11329,98 @@ mod tests {
                 )
             }),
             "expected schema op table transaction count failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_effect_surface_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("effectSurface");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json missing effect surface evidence key",
+                )
+            }),
+            "expected missing schema effect surface key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_effect_surface_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["effectSurface"] = serde_json::json!({
+            "effects": [{
+                "opcode": "0x00000001",
+                "opName": "op::0x00000001",
+                "source": "outbound",
+                "kind": "internal",
+                "count": 9,
+                "modes": [],
+                "destinations": ["dst"],
+                "valueNanotonsMin": "11",
+                "valueNanotonsMax": "11",
+                "bodyShape": {"minBits": 40, "maxBits": 40, "minRefs": 1, "maxRefs": 1},
+                "codeShape": null,
+                "libraryHashes": [],
+                "confidence": "medium",
+                "evidence": ["tx-a"]
+            }]
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema effect-surface effect count 9 for outbound internal 0x00000001 does not match opcode candidate effect count 0",
+                )
+            }),
+            "expected schema effect surface count failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -14358,6 +14813,7 @@ mod tests {
                         "unknowns": []
                     }]
                 },
+                "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -14602,6 +15058,7 @@ mod tests {
                         "unknowns": ["message body field names require TL-B recovery"]
                     }]
                 },
+                "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -14738,6 +15195,7 @@ mod tests {
                         "unknowns": []
                     }]
                 },
+                "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -16466,6 +16924,7 @@ mod tests {
                         "unknowns": []
                     }]
                 },
+                "effectSurface": {"effects": []},
                 "stateMachine": {
                     "nodes": [{
                         "status": "active",
@@ -16978,6 +17437,9 @@ mod tests {
              \n\
              ## Storage Layout\n\
              - No contract-level storage layout fields were inferred.\n\
+             \n\
+             ## Effect Surface\n\
+             - No effect surface entries were inferred.\n\
              \n\
              ## Outbound Effects\n\
              - No outbound effect candidates were inferred.\n\

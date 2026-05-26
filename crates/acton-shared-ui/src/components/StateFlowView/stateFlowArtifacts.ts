@@ -91,6 +91,7 @@ export interface StateFlowSchemaReport {
   readonly transactionCount: number
   readonly stateMachine?: StateMachineGraph | null
   readonly opTable?: OpTableCandidate | null
+  readonly effectSurface?: EffectSurfaceCandidate | null
   readonly storageLayout?: StorageLayoutCandidate | null
   readonly auditSignals?: readonly AuditSignal[] | null
   readonly opcodeCandidates: readonly OpcodeSchemaCandidate[]
@@ -147,6 +148,27 @@ export interface OpTableEntry {
   readonly confidence: string
   readonly evidence: readonly string[]
   readonly unknowns: readonly string[]
+}
+
+export interface EffectSurfaceCandidate {
+  readonly effects: readonly EffectSurfaceEntry[]
+}
+
+export interface EffectSurfaceEntry {
+  readonly opcode?: string | null
+  readonly opName: string
+  readonly source: string
+  readonly kind: string
+  readonly count: number
+  readonly modes: readonly string[]
+  readonly destinations: readonly string[]
+  readonly valueNanotonsMin?: string | null
+  readonly valueNanotonsMax?: string | null
+  readonly bodyShape?: CellShapeRange | null
+  readonly codeShape?: CellShapeRange | null
+  readonly libraryHashes: readonly string[]
+  readonly confidence: string
+  readonly evidence: readonly string[]
 }
 
 export interface StorageLayoutCandidate {
@@ -757,6 +779,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const methodSurfaceRows = schemaMethodSurfaceRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
   const storageLayoutRows = schemaStorageLayoutRows(schema)
+  const effectSurfaceRows = schemaEffectSurfaceRows(schema)
   const effectRows = schemaEffectRows(schema)
   const evidenceRows = schemaEvidenceRows(schema)
   const replayProbeRows = schemaReplayProbeRows(schema)
@@ -772,6 +795,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
       {label: "Storage Layout Fields", value: storageLayoutRows.length.toString()},
+      {label: "Effect Surface", value: effectSurfaceRows.length.toString()},
       {label: "Effects", value: effectRows.length.toString()},
       {label: "Replay Probes", value: replayProbeRows.length.toString()},
       {label: "State Nodes", value: stateNodes.length.toString()},
@@ -834,6 +858,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Storage Layout",
               rows: storageLayoutRows,
+            },
+          ]
+        : []),
+      ...(effectSurfaceRows.length > 0
+        ? [
+            {
+              title: "Effect Surface",
+              rows: effectSurfaceRows,
             },
           ]
         : []),
@@ -1107,6 +1139,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const replayProbeRows = reportReplayProbeRows(report)
   const storageFieldRows = reportStorageFieldRows(report)
   const storageLayoutRows = reportStorageLayoutRows(report)
+  const effectSurfaceRows = reportEffectSurfaceRows(report)
   const outboundEffectRows = reportOutboundEffectRows(report)
   const stateMachineRows = reportStateMachineRows(report)
   const stateMachineNodeRows = reportStateMachineNodeRows(report)
@@ -1190,6 +1223,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Storage Layout",
               rows: storageLayoutRows,
+            },
+          ]
+        : []),
+      ...(effectSurfaceRows.length > 0
+        ? [
+            {
+              title: "Effect Surface",
+              rows: effectSurfaceRows,
             },
           ]
         : []),
@@ -1552,6 +1593,26 @@ function reportStorageLayoutRows(report: StateFlowReport): readonly SummaryRow[]
       tableValueLabel("samples", rowValue(row, "Samples")),
     ]
       .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportEffectSurfaceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Effect Surface").map(row => ({
+    label: tableRowLabel(row, ["Opcode", "Source", "Kind"]),
+    value: tableCountLabel(rowValue(row, "Count"), "effect"),
+    detail: [
+      rowValue(row, "Name"),
+      tableValueLabel("value", rowValue(row, "Value")),
+      tableValueLabel("body", rowValue(row, "Body")),
+      tableValueLabel("code", rowValue(row, "Code")),
+      tableValueLabel("modes", rowValue(row, "Modes")),
+      tableValueLabel("destinations", rowValue(row, "Destinations")),
+      tableValueLabel("libraries", rowValue(row, "Libraries")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
       .join(" · "),
   }))
 }
@@ -2194,6 +2255,78 @@ function schemaStorageLayoutFields(schema: StateFlowSchemaReport): readonly Stor
     return structured
   }
   return aggregateStorageLayoutFields(schema.opcodeCandidates)
+}
+
+function schemaEffectSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schemaEffectSurfaceEntries(schema).map(effectSurfaceRow)
+}
+
+function schemaEffectSurfaceEntries(schema: StateFlowSchemaReport): readonly EffectSurfaceEntry[] {
+  const structured = schema.effectSurface?.effects ?? []
+  if (structured.length > 0) {
+    return structured
+  }
+  return schema.opcodeCandidates.flatMap(candidate => [
+    ...candidate.outboundEffects.map(effect =>
+      effectSurfaceEntryFromCandidate(candidate, "outbound", effect),
+    ),
+    ...candidate.outActions.map(effect =>
+      effectSurfaceEntryFromCandidate(candidate, "action", effect),
+    ),
+  ])
+}
+
+function effectSurfaceEntryFromCandidate(
+  candidate: OpcodeSchemaCandidate,
+  source: string,
+  effect: EffectCandidate,
+): EffectSurfaceEntry {
+  const opcode = candidate.opcode ?? null
+  return {
+    opcode,
+    opName: candidate.methodSurface?.name || `op::${formatOpcode(opcode)}`,
+    source,
+    kind: effect.kind,
+    count: effect.count,
+    modes: effect.modes ?? [],
+    destinations: effect.destinations ?? [],
+    valueNanotonsMin: effect.valueNanotonsMin,
+    valueNanotonsMax: effect.valueNanotonsMax,
+    bodyShape: effect.bodyShape,
+    codeShape: effect.codeShape,
+    libraryHashes: effect.libraryHashes ?? [],
+    confidence: candidate.confidence,
+    evidence: effect.txHashes && effect.txHashes.length > 0 ? effect.txHashes : candidate.examples,
+  }
+}
+
+function effectSurfaceRow(effect: EffectSurfaceEntry): SummaryRow {
+  return {
+    label: `${formatOpcode(effect.opcode ?? null)} ${effect.source} ${effect.kind}`,
+    value: `${effect.count} ${plural(effect.count, "effect")}`,
+    detail: [
+      effect.opName,
+      `value ${effectSurfaceValueLabel(effect)}`,
+      `body ${shapeLabel(effect.bodyShape)}`,
+      `code ${shapeLabel(effect.codeShape)}`,
+      listLabel("modes", effect.modes),
+      listLabel("destinations", effect.destinations),
+      listLabel("libraries", effect.libraryHashes),
+      `confidence ${effect.confidence}`,
+      `evidence ${effect.evidence.map(hash => shortHash(hash)).join(", ")}`,
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(" · "),
+  }
+}
+
+function effectSurfaceValueLabel(effect: EffectSurfaceEntry): string {
+  if (!effect.valueNanotonsMin || !effect.valueNanotonsMax) {
+    return "n/a"
+  }
+  return effect.valueNanotonsMin === effect.valueNanotonsMax
+    ? effect.valueNanotonsMin
+    : `${effect.valueNanotonsMin}..${effect.valueNanotonsMax}`
 }
 
 function aggregateStorageLayoutFields(
