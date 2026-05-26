@@ -2254,6 +2254,7 @@ fn validate_state_flow_schema_evidence_keys(
         ("address", &["address"][..]),
         ("transaction count", &["transactionCount"][..]),
         ("state machine", &["stateMachine"][..]),
+        ("storage layout", &["storageLayout"][..]),
         ("audit signals", &["auditSignals"][..]),
         ("opcode candidates", &["opcodeCandidates"][..]),
     ] {
@@ -2266,6 +2267,7 @@ fn validate_state_flow_schema_evidence_keys(
     }
 
     validate_schema_state_machine_evidence_keys(value, artifact, gate_failures);
+    validate_schema_storage_layout_evidence_keys(value, artifact, gate_failures);
     validate_schema_audit_signal_evidence_keys(value, artifact, gate_failures);
 
     let Some(candidates) = value
@@ -2350,6 +2352,53 @@ fn validate_schema_state_machine_evidence_keys(
             }
         }
         validate_schema_confidence_label(edge, &prefix, gate_failures);
+    }
+}
+
+fn validate_schema_storage_layout_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(layout) = value.get("storageLayout") else {
+        return;
+    };
+    for (label, path) in [("fields", &["fields"][..])] {
+        if !json_path_exists(layout, path) {
+            gate_failures.push(format!(
+                "schema artifact {} storageLayout missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+    let Some(fields) = layout.get("fields").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, field) in fields.iter().enumerate() {
+        let prefix = format!(
+            "schema artifact {} storageLayout.fields[{index}]",
+            artifact.path
+        );
+        for (label, path) in [
+            ("name", &["name"][..]),
+            ("cell path", &["cellPath"][..]),
+            ("bit offset", &["bitOffset"][..]),
+            ("min bits", &["minBits"][..]),
+            ("max bits", &["maxBits"][..]),
+            ("min refs", &["minRefs"][..]),
+            ("max refs", &["maxRefs"][..]),
+            ("kind", &["kind"][..]),
+            ("observation count", &["observationCount"][..]),
+            ("opcodes", &["opcodes"][..]),
+            ("value samples", &["valueSamples"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(field, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_confidence_label(field, &prefix, gate_failures);
     }
 }
 
@@ -4444,6 +4493,17 @@ fn validate_schema_corpus_membership(
         }
         validate_schema_state_machine_node_matches_corpus(node, corpus, gate_failures);
     }
+    for field in &schema.storage_layout.fields {
+        for evidence in &field.evidence {
+            validate_corpus_hash_membership(
+                "schema storage layout evidence",
+                evidence,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+    }
+    validate_schema_storage_layout_matches_candidates(schema, gate_failures);
     for edge in &schema.state_machine.edges {
         for example in &edge.examples {
             validate_corpus_hash_membership(
@@ -5778,6 +5838,111 @@ fn validate_schema_state_machine_node_matches_corpus(
     }
 }
 
+fn validate_schema_storage_layout_matches_candidates(
+    schema: &StateFlowSchemaReport,
+    gate_failures: &mut Vec<String>,
+) {
+    let expected = ton_stateflow::storage_layout_from_candidates(&schema.opcode_candidates);
+    let expected_by_key = expected
+        .fields
+        .iter()
+        .map(|field| (storage_layout_field_key(field), field))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = HashSet::new();
+
+    for field in &schema.storage_layout.fields {
+        let key = storage_layout_field_key(field);
+        seen.insert(key.clone());
+        let expected = expected_by_key.get(&key).copied();
+        let expected_observation_count = expected.map_or(0, |field| field.observation_count);
+        validate_evidence_value_field(
+            "schema storage layout field observation count",
+            field.observation_count,
+            "schema candidate aggregate observation count",
+            expected_observation_count,
+            &field.name,
+            gate_failures,
+        );
+        let Some(expected) = expected else {
+            continue;
+        };
+        validate_evidence_text_field(
+            "schema storage layout field bits",
+            &report_field_range(field.min_bits, field.max_bits),
+            "schema candidate aggregate bits",
+            &report_field_range(expected.min_bits, expected.max_bits),
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field refs",
+            &report_field_range(field.min_refs, field.max_refs),
+            "schema candidate aggregate refs",
+            &report_field_range(expected.min_refs, expected.max_refs),
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field kind",
+            &field.kind,
+            "schema candidate aggregate kind",
+            &expected.kind,
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field opcodes",
+            &report_opcode_option_list(&field.opcodes),
+            "schema candidate aggregate opcodes",
+            &report_opcode_option_list(&expected.opcodes),
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field samples",
+            &report_sample_list(&field.value_samples),
+            "schema candidate aggregate samples",
+            &report_sample_list(&expected.value_samples),
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field confidence",
+            &field.confidence,
+            "schema candidate aggregate confidence",
+            &expected.confidence,
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field evidence",
+            &report_sample_list(&field.evidence),
+            "schema candidate aggregate evidence",
+            &report_sample_list(&expected.evidence),
+            &field.name,
+            gate_failures,
+        );
+    }
+
+    for expected in &expected.fields {
+        let key = storage_layout_field_key(expected);
+        if !seen.contains(&key) {
+            gate_failures.push(format!(
+                "schema storage layout field {} is missing",
+                expected.name
+            ));
+        }
+    }
+}
+
+fn storage_layout_field_key(field: &ton_stateflow::StorageLayoutField) -> (String, String, u16) {
+    (
+        field.name.clone(),
+        field.cell_path.clone(),
+        field.bit_offset,
+    )
+}
+
 fn validate_schema_evidence_matches_corpus(
     evidence: &ton_stateflow::SchemaEvidence,
     corpus_flow: &StateFlowTx,
@@ -6036,6 +6201,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Message Body Fields",
         "## Replay Probes",
         "## Storage Fields",
+        "## Storage Layout",
         "## Outbound Effects",
         "## State Machine",
         "## State Machine Nodes",
@@ -6780,6 +6946,24 @@ fn validate_report_schema_deliverables(
         }
     }
 
+    if let Some(section) = markdown_section(markdown, "## Storage Layout") {
+        if !schema.storage_layout.fields.is_empty() {
+            validate_report_storage_layout_header(section, gate_failures);
+        }
+        for field in &schema.storage_layout.fields {
+            let field_row = report_storage_layout_field_row(section, field);
+            if field_row.is_none() {
+                gate_failures.push(format!(
+                    "report storage layout field {} is missing",
+                    field.name
+                ));
+            }
+            if let Some(row) = field_row {
+                validate_report_storage_layout_field_values(field, &row, gate_failures);
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## Unknown Fields") {
         for candidate in &schema.opcode_candidates {
             let opcode = report_opcode_label(candidate.opcode.as_deref());
@@ -6957,6 +7141,38 @@ fn storage_fields_report_header() -> Vec<String> {
         "Kind",
         "Samples",
         "Confidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
+fn validate_report_storage_layout_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = storage_layout_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report storage layout header {expected:?} is missing"
+        ));
+    }
+}
+
+fn storage_layout_report_header() -> Vec<String> {
+    [
+        "Field",
+        "Cell",
+        "Offset",
+        "Bits",
+        "Refs",
+        "Kind",
+        "Observations",
+        "Opcodes",
+        "Samples",
+        "Confidence",
+        "Evidence",
     ]
     .iter()
     .map(|header| header.to_string())
@@ -7207,6 +7423,17 @@ fn validate_report_effect_row(
 
 fn report_opcode_label(opcode: Option<&str>) -> String {
     opcode.unwrap_or("<none>").to_owned()
+}
+
+fn report_opcode_option_list(opcodes: &[Option<String>]) -> String {
+    if opcodes.is_empty() {
+        return "<none>".to_owned();
+    }
+    opcodes
+        .iter()
+        .map(|opcode| report_opcode_label(opcode.as_deref()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn report_opcode_candidate_row(section: &str, opcode: &str) -> Option<Vec<String>> {
@@ -7634,6 +7861,110 @@ fn validate_report_storage_field_cell(
     if actual.is_none_or(|actual| actual != &expected) {
         gate_failures.push(format!(
             "report storage field {label} {expected} for {field_name} is missing"
+        ));
+    }
+}
+
+fn report_storage_layout_field_row(
+    section: &str,
+    field: &ton_stateflow::StorageLayoutField,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        cells
+            .first()
+            .is_some_and(|cell| cell == &field.name)
+            .then_some(cells)
+    })
+}
+
+fn validate_report_storage_layout_field_values(
+    field: &ton_stateflow::StorageLayoutField,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_storage_layout_field_cell(
+        "cell",
+        field.cell_path.clone(),
+        &field.name,
+        row.get(1),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "offset",
+        field.bit_offset.to_string(),
+        &field.name,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "bits",
+        report_field_range(field.min_bits, field.max_bits),
+        &field.name,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "refs",
+        report_field_range(field.min_refs, field.max_refs),
+        &field.name,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "kind",
+        field.kind.clone(),
+        &field.name,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "observations",
+        field.observation_count.to_string(),
+        &field.name,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "opcodes",
+        report_opcode_option_list(&field.opcodes),
+        &field.name,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "samples",
+        report_sample_list(&field.value_samples),
+        &field.name,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "confidence",
+        field.confidence.clone(),
+        &field.name,
+        row.get(9),
+        gate_failures,
+    );
+    validate_report_storage_layout_field_cell(
+        "evidence",
+        report_sample_list(&field.evidence),
+        &field.name,
+        row.get(10),
+        gate_failures,
+    );
+}
+
+fn validate_report_storage_layout_field_cell(
+    label: &str,
+    expected: String,
+    field_name: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report storage layout field {label} {expected} for {field_name} is missing"
         ));
     }
 }
@@ -9859,6 +10190,7 @@ mod tests {
                 "address": "other-addr",
                 "transactionCount": 2,
                 "stateMachine": {"nodes": [], "edges": []},
+                "storageLayout": {"fields": []},
                 "auditSignals": [],
                 "opcodeCandidates": []
             })
@@ -9898,6 +10230,7 @@ mod tests {
                 "address": "addr",
                 "transactionCount": 2,
                 "stateMachine": {"nodes": [], "edges": []},
+                "storageLayout": {"fields": []},
                 "auditSignals": [],
                 "opcodeCandidates": []
             })
@@ -10179,6 +10512,95 @@ mod tests {
                 )
             }),
             "expected schema state machine node confidence mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_storage_layout_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("storageLayout");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json missing storage layout evidence key",
+                )
+            }),
+            "expected missing schema storage layout key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_storage_layout_field_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["storageLayout"]["fields"] = serde_json::json!([{
+            "name": "data_word_0",
+            "cellPath": "data",
+            "bitOffset": 0,
+            "minBits": 32,
+            "maxBits": 32,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint32",
+            "observationCount": 2,
+            "opcodes": ["0x00000001"],
+            "valueSamples": ["0xdeadbeef"],
+            "confidence": "high",
+            "evidence": ["tx-a", "tx-b"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema storage layout field observation count 2 for data_word_0 does not match schema candidate aggregate observation count 0",
+                )
+            }),
+            "expected schema storage layout observation count failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -13486,6 +13908,7 @@ mod tests {
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
+                "storageLayout": {"fields": []},
                 "auditSignals": [{
                     "kind": "unknown-fields",
                     "severity": "info",
@@ -13709,6 +14132,7 @@ mod tests {
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
+                "storageLayout": {"fields": []},
                 "auditSignals": [{
                     "kind": "unknown-fields",
                     "severity": "info",
@@ -13824,6 +14248,7 @@ mod tests {
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
+                "storageLayout": {"fields": []},
                 "auditSignals": [{
                     "kind": "unknown-fields",
                     "severity": "info",
@@ -15531,6 +15956,7 @@ mod tests {
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
+                "storageLayout": {"fields": []},
                 "auditSignals": [{
                     "kind": "unknown-fields",
                     "severity": "info",
@@ -15999,6 +16425,9 @@ mod tests {
              \n\
              ## Storage Fields\n\
              - No storage field candidates were inferred.\n\
+             \n\
+             ## Storage Layout\n\
+             - No contract-level storage layout fields were inferred.\n\
              \n\
              ## Outbound Effects\n\
              - No outbound effect candidates were inferred.\n\

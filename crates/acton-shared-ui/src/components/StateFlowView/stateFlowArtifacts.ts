@@ -90,6 +90,7 @@ export interface StateFlowSchemaReport {
   readonly address: string
   readonly transactionCount: number
   readonly stateMachine?: StateMachineGraph | null
+  readonly storageLayout?: StorageLayoutCandidate | null
   readonly auditSignals?: readonly AuditSignal[] | null
   readonly opcodeCandidates: readonly OpcodeSchemaCandidate[]
 }
@@ -121,6 +122,26 @@ export interface AuditSignal {
   readonly kind: string
   readonly severity: string
   readonly description: string
+  readonly evidence: readonly string[]
+}
+
+export interface StorageLayoutCandidate {
+  readonly fields: readonly StorageLayoutField[]
+}
+
+export interface StorageLayoutField {
+  readonly name: string
+  readonly cellPath: string
+  readonly bitOffset: number
+  readonly minBits: number
+  readonly maxBits: number
+  readonly minRefs: number
+  readonly maxRefs: number
+  readonly kind: string
+  readonly observationCount: number
+  readonly opcodes: readonly (string | null)[]
+  readonly valueSamples: readonly string[]
+  readonly confidence: string
   readonly evidence: readonly string[]
 }
 
@@ -710,6 +731,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const methodSurfaceRows = schemaMethodSurfaceRows(schema)
   const storageFieldRows = schemaStorageFieldRows(schema)
+  const storageLayoutRows = schemaStorageLayoutRows(schema)
   const effectRows = schemaEffectRows(schema)
   const evidenceRows = schemaEvidenceRows(schema)
   const replayProbeRows = schemaReplayProbeRows(schema)
@@ -723,6 +745,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
       {label: "Body Fields", value: bodyFieldRows.length.toString()},
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
+      {label: "Storage Layout Fields", value: storageLayoutRows.length.toString()},
       {label: "Effects", value: effectRows.length.toString()},
       {label: "Replay Probes", value: replayProbeRows.length.toString()},
       {label: "State Nodes", value: stateNodes.length.toString()},
@@ -769,6 +792,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
             {
               title: "Storage Fields",
               rows: storageFieldRows,
+            },
+          ]
+        : []),
+      ...(storageLayoutRows.length > 0
+        ? [
+            {
+              title: "Storage Layout",
+              rows: storageLayoutRows,
             },
           ]
         : []),
@@ -1040,6 +1071,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const messageBodyFieldRows = reportMessageBodyFieldRows(report)
   const replayProbeRows = reportReplayProbeRows(report)
   const storageFieldRows = reportStorageFieldRows(report)
+  const storageLayoutRows = reportStorageLayoutRows(report)
   const outboundEffectRows = reportOutboundEffectRows(report)
   const stateMachineRows = reportStateMachineRows(report)
   const stateMachineNodeRows = reportStateMachineNodeRows(report)
@@ -1107,6 +1139,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Storage Fields",
               rows: storageFieldRows,
+            },
+          ]
+        : []),
+      ...(storageLayoutRows.length > 0
+        ? [
+            {
+              title: "Storage Layout",
+              rows: storageLayoutRows,
             },
           ]
         : []),
@@ -1427,6 +1467,24 @@ function reportStorageFieldRows(report: StateFlowReport): readonly SummaryRow[] 
       tableValueLabel("kind", rowValue(row, "Kind")),
       tableValueLabel("sample", rowValue(row, "Samples")),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportStorageLayoutRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Storage Layout").map(row => ({
+    label: rowValue(row, "Field") || "n/a",
+    value: `${rowValue(row, "Kind") || "n/a"} @ ${rowValue(row, "Cell") || "n/a"}:${rowValue(row, "Offset") || "n/a"}`,
+    detail: [
+      `${rowValue(row, "Bits") || "n/a"} bits`,
+      `${rowValue(row, "Refs") || "n/a"} refs`,
+      tableCountLabel(rowValue(row, "Observations"), "observation"),
+      tableValueLabel("opcodes", rowValue(row, "Opcodes")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+      tableValueLabel("samples", rowValue(row, "Samples")),
     ]
       .filter((value): value is string => value !== undefined)
       .join(" · "),
@@ -1987,6 +2045,102 @@ function schemaStorageFieldRows(schema: StateFlowSchemaReport): readonly Summary
   })
 }
 
+function schemaStorageLayoutRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  const fields = schemaStorageLayoutFields(schema)
+  return fields.map(field => ({
+    label: field.name,
+    value: `${field.kind} @${field.cellPath}:${field.bitOffset}`,
+    detail: [
+      `${formatFieldRange(field.minBits, field.maxBits)} bits`,
+      `${formatFieldRange(field.minRefs, field.maxRefs)} refs`,
+      `${field.observationCount} ${plural(field.observationCount, "observation")}`,
+      `opcodes ${formatOpcodeList(field.opcodes)}`,
+      `confidence ${field.confidence}`,
+      `evidence ${field.evidence.map(hash => shortHash(hash)).join(", ")}`,
+      field.valueSamples.join(", "),
+    ]
+      .filter(value => value.length > 0)
+      .join(" · "),
+  }))
+}
+
+function schemaStorageLayoutFields(schema: StateFlowSchemaReport): readonly StorageLayoutField[] {
+  const structured = schema.storageLayout?.fields ?? []
+  if (structured.length > 0) {
+    return structured
+  }
+  return aggregateStorageLayoutFields(schema.opcodeCandidates)
+}
+
+function aggregateStorageLayoutFields(
+  candidates: readonly OpcodeSchemaCandidate[],
+): readonly StorageLayoutField[] {
+  const byField = new Map<
+    string,
+    {
+      name: string
+      cellPath: string
+      bitOffset: number
+      minBits: number
+      maxBits: number
+      minRefs: number
+      maxRefs: number
+      kind: string
+      observationCount: number
+      opcodes: Set<string | null>
+      valueSamples: Set<string>
+      confidence: string
+      evidence: Set<string>
+    }
+  >()
+  for (const candidate of candidates) {
+    for (const field of candidate.storage?.fields ?? []) {
+      const key = `${field.name}\u0000${field.cellPath}\u0000${field.bitOffset}`
+      const existing = byField.get(key)
+      const entry = existing ?? {
+        name: field.name,
+        cellPath: field.cellPath,
+        bitOffset: field.bitOffset,
+        minBits: field.minBits,
+        maxBits: field.maxBits,
+        minRefs: field.minRefs,
+        maxRefs: field.maxRefs,
+        kind: field.kind,
+        observationCount: 0,
+        opcodes: new Set<string | null>(),
+        valueSamples: new Set<string>(),
+        confidence: field.confidence,
+        evidence: new Set<string>(),
+      }
+      entry.minBits = Math.min(entry.minBits, field.minBits)
+      entry.maxBits = Math.max(entry.maxBits, field.maxBits)
+      entry.minRefs = Math.min(entry.minRefs, field.minRefs)
+      entry.maxRefs = Math.max(entry.maxRefs, field.maxRefs)
+      entry.kind = entry.kind === field.kind ? entry.kind : "mixed"
+      entry.observationCount += field.presentCount
+      entry.opcodes.add(candidate.opcode ?? null)
+      field.valueSamples.forEach(sample => entry.valueSamples.add(sample))
+      entry.confidence = weakerConfidence(entry.confidence, field.confidence)
+      candidate.examples.forEach(hash => entry.evidence.add(hash))
+      byField.set(key, entry)
+    }
+  }
+  return [...byField.values()]
+    .sort((left, right) =>
+      `${left.cellPath}:${left.bitOffset}:${left.name}`.localeCompare(
+        `${right.cellPath}:${right.bitOffset}:${right.name}`,
+      ),
+    )
+    .map(field => ({
+      ...field,
+      opcodes: [...field.opcodes].sort((left, right) =>
+        formatOpcode(left).localeCompare(formatOpcode(right)),
+      ),
+      valueSamples: [...field.valueSamples].sort(),
+      evidence: [...field.evidence].sort(),
+    }))
+}
+
 function schemaEffectRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
   return schema.opcodeCandidates.flatMap(candidate => [
     ...candidate.outboundEffects.map(effect => effectRow(candidate.opcode, "outbound", effect)),
@@ -2200,6 +2354,31 @@ function stateMachineConfidence(count: number): string {
     return "medium"
   }
   return "low"
+}
+
+function weakerConfidence(left: string, right: string): string {
+  return confidenceRank(left) <= confidenceRank(right) ? left : right
+}
+
+function confidenceRank(confidence: string): number {
+  if (confidence === "high") {
+    return 2
+  }
+  if (confidence === "medium") {
+    return 1
+  }
+  return 0
+}
+
+function formatOpcodeList(opcodes: readonly (string | null)[]): string {
+  if (opcodes.length === 0) {
+    return "<none>"
+  }
+  return opcodes.map(formatOpcode).join(", ")
+}
+
+function formatOpcode(opcode: string | null): string {
+  return opcode ?? "<none>"
 }
 
 function schemaAuditSignals(schema: StateFlowSchemaReport): readonly AuditSignal[] {

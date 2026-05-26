@@ -102,6 +102,25 @@ const schema = {
   network: "mainnet",
   address: "account",
   transactionCount: 2,
+  storageLayout: {
+    fields: [
+      {
+        name: "data_word_0",
+        cellPath: "data",
+        bitOffset: 0,
+        minBits: 32,
+        maxBits: 32,
+        minRefs: 0,
+        maxRefs: 0,
+        kind: "uint32",
+        observationCount: 2,
+        opcodes: ["0x00000001"],
+        valueSamples: ["0xcafebabe", "0xdeadbeef"],
+        confidence: "high",
+        evidence: ["tx-a", "tx-b"],
+      },
+    ],
+  },
   stateMachine: {
     nodes: [
       {
@@ -566,6 +585,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | --- | ---: | --- | --- | --- | --- | --- |
 | \`0x00000001\` | \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | \`0xdeadbeef\` | medium |
 
+## Storage Layout
+| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence |
+| --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- |
+| \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | 2 | \`0x00000001\` | \`0xcafebabe\`, \`0xdeadbeef\` | high | \`tx-a\`, \`tx-b\` |
+
 ## Outbound Effects
 | Opcode | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Evidence |
 | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |
@@ -718,6 +742,14 @@ assert(storageFieldRows[0]?.value === "uint32 @data:0", "expected storage field 
 assert(
   storageFieldRows[0]?.detail?.includes("0xdeadbeef") === true,
   "expected storage field samples in row",
+)
+const storageLayoutRows = sectionRows(schemaSummary, "Storage Layout")
+assert(storageLayoutRows[0]?.label === "data_word_0", "expected storage layout row")
+assert(storageLayoutRows[0]?.value === "uint32 @data:0", "expected storage layout location")
+assert(
+  storageLayoutRows[0]?.detail ===
+    "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · 0xcafebabe, 0xdeadbeef",
+  "expected storage layout detail",
 )
 const effectRows = sectionRows(schemaSummary, "Outbound Effects")
 assert(effectRows[0]?.label === "0x00000001 outbound", "expected outbound effect row")
@@ -983,7 +1015,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "14"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "15"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1052,6 +1084,14 @@ assert(reportStorageRows[0]?.value === "data @ 0", "expected storage field locat
 assert(
   reportStorageRows[0]?.detail?.includes("sample 0xdeadbeef") === true,
   "expected storage field sample detail",
+)
+const reportStorageLayoutRows = sectionRows(reportSummary, "Storage Layout")
+assert(reportStorageLayoutRows[0]?.label === "data_word_0", "expected report storage layout row")
+assert(reportStorageLayoutRows[0]?.value === "uint32 @ data:0", "expected report layout field")
+assert(
+  reportStorageLayoutRows[0]?.detail ===
+    "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · samples 0xcafebabe, 0xdeadbeef",
+  "expected report storage layout detail",
 )
 const reportOutboundRows = sectionRows(reportSummary, "Outbound Effects")
 assert(

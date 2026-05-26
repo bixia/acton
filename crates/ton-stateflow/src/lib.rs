@@ -74,6 +74,8 @@ pub struct StateFlowSchemaReport {
     #[serde(default)]
     pub state_machine: StateMachineGraph,
     #[serde(default)]
+    pub storage_layout: StorageLayoutCandidate,
+    #[serde(default)]
     pub audit_signals: Vec<AuditSignal>,
     pub opcode_candidates: Vec<OpcodeSchemaCandidate>,
 }
@@ -116,6 +118,30 @@ pub struct AuditSignal {
     pub kind: String,
     pub severity: String,
     pub description: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageLayoutCandidate {
+    pub fields: Vec<StorageLayoutField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageLayoutField {
+    pub name: String,
+    pub cell_path: String,
+    pub bit_offset: u16,
+    pub min_bits: u16,
+    pub max_bits: u16,
+    pub min_refs: u8,
+    pub max_refs: u8,
+    pub kind: String,
+    pub observation_count: usize,
+    pub opcodes: Vec<Option<String>>,
+    pub value_samples: Vec<String>,
+    pub confidence: String,
     pub evidence: Vec<String>,
 }
 
@@ -568,6 +594,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         .into_iter()
         .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
         .collect();
+    let storage_layout = storage_layout_from_candidates(&opcode_candidates);
 
     StateFlowSchemaReport {
         schema_version: STATE_FLOW_SCHEMA_VERSION,
@@ -575,6 +602,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         address: corpus.address.clone(),
         transaction_count: corpus.transactions.len(),
         state_machine: state_machine_graph(&corpus.transactions),
+        storage_layout,
         audit_signals: infer_schema_audit_signals(corpus, &opcode_candidates),
         opcode_candidates,
     }
@@ -913,6 +941,41 @@ pub fn render_state_flow_report(
                 )
                 .ok();
             }
+        }
+    }
+    writeln!(report).ok();
+
+    writeln!(report, "## Storage Layout").ok();
+    if schema.storage_layout.fields.is_empty() {
+        writeln!(
+            report,
+            "- No contract-level storage layout fields were inferred."
+        )
+        .ok();
+    } else {
+        writeln!(report, "| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence |").ok();
+        writeln!(
+            report,
+            "| --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- |"
+        )
+        .ok();
+        for field in &schema.storage_layout.fields {
+            writeln!(
+                report,
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                markdown_escape(&field.name),
+                markdown_escape(&field.cell_path),
+                field.bit_offset,
+                format_field_range(field.min_bits, field.max_bits),
+                format_field_range(field.min_refs, field.max_refs),
+                markdown_escape(&field.kind),
+                field.observation_count,
+                markdown_opcode_list(&field.opcodes),
+                markdown_code_list(&field.value_samples),
+                markdown_escape(&field.confidence),
+                markdown_code_list(&field.evidence),
+            )
+            .ok();
         }
     }
     writeln!(report).ok();
@@ -1686,6 +1749,17 @@ fn markdown_code_list(values: &[String]) -> String {
         .join(", ")
 }
 
+fn markdown_opcode_list(opcodes: &[Option<String>]) -> String {
+    if opcodes.is_empty() {
+        return "`<none>`".to_owned();
+    }
+    opcodes
+        .iter()
+        .map(|opcode| markdown_code_opt(opcode.as_deref()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn markdown_code_list_or_none(values: &[String]) -> String {
     if values.is_empty() {
         return "none".to_owned();
@@ -2085,6 +2159,104 @@ fn storage_shape(transactions: &[&StateFlowTx]) -> StorageShapeCandidate {
         fields,
         post_data_hashes: post_data_hashes.into_iter().collect(),
         post_code_hashes: post_code_hashes.into_iter().collect(),
+    }
+}
+
+pub fn storage_layout_from_candidates(
+    candidates: &[OpcodeSchemaCandidate],
+) -> StorageLayoutCandidate {
+    #[derive(Debug)]
+    struct Accumulator {
+        name: String,
+        cell_path: String,
+        bit_offset: u16,
+        min_bits: u16,
+        max_bits: u16,
+        min_refs: u8,
+        max_refs: u8,
+        kind: String,
+        observation_count: usize,
+        opcodes: BTreeSet<Option<String>>,
+        value_samples: BTreeSet<String>,
+        confidence: String,
+        evidence: BTreeSet<String>,
+    }
+
+    let mut by_field = BTreeMap::<(String, u16, String), Accumulator>::new();
+    for candidate in candidates {
+        for field in &candidate.storage.fields {
+            let key = (
+                field.cell_path.clone(),
+                field.bit_offset,
+                field.name.clone(),
+            );
+            let entry = by_field.entry(key).or_insert_with(|| Accumulator {
+                name: field.name.clone(),
+                cell_path: field.cell_path.clone(),
+                bit_offset: field.bit_offset,
+                min_bits: field.min_bits,
+                max_bits: field.max_bits,
+                min_refs: field.min_refs,
+                max_refs: field.max_refs,
+                kind: field.kind.clone(),
+                observation_count: 0,
+                opcodes: BTreeSet::new(),
+                value_samples: BTreeSet::new(),
+                confidence: field.confidence.clone(),
+                evidence: BTreeSet::new(),
+            });
+            entry.min_bits = entry.min_bits.min(field.min_bits);
+            entry.max_bits = entry.max_bits.max(field.max_bits);
+            entry.min_refs = entry.min_refs.min(field.min_refs);
+            entry.max_refs = entry.max_refs.max(field.max_refs);
+            if entry.kind != field.kind {
+                entry.kind = "mixed".to_owned();
+            }
+            entry.observation_count += field.present_count;
+            entry.opcodes.insert(candidate.opcode.clone());
+            entry
+                .value_samples
+                .extend(field.value_samples.iter().cloned());
+            entry.confidence = weaker_confidence(&entry.confidence, &field.confidence);
+            entry.evidence.extend(candidate.examples.iter().cloned());
+        }
+    }
+
+    StorageLayoutCandidate {
+        fields: by_field
+            .into_values()
+            .map(|field| StorageLayoutField {
+                name: field.name,
+                cell_path: field.cell_path,
+                bit_offset: field.bit_offset,
+                min_bits: field.min_bits,
+                max_bits: field.max_bits,
+                min_refs: field.min_refs,
+                max_refs: field.max_refs,
+                kind: field.kind,
+                observation_count: field.observation_count,
+                opcodes: field.opcodes.into_iter().collect(),
+                value_samples: limited_samples(field.value_samples),
+                confidence: field.confidence,
+                evidence: field.evidence.into_iter().collect(),
+            })
+            .collect(),
+    }
+}
+
+fn weaker_confidence(left: &str, right: &str) -> String {
+    match (confidence_rank(left), confidence_rank(right)) {
+        (left_rank, right_rank) if left_rank <= right_rank => left.to_owned(),
+        _ => right.to_owned(),
+    }
+}
+
+fn confidence_rank(confidence: &str) -> u8 {
+    match confidence {
+        "low" => 0,
+        "medium" => 1,
+        "high" => 2,
+        _ => 0,
     }
 }
 
@@ -3673,6 +3845,52 @@ mod tests {
     }
 
     #[test]
+    fn infer_schema_candidates_persists_contract_storage_layout() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_storage_data("tx-a", 0xdeadbeef, 0xaa),
+                sample_flow_with_storage_data("tx-b", 0xcafebabe, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["storageLayout"]["fields"][0],
+            serde_json::json!({
+                "name": "data_word_0",
+                "cellPath": "data",
+                "bitOffset": 0,
+                "minBits": 32,
+                "maxBits": 32,
+                "minRefs": 0,
+                "maxRefs": 0,
+                "kind": "uint32",
+                "observationCount": 2,
+                "opcodes": ["0x00000001"],
+                "valueSamples": ["0xcafebabe", "0xdeadbeef"],
+                "confidence": "high",
+                "evidence": ["tx-a", "tx-b"]
+            })
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("## Storage Layout"));
+        assert!(report.contains("| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence |"));
+        assert!(report.contains("| `data_word_0` | data | 0 | 32..32 | 0..0 | uint32 | 2 | `0x00000001` | `0xcafebabe`, `0xdeadbeef` | high | `tx-a`, `tx-b` |"));
+    }
+
+    #[test]
     fn report_renderer_includes_runtime_evidence_rows() {
         let mut flow = sample_flow_with_effects("tx-a");
         flow.c5 = Some(sample_cell_artifact("c5", 40, 2));
@@ -3919,6 +4137,7 @@ mod tests {
         assert_eq!(report.opcode_candidates[0].evidence.len(), 0);
         let serialized = serde_json::to_value(&report).unwrap();
         assert_eq!(serialized["stateMachine"]["edges"], serde_json::json!([]));
+        assert_eq!(serialized["storageLayout"]["fields"], serde_json::json!([]));
         assert_eq!(serialized["auditSignals"], serde_json::json!([]));
     }
 
