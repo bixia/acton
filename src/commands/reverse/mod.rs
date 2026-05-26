@@ -847,6 +847,9 @@ fn run_state_flow_targets(
         if let Some(source_url) = &target.source_url {
             insert_report_source_url(&mut report, source_url);
         }
+        if let Some(notes) = &target.notes {
+            insert_report_target_notes(&mut report, notes);
+        }
         let report_path = target_dir.join("report.md");
         write_text(
             &report,
@@ -7182,6 +7185,12 @@ fn validate_manifest_report_content_matches_summary(
             gate_failures.push(format!("report target line {line:?} is missing"));
         }
     }
+    if let Some(notes) = &target.notes {
+        let line = report_target_notes_line(notes);
+        if !markdown_line_exists(&markdown, &line) {
+            gate_failures.push(format!("report target line {line:?} is missing"));
+        }
+    }
     validate_optional_report_target_count(
         &markdown,
         "replay diff count",
@@ -8051,6 +8060,20 @@ fn insert_report_source_url(report: &mut String, source_url: &str) {
         address_line_end,
         &format!("\n- Source URL: <{}>", source_url),
     );
+}
+
+fn insert_report_target_notes(report: &mut String, notes: &str) {
+    let Some(address_line_end) = report.find("\n- Source transactions:") else {
+        return;
+    };
+    report.insert_str(
+        address_line_end,
+        &format!("\n{}", report_target_notes_line(notes)),
+    );
+}
+
+fn report_target_notes_line(notes: &str) -> String {
+    format!("- Notes: {}", notes.replace(['\r', '\n'], " "))
 }
 
 fn validate_report_schema_deliverables(
@@ -14051,6 +14074,50 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_notes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_target_notes("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report target line \"- Notes: sample target note\" is missing",
+                )
+            }),
+            "expected missing report notes failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn insert_report_target_notes_adds_notes_before_counts() {
+        let mut report = sample_report_markdown_without_target_notes("addr");
+
+        super::insert_report_target_notes(&mut report, "sample target note");
+
+        assert!(
+            report.contains(
+                "- Address: `addr`\n- Notes: sample target note\n- Source transactions: 2",
+            ),
+            "expected report target notes before source counts, got {report}"
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_missing_runtime_evidence() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -18673,6 +18740,12 @@ mod tests {
         sample_report_markdown_inner(address, false, "flip body bit 0", true, true)
     }
 
+    fn sample_report_markdown_without_target_notes(address: &str) -> String {
+        sample_report_markdown(address)
+            .replace("- Notes: sample target note\n", "")
+            .replace("- Notes: sample target note\r\n", "")
+    }
+
     fn sample_report_markdown_without_runtime_evidence(address: &str) -> String {
         sample_report_markdown(address).replace(
             "## Runtime Evidence\n\
@@ -19025,6 +19098,7 @@ mod tests {
              ## Target\n\
              - Network: `mainnet`\n\
              - Address: `{address}`\n\
+             - Notes: sample target note\n\
              - Source transactions: 2\n\
              - Retraced transactions: 2\n\
              - Replay failures while collecting: 0\n\
