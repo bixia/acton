@@ -690,6 +690,20 @@ assert(
 )
 assert(
   bundleView.sections
+    .find(section => section.title === "Coverage Matrix")
+    ?.rows.some(
+      row =>
+        row.label === "sample-protocol / sample-category" &&
+        row.value === "1 target" &&
+        row.detail?.includes("sample contract") === true &&
+        row.detail?.includes("7 artifacts") === true &&
+        row.detail?.includes("1 replay") === true &&
+        row.detail?.includes("capabilities 2/2") === true,
+    ) === true,
+  "expected artifact bundle coverage matrix rows to group target evidence by protocol and category",
+)
+assert(
+  bundleView.sections
     .find(section => section.title === "Loaded Artifacts")
     ?.rows.some(
       row => row.label === "target-a replay" && row.value === "out/target-a/replay.json",

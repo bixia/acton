@@ -1592,6 +1592,7 @@ function summarizeArtifactBundle(bundle: StateFlowArtifactBundle): ArtifactSumma
   const capabilityCounts = bundle.validation
     ? validationCapabilityCounts(bundle.validation, capabilityRows)
     : {total: 0, passed: 0, failed: 0}
+  const coverageRows = bundleCoverageRows(bundle)
   return {
     title: "State Flow Artifact Bundle",
     subtitle: bundle.manifest?.summary,
@@ -1618,6 +1619,14 @@ function summarizeArtifactBundle(bundle: StateFlowArtifactBundle): ArtifactSumma
             .join(" · "),
         })),
       },
+      ...(coverageRows.length > 0
+        ? [
+            {
+              title: "Coverage Matrix",
+              rows: coverageRows,
+            },
+          ]
+        : []),
       {
         title: "Loaded Artifacts",
         rows: bundle.loadedArtifacts.map(artifact => ({
@@ -1658,6 +1667,74 @@ function summarizeArtifactBundle(bundle: StateFlowArtifactBundle): ArtifactSumma
         : []),
     ],
   }
+}
+
+function bundleCoverageRows(bundle: StateFlowArtifactBundle): readonly SummaryRow[] {
+  const coverage = new Map<
+    string,
+    {
+      readonly protocol: string
+      readonly category: string
+      readonly contractTypes: Set<string>
+      targetCount: number
+      artifactCount: number
+      replayCount: number
+      capabilityCount: number
+      capabilityPassedCount: number
+    }
+  >()
+  for (const target of bundle.targets) {
+    const context = target.manifestTarget ?? target.validationTarget ?? target.summaryTarget
+    const protocol = context?.protocol
+    const category = context?.category
+    if (!protocol || !category) {
+      continue
+    }
+    const key = `${protocol}\u0000${category}`
+    const entry = coverage.get(key) ?? {
+      protocol,
+      category,
+      contractTypes: new Set<string>(),
+      targetCount: 0,
+      artifactCount: 0,
+      replayCount: 0,
+      capabilityCount: 0,
+      capabilityPassedCount: 0,
+    }
+    entry.targetCount += 1
+    entry.artifactCount += target.loadedArtifacts.length
+    entry.replayCount +=
+      target.summaryTarget?.replayCount ?? target.validationTarget?.replayCount ?? 0
+    entry.capabilityCount +=
+      target.validationTarget?.capabilityCount ??
+      target.validationTarget?.capabilityChecks?.length ??
+      0
+    entry.capabilityPassedCount +=
+      target.validationTarget?.capabilityPassedCount ??
+      target.validationTarget?.capabilityChecks?.filter(check => check.passed).length ??
+      0
+    if (context.contractType) {
+      entry.contractTypes.add(context.contractType)
+    }
+    coverage.set(key, entry)
+  }
+
+  return [...coverage.values()]
+    .sort((left, right) =>
+      `${left.protocol}/${left.category}`.localeCompare(`${right.protocol}/${right.category}`),
+    )
+    .map(entry => ({
+      label: `${entry.protocol} / ${entry.category}`,
+      value: `${entry.targetCount} ${plural(entry.targetCount, "target")}`,
+      detail: [
+        [...entry.contractTypes].sort().join(", "),
+        `${entry.artifactCount} ${plural(entry.artifactCount, "artifact")}`,
+        `${entry.replayCount} ${plural(entry.replayCount, "replay")}`,
+        `capabilities ${entry.capabilityPassedCount}/${entry.capabilityCount}`,
+      ]
+        .filter(value => value.length > 0)
+        .join(" · "),
+    }))
 }
 
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
