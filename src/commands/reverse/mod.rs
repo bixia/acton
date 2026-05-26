@@ -5180,6 +5180,26 @@ fn validate_replay_observation_evidence_keys(
             gate_failures,
         );
     }
+    if observation
+        .get("accepted")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        validate_required_log_artifact_non_empty(
+            observation,
+            &["vmTrace"],
+            &artifact_prefix,
+            &format!("{observation_key} VM trace"),
+            gate_failures,
+        );
+        validate_required_log_artifact_non_empty(
+            observation,
+            &["executorTrace"],
+            &artifact_prefix,
+            &format!("{observation_key} executor trace"),
+            gate_failures,
+        );
+    }
     validate_out_action_evidence_keys(observation, &observation_prefix, gate_failures);
     validate_replay_error_evidence_keys(observation, &observation_prefix, gate_failures);
 }
@@ -16714,6 +16734,52 @@ mod tests {
                 )
             }),
             "expected empty executor trace failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_accepted_replay_empty_runtime_logs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["replay"]["vmTrace"] = serde_json::json!({"lineCount": 0, "text": ""});
+        replay["replay"]["executorTrace"] = serde_json::json!({"lineCount": 0, "text": ""});
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json replay VM trace must contain at least one log line",
+                )
+            }),
+            "expected empty replay VM trace failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json replay executor trace must contain at least one log line",
+                )
+            }),
+            "expected empty replay executor trace failure, got {:?}",
             validation.gate_failures
         );
     }
