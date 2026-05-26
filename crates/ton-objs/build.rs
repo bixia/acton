@@ -1,3 +1,5 @@
+mod build_support;
+
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
@@ -112,8 +114,8 @@ fn verify_archive_sha(objs_dir: &Path, manifest_path: &Path, lib_name: &str) {
 
     let expected_sha256 = load_lib_sha256_from_manifest(manifest_path, &lib_sha256_key);
 
-    let archive_path = objs_dir.join(lib_filename);
-    let actual_sha256 = sha256_hex(&archive_path);
+    let archive_path = objs_dir.join(&lib_filename);
+    let actual_sha256 = sha256_hex(&archive_path, &lib_filename);
 
     assert_eq!(
         actual_sha256,
@@ -170,9 +172,17 @@ fn load_lib_sha256_from_manifest(manifest_path: &Path, lib_name: &str) -> String
     value.to_owned()
 }
 
-fn sha256_hex(path: &Path) -> String {
-    let bytes = fs::read(path)
-        .unwrap_or_else(|err| panic!("failed to read {} for SHA-256: {err}", path.display()));
+fn sha256_hex(path: &Path, filename: &str) -> String {
+    let bytes = fs::read(path).unwrap_or_else(|err| {
+        panic!(
+            "{}",
+            build_support::archive_read_error_message(
+                &path.display().to_string(),
+                filename,
+                &err.to_string(),
+            )
+        )
+    });
 
     format!("{:x}", Sha256::digest(bytes))
 }
