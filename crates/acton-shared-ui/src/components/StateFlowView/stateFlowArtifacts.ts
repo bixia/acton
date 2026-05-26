@@ -953,6 +953,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
   const opcodeCandidateRows = reportOpcodeCandidateRows(report)
   const schemaEvidenceRows = reportSchemaEvidenceRows(report)
+  const runtimeEvidenceRows = reportRuntimeEvidenceRows(report)
   const messageBodyFieldRows = reportMessageBodyFieldRows(report)
   const replayProbeRows = reportReplayProbeRows(report)
   const storageFieldRows = reportStorageFieldRows(report)
@@ -989,6 +990,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Schema Evidence",
               rows: schemaEvidenceRows,
+            },
+          ]
+        : []),
+      ...(runtimeEvidenceRows.length > 0
+        ? [
+            {
+              title: "Runtime Evidence",
+              rows: runtimeEvidenceRows,
             },
           ]
         : []),
@@ -1259,6 +1268,25 @@ function reportSchemaEvidenceRows(report: StateFlowReport): readonly SummaryRow[
   }))
 }
 
+function reportRuntimeEvidenceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Runtime Evidence").map(row => ({
+    label: rowValue(row, "Tx") || "n/a",
+    value: rowValue(row, "Opcode") || "<none>",
+    detail: [
+      tableValueLabel("exit", rowValue(row, "Exit")),
+      tableValueLabel("VM steps", rowValue(row, "VM steps")),
+      tableLineCountLabel("vm trace", rowValue(row, "VM trace lines")),
+      tableLineCountLabel("executor trace", rowValue(row, "Executor trace lines")),
+      tableValueLabel("c5", rowValue(row, "C5")),
+      tableValueLabel("out actions", rowValue(row, "Out actions")),
+      tableValueLabel("outbound", rowValue(row, "Outbound messages")),
+      tableValueLabel("state", rowValue(row, "State")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
 function reportMessageBodyFieldRows(report: StateFlowReport): readonly SummaryRow[] {
   return reportTableRows(report, "Message Body Fields").map(row => ({
     label: tableRowLabel(row, ["Opcode", "Field"]),
@@ -1498,6 +1526,17 @@ function tableCountLabel(count: string, singular: string): string {
 
 function tableValueLabel(label: string, value: string): string | undefined {
   return value.length > 0 ? `${label} ${value}` : undefined
+}
+
+function tableLineCountLabel(label: string, value: string): string | undefined {
+  if (value.length === 0) {
+    return undefined
+  }
+  const count = Number(value)
+  if (Number.isFinite(count)) {
+    return `${label} ${value} ${plural(count, "line")}`
+  }
+  return `${label} ${value}`
 }
 
 function tableTransitionLabel(label: string, value: string): string | undefined {

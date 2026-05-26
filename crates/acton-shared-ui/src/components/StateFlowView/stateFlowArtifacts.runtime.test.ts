@@ -451,6 +451,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | --- | --- | --- | ---: | --- |
 | \`0x00000001\` | \`tx-a\` | \`body-a\` | 32/0 | active -> frozen |
 
+## Runtime Evidence
+| Tx | Opcode | Exit | VM steps | VM trace lines | Executor trace lines | C5 | Out actions | Outbound messages | State |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| \`tx-a\` | \`0x00000001\` | 0 | 1004 | 4127 | 15 | 40/2 | 1 | 1 | active -> frozen |
+
 ## Message Body Fields
 | Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |
 | --- | --- | ---: | --- | --- | --- | --- | --- |
@@ -826,7 +831,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "11"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "12"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -860,6 +865,21 @@ assert(
 assert(
   reportSchemaEvidenceRows[0]?.detail?.includes("body body-a 32/0") === true,
   "expected report schema evidence body detail",
+)
+const reportRuntimeRows = sectionRows(reportSummary, "Runtime Evidence")
+assert(reportRuntimeRows[0]?.label === "tx-a", "expected report runtime evidence tx row")
+assert(reportRuntimeRows[0]?.value === "0x00000001", "expected report runtime opcode")
+assert(
+  reportRuntimeRows[0]?.detail?.includes("vm trace 4127 lines") === true,
+  "expected report runtime VM trace detail",
+)
+assert(
+  reportRuntimeRows[0]?.detail?.includes("executor trace 15 lines") === true,
+  "expected report runtime executor trace detail",
+)
+assert(
+  reportRuntimeRows[0]?.detail?.includes("c5 40/2") === true,
+  "expected report runtime c5 detail",
 )
 const reportMessageBodyRows = sectionRows(reportSummary, "Message Body Fields")
 assert(reportMessageBodyRows[0]?.label === "0x00000001 query_id", "expected report body field row")
