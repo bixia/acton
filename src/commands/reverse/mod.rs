@@ -1909,9 +1909,25 @@ fn validate_manifest_validation_artifact(
             actual.gate_failures, expected.gate_failures
         ));
     }
-    if actual.targets != expected.targets {
+    if !validation_targets_match_expected(&actual.targets, &expected.targets) {
         gate_failures.push("validation targets do not match expected targets".to_owned());
     }
+}
+
+fn validation_targets_match_expected(
+    actual: &[ArtifactManifestTargetValidation],
+    expected: &[ArtifactManifestTargetValidation],
+) -> bool {
+    actual.len() == expected.len()
+        && actual.iter().zip(expected).all(|(actual, expected)| {
+            actual.id == expected.id
+                && actual.artifact_count == expected.artifact_count
+                && actual.replay_count == expected.replay_count
+                && actual.passed == expected.passed
+                && actual.gate_failures == expected.gate_failures
+                && (actual.capability_checks == expected.capability_checks
+                    || actual.capability_checks.is_empty())
+        })
 }
 
 fn validate_json_artifact<T>(
@@ -3159,14 +3175,13 @@ fn artifact_capability_checks(
     artifacts: &[&SmokeArtifactManifestEntry],
     gate_failures: &[String],
 ) -> Vec<ArtifactCapabilityCheck> {
-    let target_passed = gate_failures.is_empty();
     vec![
         artifact_capability_check(
             "stateFlowTx",
             "StateFlowTx evidence JSON",
             &["transaction"],
             artifacts,
-            target_passed,
+            gate_failures,
             "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
         ),
         artifact_capability_check(
@@ -3174,7 +3189,7 @@ fn artifact_capability_checks(
             "Collect corpus",
             &["corpus"],
             artifacts,
-            target_passed,
+            gate_failures,
             "history transactions and opcode summary validated",
         ),
         artifact_capability_check(
@@ -3182,7 +3197,7 @@ fn artifact_capability_checks(
             "Schema candidates",
             &["schema"],
             artifacts,
-            target_passed,
+            gate_failures,
             "opcode, message, storage, out-effect, unknown-field, and confidence evidence validated",
         ),
         artifact_capability_check(
@@ -3190,7 +3205,7 @@ fn artifact_capability_checks(
             "Replay diff",
             &["replay"],
             artifacts,
-            target_passed,
+            gate_failures,
             "mutations, replay observations, and observable diffs validated",
         ),
         artifact_capability_check(
@@ -3198,7 +3213,7 @@ fn artifact_capability_checks(
             "State-flow report",
             &["report"],
             artifacts,
-            target_passed,
+            gate_failures,
             "report tables checked against corpus, schema, and replay artifacts",
         ),
     ]
@@ -3209,7 +3224,7 @@ fn artifact_capability_check(
     label: &str,
     required_kinds: &[&str],
     artifacts: &[&SmokeArtifactManifestEntry],
-    target_passed: bool,
+    gate_failures: &[String],
     success_evidence: &str,
 ) -> ArtifactCapabilityCheck {
     let paths = required_kinds
@@ -3226,12 +3241,24 @@ fn artifact_capability_check(
         .filter(|kind| !artifacts.iter().any(|artifact| artifact.kind == **kind))
         .map(|kind| format!("missing {kind} artifact"))
         .collect::<Vec<_>>();
-    let passed = target_passed && missing.is_empty();
-    let mut evidence = if paths.is_empty() { missing } else { paths };
+    let scoped_failures = gate_failures
+        .iter()
+        .filter(|failure| failure_matches_capability(failure, required_kinds))
+        .cloned()
+        .collect::<Vec<_>>();
+    let unscoped_failures = gate_failures
+        .iter()
+        .filter(|failure| !failure_matches_any_capability(failure))
+        .cloned()
+        .collect::<Vec<_>>();
+    let passed = missing.is_empty() && scoped_failures.is_empty() && unscoped_failures.is_empty();
+    let mut evidence = paths;
+    extend_unique_strings(&mut evidence, missing);
     if passed {
         evidence.push(success_evidence.to_owned());
-    } else if !target_passed {
-        evidence.push("target validation has gate failures".to_owned());
+    } else {
+        extend_unique_strings(&mut evidence, scoped_failures);
+        extend_unique_strings(&mut evidence, unscoped_failures);
     }
 
     ArtifactCapabilityCheck {
@@ -3240,6 +3267,33 @@ fn artifact_capability_check(
         passed,
         evidence,
     }
+}
+
+fn extend_unique_strings(values: &mut Vec<String>, next_values: Vec<String>) {
+    for value in next_values {
+        if !values.iter().any(|known| known == &value) {
+            values.push(value);
+        }
+    }
+}
+
+fn failure_matches_any_capability(failure: &str) -> bool {
+    ["transaction", "corpus", "schema", "replay", "report"]
+        .iter()
+        .any(|kind| failure_matches_capability(failure, &[*kind]))
+}
+
+fn failure_matches_capability(failure: &str, required_kinds: &[&str]) -> bool {
+    required_kinds
+        .iter()
+        .any(|kind| failure_mentions_artifact_kind(failure, kind))
+}
+
+fn failure_mentions_artifact_kind(failure: &str, kind: &str) -> bool {
+    failure.contains(&format!("missing {kind} artifact"))
+        || failure.contains(&format!("{kind} artifact"))
+        || failure.starts_with(kind)
+        || failure.contains(&format!(" {kind} "))
 }
 
 fn validate_artifact_manifest_evidence_keys(manifest_path: &Path, gate_failures: &mut Vec<String>) {
@@ -8296,6 +8350,25 @@ mod tests {
             validation.gate_failures,
             vec!["target-a: missing replay artifact"]
         );
+        let target = &validation.targets[0];
+        let replay_check = target
+            .capability_checks
+            .iter()
+            .find(|check| check.id == "replayDiff")
+            .expect("replay capability check should exist");
+        assert!(!replay_check.passed);
+        assert_eq!(replay_check.evidence, vec!["missing replay artifact"]);
+        for check in target
+            .capability_checks
+            .iter()
+            .filter(|check| check.id != "replayDiff")
+        {
+            assert!(
+                check.passed,
+                "capability {} should not fail because replay is missing: {:?}",
+                check.id, check
+            );
+        }
     }
 
     #[test]
@@ -11593,6 +11666,51 @@ mod tests {
                     .contains("validation target count 99 does not match expected target count 1")
             }),
             "expected stale validation artifact failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_accepts_legacy_validation_artifact_without_capability_checks() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let manifest_path = temp_dir.path().join("artifacts.json");
+        let current_validation = super::validate_artifact_manifest_bundle_for_generation(
+            &sample_validation_manifest(),
+            &manifest_path,
+        )
+        .expect("current validation should be generated");
+        let mut legacy_validation =
+            serde_json::to_value(&current_validation).expect("validation should serialize");
+        for target in legacy_validation["targets"]
+            .as_array_mut()
+            .expect("targets should be an array")
+        {
+            target
+                .as_object_mut()
+                .expect("target validation should be an object")
+                .remove("capabilityChecks");
+        }
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "validation.json",
+            &legacy_validation.to_string(),
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .push(super::SmokeArtifactManifestEntry::new(
+                "validation",
+                "validation.json",
+                None,
+            ));
+
+        let validation = super::validate_artifact_manifest_bundle(&manifest, &manifest_path, None)
+            .expect("manifest validation should run");
+
+        assert!(
+            validation.passed,
+            "expected legacy validation artifact to remain compatible, got {:?}",
             validation.gate_failures
         );
     }
