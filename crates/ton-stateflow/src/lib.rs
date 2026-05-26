@@ -118,6 +118,16 @@ pub struct StateMachineEdge {
     #[serde(default = "default_state_machine_confidence")]
     pub confidence: String,
     pub examples: Vec<String>,
+    #[serde(default)]
+    pub state_evidence: Vec<StateMachineStateEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateMachineStateEvidence {
+    pub tx_hash: String,
+    pub pre_state: String,
+    pub post_state: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1334,20 +1344,21 @@ pub fn render_state_flow_report(
     } else {
         writeln!(
             report,
-            "| From | To | Opcode | Count | Confidence | Evidence |"
+            "| From | To | Opcode | Count | Confidence | Evidence | State evidence |"
         )
         .ok();
-        writeln!(report, "| --- | --- | --- | ---: | --- | --- |").ok();
+        writeln!(report, "| --- | --- | --- | ---: | --- | --- | --- |").ok();
         for edge in &schema.state_machine.edges {
             writeln!(
                 report,
-                "| {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} |",
                 markdown_escape(&edge.from_status),
                 markdown_escape(&edge.to_status),
                 markdown_code_opt(edge.opcode.as_deref()),
                 edge.count,
                 markdown_escape(&edge.confidence),
                 markdown_code_list(&edge.examples),
+                markdown_escape(&format_state_machine_state_evidence(&edge.state_evidence)),
             )
             .ok();
         }
@@ -1570,7 +1581,10 @@ fn infer_risk_points(
 
 fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
     let mut by_node = BTreeMap::<String, (usize, usize, BTreeSet<String>)>::new();
-    let mut by_edge = BTreeMap::<(String, String, Option<String>), (usize, Vec<String>)>::new();
+    let mut by_edge = BTreeMap::<
+        (String, String, Option<String>),
+        (usize, Vec<String>, Vec<StateMachineStateEvidence>),
+    >::new();
     for tx in transactions {
         {
             let entry = by_node.entry(tx.state.pre.status.clone()).or_default();
@@ -1590,6 +1604,7 @@ fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
         let entry = by_edge.entry(key).or_default();
         entry.0 += 1;
         entry.1.push(tx.query_hash.clone());
+        entry.2.push(state_machine_state_evidence(tx));
     }
 
     StateMachineGraph {
@@ -1611,17 +1626,45 @@ fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
         edges: by_edge
             .into_iter()
             .map(
-                |((from_status, to_status, opcode), (count, examples))| StateMachineEdge {
-                    from_status,
-                    to_status,
-                    opcode,
-                    count,
-                    confidence: state_machine_edge_confidence(count).to_owned(),
-                    examples,
+                |((from_status, to_status, opcode), (count, examples, state_evidence))| {
+                    StateMachineEdge {
+                        from_status,
+                        to_status,
+                        opcode,
+                        count,
+                        confidence: state_machine_edge_confidence(count).to_owned(),
+                        examples,
+                        state_evidence,
+                    }
                 },
             )
             .collect(),
     }
+}
+
+fn state_machine_state_evidence(tx: &StateFlowTx) -> StateMachineStateEvidence {
+    let (pre_state, post_state) = state_snapshot_surface_labels(&tx.state.pre, &tx.state.post);
+    StateMachineStateEvidence {
+        tx_hash: tx.query_hash.clone(),
+        pre_state,
+        post_state,
+    }
+}
+
+fn format_state_machine_state_evidence(evidence: &[StateMachineStateEvidence]) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|item| {
+            format!(
+                "{}: {} -> {}",
+                item.tx_hash, item.pre_state, item.post_state
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn default_state_machine_confidence() -> String {
@@ -1820,7 +1863,7 @@ pub fn replay_diff_surface(replay: &StateFlowReplayDiff) -> ReplayDiffSurface {
     }
 
     if replay.diff.state_changed == Some(true) {
-        let (baseline_label, replay_label) = replay_state_surface_labels(
+        let (baseline_label, replay_label) = optional_state_snapshot_surface_labels(
             replay.baseline.state.as_ref(),
             replay.replay.state.as_ref(),
         );
@@ -1944,19 +1987,27 @@ fn replay_diff_change(
     }
 }
 
-fn replay_state_surface_labels(
+fn optional_state_snapshot_surface_labels(
     baseline: Option<&ShardAccountSnapshot>,
     replay: Option<&ShardAccountSnapshot>,
 ) -> (String, String) {
     if let Some((baseline, replay)) = baseline.zip(replay) {
-        if baseline.status == replay.status {
-            return (
-                replay_state_fingerprint(baseline),
-                replay_state_fingerprint(replay),
-            );
-        }
+        return state_snapshot_surface_labels(baseline, replay);
     }
     (replay_state_label(baseline), replay_state_label(replay))
+}
+
+fn state_snapshot_surface_labels(
+    baseline: &ShardAccountSnapshot,
+    replay: &ShardAccountSnapshot,
+) -> (String, String) {
+    if baseline.status == replay.status {
+        return (
+            state_snapshot_fingerprint(baseline),
+            state_snapshot_fingerprint(replay),
+        );
+    }
+    (baseline.status.clone(), replay.status.clone())
 }
 
 fn replay_state_label(state: Option<&ShardAccountSnapshot>) -> String {
@@ -1965,7 +2016,7 @@ fn replay_state_label(state: Option<&ShardAccountSnapshot>) -> String {
         .unwrap_or_else(|| "n/a".to_owned())
 }
 
-fn replay_state_fingerprint(state: &ShardAccountSnapshot) -> String {
+fn state_snapshot_fingerprint(state: &ShardAccountSnapshot) -> String {
     format!(
         "{} balance {} lt {} last {} code {} data {}",
         state.status,
@@ -4869,8 +4920,51 @@ mod tests {
         assert!(report.contains("| active | 2 | 0 | 2 | medium | `tx-a`, `tx-b` |"));
         assert!(report.contains("| none | 2 | 2 | 0 | medium | `tx-a`, `tx-b` |"));
         assert!(report.contains("## State Machine Evidence"));
-        assert!(report.contains("| From | To | Opcode | Count | Confidence | Evidence |"));
-        assert!(report.contains("| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |"));
+        assert!(
+            report.contains(
+                "| From | To | Opcode | Count | Confidence | Evidence | State evidence |"
+            )
+        );
+        assert!(report.contains("| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` | tx-a: none -> active; tx-b: none -> active |"));
+    }
+
+    #[test]
+    fn state_machine_edges_include_state_fingerprint_evidence() {
+        let mut flow = sample_flow("tx-a", Some("0x00000001"));
+        flow.state.pre.status = "active".to_owned();
+        flow.state.pre.balance_nanotons = "1".to_owned();
+        flow.state.pre.last_trans_lt = 41;
+        flow.state.pre.last_trans_hash = "10".to_owned();
+        flow.state.pre.code_hash = Some("code".to_owned());
+        flow.state.pre.data_hash = Some("data".to_owned());
+        flow.state.post.status = "active".to_owned();
+        flow.state.post.balance_nanotons = "2".to_owned();
+        flow.state.post.last_trans_lt = 42;
+        flow.state.post.last_trans_hash = "11".to_owned();
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![flow],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["stateMachine"]["edges"][0]["stateEvidence"][0],
+            serde_json::json!({
+                "txHash": "tx-a",
+                "preState": "active balance 1 lt 41 last 10 code code data data",
+                "postState": "active balance 2 lt 42 last 11 code code data data"
+            })
+        );
     }
 
     #[test]

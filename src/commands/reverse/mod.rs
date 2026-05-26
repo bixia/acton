@@ -2360,6 +2360,21 @@ fn validate_schema_state_machine_evidence_keys(
             }
         }
         validate_schema_confidence_label(edge, &prefix, gate_failures);
+        if let Some(state_evidence) = edge.get("stateEvidence").and_then(|value| value.as_array()) {
+            for (evidence_index, evidence) in state_evidence.iter().enumerate() {
+                let evidence_prefix = format!("{prefix} stateEvidence[{evidence_index}]");
+                for (label, path) in [
+                    ("tx hash", &["txHash"][..]),
+                    ("pre state", &["preState"][..]),
+                    ("post state", &["postState"][..]),
+                ] {
+                    if !json_path_exists(evidence, path) {
+                        gate_failures
+                            .push(format!("{evidence_prefix} missing {label} evidence key"));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -6093,6 +6108,73 @@ fn validate_schema_state_machine_edge_matches_corpus(
             gate_failures,
         );
     }
+
+    for evidence in &edge.state_evidence {
+        let Some(corpus_flow) = corpus
+            .transactions
+            .iter()
+            .find(|tx| tx.query_hash == evidence.tx_hash)
+        else {
+            gate_failures.push(format!(
+                "schema state-machine edge state evidence {} is not present in corpus transactions",
+                evidence.tx_hash
+            ));
+            continue;
+        };
+        let expected = state_machine_state_evidence_for_flow(corpus_flow);
+        validate_evidence_text_field(
+            "schema state-machine edge pre state evidence",
+            &evidence.pre_state,
+            "corpus pre state evidence",
+            &expected.pre_state,
+            &evidence.tx_hash,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema state-machine edge post state evidence",
+            &evidence.post_state,
+            "corpus post state evidence",
+            &expected.post_state,
+            &evidence.tx_hash,
+            gate_failures,
+        );
+    }
+}
+
+fn state_machine_state_evidence_for_flow(
+    flow: &StateFlowTx,
+) -> ton_stateflow::StateMachineStateEvidence {
+    let (pre_state, post_state) = state_snapshot_surface_labels(&flow.state.pre, &flow.state.post);
+    ton_stateflow::StateMachineStateEvidence {
+        tx_hash: flow.query_hash.clone(),
+        pre_state,
+        post_state,
+    }
+}
+
+fn state_snapshot_surface_labels(
+    pre: &ShardAccountSnapshot,
+    post: &ShardAccountSnapshot,
+) -> (String, String) {
+    if pre.status == post.status {
+        return (
+            state_snapshot_fingerprint(pre),
+            state_snapshot_fingerprint(post),
+        );
+    }
+    (pre.status.clone(), post.status.clone())
+}
+
+fn state_snapshot_fingerprint(snapshot: &ShardAccountSnapshot) -> String {
+    format!(
+        "{} balance {} lt {} last {} code {} data {}",
+        snapshot.status,
+        snapshot.balance_nanotons,
+        snapshot.last_trans_lt,
+        snapshot.last_trans_hash,
+        snapshot.code_hash.as_deref().unwrap_or("<none>"),
+        snapshot.data_hash.as_deref().unwrap_or("<none>")
+    )
 }
 
 fn validate_schema_state_machine_node_matches_corpus(
@@ -8319,10 +8401,18 @@ fn validate_report_state_machine_evidence_header(section: &str, gate_failures: &
 }
 
 fn state_machine_evidence_report_header() -> Vec<String> {
-    ["From", "To", "Opcode", "Count", "Confidence", "Evidence"]
-        .iter()
-        .map(|header| header.to_string())
-        .collect()
+    [
+        "From",
+        "To",
+        "Opcode",
+        "Count",
+        "Confidence",
+        "Evidence",
+        "State evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
 }
 
 fn validate_report_state_machine_nodes_header(section: &str, gate_failures: &mut Vec<String>) {
@@ -8528,6 +8618,13 @@ fn validate_report_state_machine_evidence_values(
         row.get(5),
         gate_failures,
     );
+    validate_report_state_machine_evidence_cell(
+        "state evidence",
+        report_state_machine_state_evidence(&edge.state_evidence),
+        edge,
+        row.get(6),
+        gate_failures,
+    );
 }
 
 fn validate_report_state_machine_evidence_cell(
@@ -8552,6 +8649,24 @@ fn report_state_machine_evidence_label(edge: &ton_stateflow::StateMachineEdge) -
         edge.to_status,
         report_opcode_label(edge.opcode.as_deref())
     )
+}
+
+fn report_state_machine_state_evidence(
+    evidence: &[ton_stateflow::StateMachineStateEvidence],
+) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|item| {
+            format!(
+                "{}: {} -> {}",
+                item.tx_hash, item.pre_state, item.post_state
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn report_state_machine_edge_confidence(count: usize) -> &'static str {
@@ -15441,7 +15556,7 @@ mod tests {
         assert!(!validation.passed);
         assert!(
             validation.gate_failures.iter().any(|failure| failure.contains(
-                "target-a: report state machine evidence header [\"From\", \"To\", \"Opcode\", \"Count\", \"Confidence\", \"Evidence\"] is missing"
+                "target-a: report state machine evidence header [\"From\", \"To\", \"Opcode\", \"Count\", \"Confidence\", \"Evidence\", \"State evidence\"] is missing"
             )),
             "expected report state machine evidence header failure, got {:?}",
             validation.gate_failures
@@ -16004,7 +16119,16 @@ mod tests {
                         "opcode": "0x00000001",
                         "count": 2,
                         "confidence": "medium",
-                        "examples": ["tx-a", "tx-b"]
+                        "examples": ["tx-a", "tx-b"],
+                        "stateEvidence": [{
+                            "txHash": "tx-a",
+                            "preState": "none",
+                            "postState": "active"
+                        }, {
+                            "txHash": "tx-b",
+                            "preState": "none",
+                            "postState": "active"
+                        }]
                     }]
                 },
                 "storageLayout": {"fields": []},
@@ -16249,7 +16373,16 @@ mod tests {
                         "opcode": "0x00000001",
                         "count": 2,
                         "confidence": "medium",
-                        "examples": ["tx-a", "tx-b"]
+                        "examples": ["tx-a", "tx-b"],
+                        "stateEvidence": [{
+                            "txHash": "tx-a",
+                            "preState": "none",
+                            "postState": "active"
+                        }, {
+                            "txHash": "tx-b",
+                            "preState": "none",
+                            "postState": "active"
+                        }]
                     }]
                 },
                 "storageLayout": {"fields": []},
@@ -16403,7 +16536,16 @@ mod tests {
                         "opcode": "0x00000001",
                         "count": 2,
                         "confidence": "medium",
-                        "examples": ["tx-a", "tx-b"]
+                        "examples": ["tx-a", "tx-b"],
+                        "stateEvidence": [{
+                            "txHash": "tx-a",
+                            "preState": "none",
+                            "postState": "active"
+                        }, {
+                            "txHash": "tx-b",
+                            "preState": "none",
+                            "postState": "active"
+                        }]
                     }]
                 },
                 "storageLayout": {"fields": []},
@@ -18234,7 +18376,16 @@ mod tests {
                         "opcode": "0x00000001",
                         "count": 2,
                         "confidence": "medium",
-                        "examples": ["tx-a", "tx-b"]
+                        "examples": ["tx-a", "tx-b"],
+                        "stateEvidence": [{
+                            "txHash": "tx-a",
+                            "preState": "none",
+                            "postState": "active"
+                        }, {
+                            "txHash": "tx-b",
+                            "preState": "none",
+                            "postState": "active"
+                        }]
                     }]
                 },
                 "storageLayout": {"fields": []},
@@ -18542,8 +18693,8 @@ mod tests {
 
     fn sample_report_markdown_with_wrong_state_machine_evidence(address: &str) -> String {
         sample_report_markdown(address).replace(
-            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
-            "| none | active | `0x00000001` | 9 | medium | `tx-a` |",
+            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` | tx-a: none -> active; tx-b: none -> active |",
+            "| none | active | `0x00000001` | 9 | medium | `tx-a` | tx-a: none -> active |",
         )
     }
 
@@ -18551,8 +18702,8 @@ mod tests {
         address: &str,
     ) -> String {
         sample_report_markdown(address).replace(
-            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
-            "| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |",
+            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` | tx-a: none -> active; tx-b: none -> active |",
+            "| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` | tx-a: none -> active; tx-b: none -> active |",
         )
     }
 
@@ -18575,9 +18726,9 @@ mod tests {
     fn sample_report_markdown_with_legacy_state_machine_evidence_columns(address: &str) -> String {
         sample_report_markdown(address).replace(
             "## State Machine Evidence\n\
-             | From | To | Opcode | Count | Confidence | Evidence |\n\
-             | --- | --- | --- | ---: | --- | --- |\n\
-             | none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |",
+             | From | To | Opcode | Count | Confidence | Evidence | State evidence |\n\
+             | --- | --- | --- | ---: | --- | --- | --- |\n\
+             | none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` | tx-a: none -> active; tx-b: none -> active |",
             "## State Machine Evidence\n\
              | From | To | Opcode | Count | Evidence |\n\
              | --- | --- | --- | ---: | --- |\n\
@@ -18698,7 +18849,7 @@ mod tests {
             ""
         };
         let state_machine_evidence_row = if include_schema_summary_rows {
-            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |\n"
+            "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` | tx-a: none -> active; tx-b: none -> active |\n"
         } else {
             ""
         };
@@ -18785,8 +18936,8 @@ mod tests {
              {state_machine_node_rows}\
              \n\
              ## State Machine Evidence\n\
-             | From | To | Opcode | Count | Confidence | Evidence |\n\
-             | --- | --- | --- | ---: | --- | --- |\n\
+             | From | To | Opcode | Count | Confidence | Evidence | State evidence |\n\
+             | --- | --- | --- | ---: | --- | --- | --- |\n\
              {state_machine_evidence_row}\
              \n\
              ## Unknown Fields\n\

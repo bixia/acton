@@ -120,6 +120,13 @@ export interface StateMachineEdge {
   readonly count: number
   readonly confidence?: string | null
   readonly examples: readonly string[]
+  readonly stateEvidence?: readonly StateMachineStateEvidence[] | null
+}
+
+export interface StateMachineStateEvidence {
+  readonly txHash: string
+  readonly preState: string
+  readonly postState: string
 }
 
 export interface AuditSignal {
@@ -1822,6 +1829,7 @@ function reportStateMachineEvidenceRows(report: StateFlowReport): readonly Summa
       tableCountLabel(rowValue(row, "Count"), "transition"),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
       tableValueLabel("evidence", rowValue(row, "Evidence")),
+      tableValueLabel("state", rowValue(row, "State evidence")),
     ]
       .filter((value): value is string => value !== undefined)
       .join(" · "),
@@ -2899,9 +2907,16 @@ function stateMachineEdgeDetail(edge: StateMachineEdge): string {
     edge.examples.length > 0
       ? `examples ${edge.examples.map(hash => shortHash(hash)).join(", ")}`
       : undefined,
+    edge.stateEvidence && edge.stateEvidence.length > 0
+      ? `state ${stateMachineStateEvidenceDetail(edge.stateEvidence)}`
+      : undefined,
   ]
     .filter((value): value is string => value !== undefined)
     .join(" · ")
+}
+
+function stateMachineStateEvidenceDetail(evidence: readonly StateMachineStateEvidence[]): string {
+  return evidence.map(item => `${item.txHash}: ${item.preState} -> ${item.postState}`).join("; ")
 }
 
 function stateMachineNodeDetail(node: StateMachineNode): string {

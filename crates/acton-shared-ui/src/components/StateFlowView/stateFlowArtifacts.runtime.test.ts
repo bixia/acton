@@ -813,9 +813,9 @@ stateDiagram-v2
 | frozen | 2 | 0 | 2 | medium | \`tx-a\`, \`tx-b\` |
 
 ## State Machine Evidence
-| From | To | Opcode | Count | Confidence | Evidence |
-| --- | --- | --- | ---: | --- | --- |
-| active | frozen | \`0x00000001\` | 2 | medium | \`tx-a\`, \`tx-b\` |
+| From | To | Opcode | Count | Confidence | Evidence | State evidence |
+| --- | --- | --- | ---: | --- | --- | --- |
+| active | frozen | \`0x00000001\` | 2 | medium | \`tx-a\`, \`tx-b\` | tx-a: active balance 100 lt 41 last aa code code-a data data-a -> frozen balance 95 lt 42 last bb code code-b data data-b |
 
 ## Replay Diffs
 | Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |
@@ -1450,7 +1450,7 @@ assert(
 )
 assert(
   reportStateMachineEvidenceRows[0]?.detail ===
-    "2 transitions · confidence medium · evidence tx-a, tx-b",
+    "2 transitions · confidence medium · evidence tx-a, tx-b · state tx-a: active balance 100 lt 41 last aa code code-a data data-a -> frozen balance 95 lt 42 last bb code code-b data data-b",
   "expected report state machine evidence detail",
 )
 const reportReplayDiffRows = sectionRows(reportSummary, "Replay Diffs")
