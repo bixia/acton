@@ -14,7 +14,10 @@ use ton_stateflow::{
 };
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, Store};
-use tycho_types::models::{IntAddr, Message, MsgInfo, StdAddr, StdAddrFormat};
+use tycho_types::models::{
+    IntAddr, LibRef, Message, MsgInfo, OutAction, OutActionsRevIter, RelaxedMsgInfo, StdAddr,
+    StdAddrFormat,
+};
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
 const VALIDATION_ARTIFACT_PATH: &str = "validation.json";
@@ -2671,6 +2674,13 @@ fn validate_replay_observation_cell_consistency(
             gate_failures,
         );
     }
+    validate_c5_action_list_matches_decoded(
+        label,
+        observation.c5.as_ref(),
+        &observation.out_actions,
+        tx_hash,
+        gate_failures,
+    );
     for action in &observation.out_actions {
         if let Some(body) = &action.body {
             validate_cell_artifact_decodable_consistency(
@@ -2743,6 +2753,13 @@ fn validate_state_flow_tx_cell_consistency(
             gate_failures,
         );
     }
+    validate_c5_action_list_matches_decoded(
+        &prefix,
+        flow.c5.as_ref(),
+        &flow.out_actions,
+        &flow.query_hash,
+        gate_failures,
+    );
     for action in &flow.out_actions {
         if let Some(body) = &action.body {
             validate_cell_artifact_decodable_consistency(
@@ -2771,6 +2788,118 @@ fn validate_state_flow_tx_cell_consistency(
                 &flow.query_hash,
                 gate_failures,
             );
+        }
+    }
+}
+
+fn validate_c5_action_list_matches_decoded(
+    label: &str,
+    c5: Option<&CellArtifact>,
+    out_actions: &[ActionEffect],
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(c5) = c5 else {
+        return;
+    };
+    let Some(decoded) = decoded_c5_action_effects(c5) else {
+        return;
+    };
+    validate_action_list_matches_corpus(
+        &format!("{label} outActions"),
+        out_actions,
+        "decoded c5 outActions",
+        &decoded,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn decoded_c5_action_effects(c5: &CellArtifact) -> Option<Vec<ActionEffect>> {
+    let cell = Boc::decode_base64(&c5.boc64).ok()?;
+    let slice = cell.as_slice().ok()?;
+    let mut actions = OutActionsRevIter::new(slice)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    actions.reverse();
+    actions
+        .iter()
+        .enumerate()
+        .map(|(index, action)| action_effect_from_decoded_c5(index, action))
+        .collect()
+}
+
+fn action_effect_from_decoded_c5(index: usize, action: &OutAction) -> Option<ActionEffect> {
+    match action {
+        OutAction::SendMsg { mode, out_msg } => {
+            let msg = out_msg.load().ok()?;
+            let destination = match &msg.info {
+                RelaxedMsgInfo::Int(info) => Some(format_int_addr(&info.dst)),
+                RelaxedMsgInfo::ExtOut(info) => info.dst.as_ref().map(ToString::to_string),
+            };
+            let body = msg
+                .body
+                .0
+                .apply(&msg.body.1)
+                .ok()
+                .and_then(|slice| cell_artifact_from_message_body(&slice));
+            Some(ActionEffect {
+                index,
+                kind: "send-message".to_owned(),
+                mode: Some(format!("{mode:?}")),
+                value_nanotons: match &msg.info {
+                    RelaxedMsgInfo::Int(info) => Some(info.value.tokens.to_string()),
+                    RelaxedMsgInfo::ExtOut(_) => None,
+                },
+                destination,
+                body,
+                code: None,
+                library: None,
+            })
+        }
+        OutAction::SetCode { new_code } => Some(ActionEffect {
+            index,
+            kind: "set-code".to_owned(),
+            mode: None,
+            value_nanotons: None,
+            destination: None,
+            body: None,
+            code: Some(cell_artifact_from_cell(new_code)),
+            library: None,
+        }),
+        OutAction::ReserveCurrency { mode, value } => Some(ActionEffect {
+            index,
+            kind: "reserve-currency".to_owned(),
+            mode: Some(format!("{mode:?}")),
+            value_nanotons: Some(value.tokens.to_string()),
+            destination: None,
+            body: None,
+            code: None,
+            library: None,
+        }),
+        OutAction::ChangeLibrary { mode, lib } => {
+            let library = match lib {
+                LibRef::Hash(hash) => LibraryEffect {
+                    mode: format!("{mode:?}"),
+                    hash: Some(hash.to_string()),
+                    cell: None,
+                },
+                LibRef::Cell(cell) => LibraryEffect {
+                    mode: format!("{mode:?}"),
+                    hash: Some(hex::encode(cell.hash(0))),
+                    cell: Some(cell_artifact_from_cell(cell)),
+                },
+            };
+            Some(ActionEffect {
+                index,
+                kind: "change-library".to_owned(),
+                mode: Some(format!("{mode:?}")),
+                value_nanotons: None,
+                destination: None,
+                body: None,
+                code: None,
+                library: Some(library),
+            })
         }
     }
 }
@@ -3019,13 +3148,17 @@ fn cell_artifact_from_message_body(body: &CellSlice<'_>) -> Option<CellArtifact>
     let mut builder = CellBuilder::new();
     body.store_into(&mut builder, Cell::empty_context()).ok()?;
     let cell = builder.build().ok()?;
+    Some(cell_artifact_from_cell(&cell))
+}
+
+fn cell_artifact_from_cell(cell: &Cell) -> CellArtifact {
     let slice = cell.as_slice_allow_exotic();
-    Some(CellArtifact {
+    CellArtifact {
         boc64: Boc::encode_base64(cell.clone()),
         hash: hex::encode(cell.hash(0)),
         bits: slice.size_bits(),
         refs: slice.size_refs(),
-    })
+    }
 }
 
 fn decoded_message_bounced(message: &Message<'_>) -> bool {
@@ -12915,7 +13048,9 @@ mod tests {
     use tycho_types::{
         boc::Boc,
         cell::{Cell, CellBuilder, CellFamily, Store},
-        models::{IntMsgInfo, MsgInfo, OwnedMessage},
+        models::{
+            CurrencyCollection, IntMsgInfo, MsgInfo, OutAction, OwnedMessage, ReserveCurrencyFlags,
+        },
     };
 
     #[test]
@@ -16863,6 +16998,35 @@ mod tests {
                     && failure.contains("99 for tx-a does not match decoded message value 0")
             }),
             "expected decoded message value mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_c5_action_mismatch_with_decoded_actions() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["c5"] = test_out_actions_cell_json(&[test_reserve_currency_action()]);
+        tx["outActions"] = serde_json::json!([test_mismatched_send_message_out_action_json()]);
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json outActions[0] kind")
+                    && failure.contains(
+                        "send-message for tx-a does not match decoded c5 outActions[0] kind reserve-currency",
+                    )
+            }),
+            "expected decoded c5 action mismatch failure, got {:?}",
             gate_failures
         );
     }
@@ -20850,6 +21014,62 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_replay_validation_rejects_c5_action_mismatch_with_decoded_actions() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["c5"] = test_out_actions_cell_json(&[test_reserve_currency_action()]);
+        baseline_observation["outActions"] =
+            serde_json::json!([test_mismatched_send_message_out_action_json()]);
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline outActions[0] kind")
+                    && failure.contains(
+                        "send-message for tx-a does not match decoded c5 outActions[0] kind reserve-currency",
+                    )
+            }),
+            "expected replay decoded c5 action mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_replay_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let replay_path = temp_dir.path().join("replay.json");
@@ -22454,6 +22674,52 @@ mod tests {
 
     fn test_cell_shape_json(body_word: u32, hash: Option<&str>) -> serde_json::Value {
         test_cell_artifact_json(body_word, hash)
+    }
+
+    fn test_out_actions_cell_json(actions: &[OutAction]) -> serde_json::Value {
+        let cell = test_out_actions_cell(actions);
+        let slice = cell.as_slice_allow_exotic();
+        serde_json::json!({
+            "boc64": Boc::encode_base64(cell.clone()),
+            "hash": hex::encode(cell.hash(0)),
+            "bits": slice.size_bits(),
+            "refs": slice.size_refs()
+        })
+    }
+
+    fn test_out_actions_cell(actions: &[OutAction]) -> Cell {
+        let mut head = Cell::empty_cell();
+        for action in actions {
+            let mut builder = CellBuilder::new();
+            builder
+                .store_reference(head)
+                .expect("previous action should store");
+            action
+                .store_into(&mut builder, Cell::empty_context())
+                .expect("action should store");
+            head = builder.build().expect("out actions cell should build");
+        }
+        head
+    }
+
+    fn test_reserve_currency_action() -> OutAction {
+        OutAction::ReserveCurrency {
+            mode: ReserveCurrencyFlags::empty(),
+            value: CurrencyCollection::new(7),
+        }
+    }
+
+    fn test_mismatched_send_message_out_action_json() -> serde_json::Value {
+        serde_json::json!({
+            "index": 0,
+            "kind": "send-message",
+            "mode": "SendMsgFlags(0x0)",
+            "valueNanotons": "11",
+            "destination": "dst",
+            "body": null,
+            "code": null,
+            "library": null
+        })
     }
 
     fn test_to_cell<T: Store + ?Sized>(obj: &T) -> Cell {
