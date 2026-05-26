@@ -2974,7 +2974,7 @@ fn validate_message_artifact_cell_consistency(
     gate_failures: &mut Vec<String>,
 ) {
     validate_message_artifact_decodable_consistency(label, message, tx_hash, gate_failures);
-    validate_cell_artifact_decodable_consistency(
+    validate_required_cell_artifact_decodable_consistency(
         &format!("{label} body"),
         &message.body,
         tx_hash,
@@ -16759,6 +16759,33 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_corpus_validation_rejects_malformed_transaction_message_body_cell() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let corpus_path = temp_dir.path().join("corpus.json");
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][0]["inbound"]["body"]["boc64"] = serde_json::json!("not-a-boc");
+        fs::write(&corpus_path, corpus.to_string()).expect("corpus artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "corpus",
+            "corpus.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_corpus_artifact(&corpus_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("corpus artifact corpus.json inbound body")
+                    && failure.contains("for tx-a is not a decodable cell")
+            }),
+            "expected malformed corpus transaction message body failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -17017,6 +17044,33 @@ mod tests {
                     && failure.contains("is not a decodable message")
             }),
             "expected malformed message BoC failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_malformed_message_body_cell() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        tx["inbound"]["body"]["boc64"] = serde_json::json!("not-a-boc");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound body")
+                    && failure.contains("for tx-a is not a decodable cell")
+            }),
+            "expected malformed message body failure, got {:?}",
             gate_failures
         );
     }
@@ -21151,6 +21205,59 @@ mod tests {
                     && failure.contains("is not a decodable message")
             }),
             "expected replay malformed message BoC failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_replay_validation_rejects_malformed_message_body_cell() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        baseline_observation["inbound"]["body"]["boc64"] = serde_json::json!("not-a-boc");
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline inbound body")
+                    && failure.contains("for tx-a is not a decodable cell")
+            }),
+            "expected replay malformed message body failure, got {:?}",
             gate_failures
         );
     }
