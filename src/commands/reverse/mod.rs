@@ -2982,9 +2982,15 @@ fn validate_message_artifact_decodable_consistency(
     gate_failures: &mut Vec<String>,
 ) {
     let Ok(cell) = Boc::decode_base64(&message.message_boc64) else {
+        gate_failures.push(format!(
+            "{label} messageBoc64 for {tx_hash} is not a decodable message"
+        ));
         return;
     };
     let Ok(decoded) = cell.parse::<Message<'_>>() else {
+        gate_failures.push(format!(
+            "{label} messageBoc64 for {tx_hash} is not a decodable message"
+        ));
         return;
     };
     validate_message_header_matches_decoded(label, message, &decoded, tx_hash, gate_failures);
@@ -15853,6 +15859,7 @@ mod tests {
     fn artifact_manifest_validation_rejects_schema_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
+        let inbound_body_hash = sample_inbound_body_hash();
         let schema_path = temp_dir.path().join("target-a/schema.json");
         let mut schema: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
@@ -15871,7 +15878,7 @@ mod tests {
             temp_dir.path(),
             "target-a/report.md",
             &report.replace(
-                "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
+                &format!("| `0x00000001` | `tx-a` | `{inbound_body_hash}` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |"),
                 "| `0x00000001` | `tx-a` | `wrong-body-hash` | 32/0 | none -> frozen | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
             ),
         );
@@ -15888,7 +15895,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: schema evidence inbound body hash wrong-body-hash for tx-a does not match corpus inbound body hash hash",
+                    "target-a: schema evidence inbound body hash wrong-body-hash for tx-a does not match corpus inbound body hash",
                 )
             }),
             "expected schema evidence body hash mismatch failure, got {:?}",
@@ -15989,7 +15996,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: schema opcode candidate body hashes wrong-body-hash for 0x00000001 does not match corpus body hashes hash",
+                    "target-a: schema opcode candidate body hashes wrong-body-hash for 0x00000001 does not match corpus body hashes",
                 )
             }),
             "expected opcode body hash mismatch failure, got {:?}",
@@ -16742,7 +16749,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: transaction inbound body hash wrong-body-hash for tx-a does not match corpus inbound body hash hash",
+                    "target-a: transaction inbound body hash wrong-body-hash for tx-a does not match corpus inbound body hash",
                 )
             }),
             "expected transaction body hash mismatch failure, got {:?}",
@@ -16900,7 +16907,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: transaction inbound dst wrong-dst for tx-a does not match corpus inbound dst dst",
+                    "target-a: transaction inbound dst wrong-dst for tx-a does not match corpus inbound dst",
                 )
             }),
             "expected transaction inbound dst mismatch failure, got {:?}",
@@ -16909,7 +16916,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: transaction inbound message boc64 wrong-msg for tx-a does not match corpus inbound message boc64 msg",
+                    "target-a: transaction inbound message boc64 wrong-msg for tx-a does not match corpus inbound message boc64",
                 )
             }),
             "expected transaction inbound message BoC mismatch failure, got {:?}",
@@ -16918,7 +16925,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: transaction inbound body boc64 wrong-body for tx-a does not match corpus inbound body boc64 body",
+                    "target-a: transaction inbound body boc64 wrong-body for tx-a does not match corpus inbound body boc64",
                 )
             }),
             "expected transaction inbound body BoC mismatch failure, got {:?}",
@@ -16949,6 +16956,33 @@ mod tests {
                     && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
             }),
             "expected decodable cell hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_malformed_message_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        tx["inbound"]["messageBoc64"] = serde_json::json!("not-a-boc");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound messageBoc64")
+                    && failure.contains("is not a decodable message")
+            }),
+            "expected malformed message BoC failure, got {:?}",
             gate_failures
         );
     }
@@ -18627,9 +18661,8 @@ mod tests {
         assert!(!validation.passed);
         assert!(
             validation.gate_failures.iter().any(|failure| {
-                failure.contains(
-                    "target-a: report schema evidence body hash hash for tx tx-a is missing",
-                )
+                failure.contains("target-a: report schema evidence body hash")
+                    && failure.contains("for tx tx-a is missing")
             }),
             "expected report schema evidence body failure, got {:?}",
             validation.gate_failures
@@ -20083,7 +20116,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: replay baseline inbound body hash wrong-baseline-body for tx-a does not match corpus inbound body hash hash",
+                    "target-a: replay baseline inbound body hash wrong-baseline-body for tx-a does not match corpus inbound body hash",
                 )
             }),
             "expected replay baseline body hash mismatch failure, got {:?}",
@@ -20178,7 +20211,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: replay baseline inbound dst wrong-dst for tx-a does not match corpus inbound dst dst",
+                    "target-a: replay baseline inbound dst wrong-dst for tx-a does not match corpus inbound dst",
                 )
             }),
             "expected replay baseline inbound dst mismatch failure, got {:?}",
@@ -20187,7 +20220,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: replay baseline inbound message boc64 wrong-msg for tx-a does not match corpus inbound message boc64 msg",
+                    "target-a: replay baseline inbound message boc64 wrong-msg for tx-a does not match corpus inbound message boc64",
                 )
             }),
             "expected replay baseline inbound message BoC mismatch failure, got {:?}",
@@ -20196,7 +20229,7 @@ mod tests {
         assert!(
             validation.gate_failures.iter().any(|failure| {
                 failure.contains(
-                    "target-a: replay baseline inbound body boc64 wrong-body for tx-a does not match corpus inbound body boc64 body",
+                    "target-a: replay baseline inbound body boc64 wrong-body for tx-a does not match corpus inbound body boc64",
                 )
             }),
             "expected replay baseline inbound body BoC mismatch failure, got {:?}",
@@ -20921,9 +20954,8 @@ mod tests {
         assert!(!validation.passed);
         assert!(
             validation.gate_failures.iter().any(|failure| {
-                failure.contains(
-                    "target-a: replay replaceBody mutated-body for tx-a does not match mutation body expected-body",
-                )
+                failure.contains("target-a: replay replaceBody")
+                    && failure.contains("does not match mutation body expected-body")
             }),
             "expected replay replaceBody mismatch failure, got {:?}",
             validation.gate_failures
@@ -21024,6 +21056,59 @@ mod tests {
                     && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
             }),
             "expected replay decodable cell hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_replay_validation_rejects_malformed_message_boc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        baseline_observation["inbound"]["messageBoc64"] = serde_json::json!("not-a-boc");
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline inbound messageBoc64")
+                    && failure.contains("is not a decodable message")
+            }),
+            "expected replay malformed message BoC failure, got {:?}",
             gate_failures
         );
     }
@@ -22170,6 +22255,7 @@ mod tests {
 
     fn write_sample_validation_artifacts(out_dir: &Path) {
         let summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        let inbound_body_hash = sample_inbound_body_hash();
         write_sample_validation_artifact(
             out_dir,
             "summary.json",
@@ -22273,7 +22359,7 @@ mod tests {
                     "examples": ["tx-a", "tx-b"],
                     "evidence": [{
                         "txHash": "tx-a",
-                        "inboundBodyHash": "hash",
+                        "inboundBodyHash": inbound_body_hash.clone(),
                         "inboundBodyBits": 32,
                         "inboundBodyRefs": 0,
                         "fromStatus": "none",
@@ -22299,7 +22385,7 @@ mod tests {
                         "maxBits": 32,
                         "minRefs": 0,
                         "maxRefs": 0,
-                        "bodyHashes": ["hash"],
+                        "bodyHashes": [inbound_body_hash],
                         "fieldCandidates": []
                     },
                     "replayProbes": [],
@@ -22629,8 +22715,9 @@ mod tests {
     }
 
     fn sample_report_markdown_with_wrong_schema_evidence(address: &str) -> String {
+        let inbound_body_hash = sample_inbound_body_hash();
         sample_report_markdown(address).replace(
-            "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |",
+            &format!("| `0x00000001` | `tx-a` | `{inbound_body_hash}` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |"),
             "| `0x00000001` | `tx-a` | `wrong-body` | 16/1 | active -> none | n/a | n/a | outbound | action |",
         )
     }
@@ -22708,6 +22795,7 @@ mod tests {
         include_schema_summary_rows: bool,
         include_risk_point: bool,
     ) -> String {
+        let inbound_body_hash = sample_inbound_body_hash();
         let opcode_candidate_row = if include_schema_summary_rows {
             "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |\n"
         } else {
@@ -22729,9 +22817,11 @@ mod tests {
             ""
         };
         let schema_evidence_row = if include_schema_evidence {
-            "| `0x00000001` | `tx-a` | `hash` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
+            format!(
+                "| `0x00000001` | `tx-a` | `{inbound_body_hash}` | 32/0 | none -> active | `<none>` -> `<none>` | `<none>` -> `<none>` | none | none |\n"
+            )
         } else {
-            ""
+            String::new()
         };
         let state_edge = if include_schema_summary_rows {
             "    none --> active: 0x00000001 (2)\n"
@@ -22891,8 +22981,7 @@ mod tests {
 
     fn sample_mutated_replay_observation_json(accepted: bool) -> serde_json::Value {
         let mut observation = sample_replay_observation_json(accepted);
-        observation["inbound"]["messageBoc64"] = serde_json::json!("mutated-msg");
-        observation["inbound"]["body"] = serde_json::json!({"boc64": "mutated-body", "hash": "mutated-hash", "bits": 32, "refs": 0});
+        observation["inbound"] = test_internal_message_artifact_json(0x8000_0001);
         observation["c5"] = test_out_actions_cell_json(&[]);
         observation
     }
@@ -22932,8 +23021,14 @@ mod tests {
             .store_u32(body_word)
             .expect("body word should store");
         let body = body_builder.build().expect("body should build");
+        let info = IntMsgInfo::default();
+        let src = super::format_int_addr(&info.src);
+        let dst = super::format_int_addr(&info.dst);
+        let value_nanotons = info.value.tokens.to_string();
+        let bounced = info.bounced;
+        let bounce = info.bounce;
         let message = OwnedMessage {
-            info: MsgInfo::Int(IntMsgInfo::default()),
+            info: MsgInfo::Int(info),
             init: None,
             body: body.clone().into(),
             layout: None,
@@ -22944,11 +23039,11 @@ mod tests {
             "direction": "inbound",
             "index": null,
             "kind": "internal",
-            "src": "addr",
-            "dst": "addr",
-            "valueNanotons": "0",
-            "bounced": false,
-            "bounce": false,
+            "src": src,
+            "dst": dst,
+            "valueNanotons": value_nanotons,
+            "bounced": bounced,
+            "bounce": bounce,
             "opcode": format!("0x{body_word:08x}"),
             "messageBoc64": Boc::encode_base64(message),
             "body": {
@@ -22958,6 +23053,13 @@ mod tests {
                 "refs": 0
             }
         })
+    }
+
+    fn sample_inbound_body_hash() -> String {
+        test_internal_message_artifact_json(0x0000_0001)["body"]["hash"]
+            .as_str()
+            .expect("sample inbound body hash should be a string")
+            .to_owned()
     }
 
     fn test_cell_artifact_json(body_word: u32, hash: Option<&str>) -> serde_json::Value {
@@ -23060,19 +23162,7 @@ mod tests {
                 "pre": sample_snapshot_json("pre", "none"),
                 "post": sample_snapshot_json("post", "active")
             },
-            "inbound": {
-                "direction": "inbound",
-                "index": null,
-                "kind": "internal",
-                "src": "src",
-                "dst": "dst",
-                "valueNanotons": "1",
-                "bounced": false,
-                "bounce": true,
-                "opcode": "0x00000001",
-                "messageBoc64": "msg",
-                "body": {"boc64": "body", "hash": "hash", "bits": 32, "refs": 0}
-            },
+            "inbound": test_internal_message_artifact_json(0x0000_0001),
             "outbound": [],
             "compute": {
                 "skipped": false,
