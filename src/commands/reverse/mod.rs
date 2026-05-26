@@ -2554,11 +2554,16 @@ fn validate_state_flow_tx_artifact(
         Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
             Ok(value) => {
                 validate_state_flow_tx_evidence_keys(&value, artifact, gate_failures);
-                if let Err(err) = serde_json::from_value::<StateFlowTx>(value) {
-                    gate_failures.push(format!(
-                        "invalid {} artifact {}: {err}",
-                        artifact.kind, artifact.path
-                    ));
+                match serde_json::from_value::<StateFlowTx>(value) {
+                    Ok(flow) => {
+                        validate_state_flow_tx_cell_consistency(&flow, artifact, gate_failures);
+                    }
+                    Err(err) => {
+                        gate_failures.push(format!(
+                            "invalid {} artifact {}: {err}",
+                            artifact.kind, artifact.path
+                        ));
+                    }
                 }
             }
             Err(err) => gate_failures.push(format!(
@@ -2599,6 +2604,116 @@ fn validate_state_flow_replay_artifact(
             artifact.kind, artifact.path
         )),
     }
+}
+
+fn validate_state_flow_tx_cell_consistency(
+    flow: &StateFlowTx,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let prefix = format!("{} artifact {}", artifact.kind, artifact.path);
+    validate_message_artifact_cell_consistency(
+        &format!("{prefix} inbound"),
+        &flow.inbound,
+        &flow.query_hash,
+        gate_failures,
+    );
+    for (index, message) in flow.outbound.iter().enumerate() {
+        validate_message_artifact_cell_consistency(
+            &format!("{prefix} outbound[{index}]"),
+            message,
+            &flow.query_hash,
+            gate_failures,
+        );
+    }
+    if let Some(c5) = &flow.c5 {
+        validate_cell_artifact_decodable_consistency(
+            &format!("{prefix} c5"),
+            c5,
+            &flow.query_hash,
+            gate_failures,
+        );
+    }
+    for action in &flow.out_actions {
+        if let Some(body) = &action.body {
+            validate_cell_artifact_decodable_consistency(
+                &format!("{prefix} outActions[{}] body", action.index),
+                body,
+                &flow.query_hash,
+                gate_failures,
+            );
+        }
+        if let Some(code) = &action.code {
+            validate_cell_artifact_decodable_consistency(
+                &format!("{prefix} outActions[{}] code", action.index),
+                code,
+                &flow.query_hash,
+                gate_failures,
+            );
+        }
+        if let Some(cell) = action
+            .library
+            .as_ref()
+            .and_then(|library| library.cell.as_ref())
+        {
+            validate_cell_artifact_decodable_consistency(
+                &format!("{prefix} outActions[{}] library cell", action.index),
+                cell,
+                &flow.query_hash,
+                gate_failures,
+            );
+        }
+    }
+}
+
+fn validate_message_artifact_cell_consistency(
+    label: &str,
+    message: &MessageArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_cell_artifact_decodable_consistency(
+        &format!("{label} body"),
+        &message.body,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_cell_artifact_decodable_consistency(
+    label: &str,
+    artifact: &CellArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Ok(cell) = Boc::decode_base64(&artifact.boc64) else {
+        return;
+    };
+    let slice = cell.as_slice_allow_exotic();
+    validate_evidence_text_field(
+        &format!("{label} hash"),
+        &artifact.hash,
+        "decoded cell hash",
+        &hex::encode(cell.hash(0)),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{label} bits"),
+        artifact.bits,
+        "decoded cell bits",
+        slice.size_bits(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{label} refs"),
+        artifact.refs,
+        "decoded cell refs",
+        slice.size_refs(),
+        tx_hash,
+        gate_failures,
+    );
 }
 
 fn validate_state_flow_schema_evidence_keys(
@@ -16245,6 +16360,33 @@ mod tests {
             }),
             "expected transaction inbound body BoC mismatch failure, got {:?}",
             validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_decodable_cell_artifact_hash_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        tx["inbound"]["body"]["hash"] = serde_json::json!("wrong-hash");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound body hash")
+                    && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
+            }),
+            "expected decodable cell hash mismatch failure, got {:?}",
+            gate_failures
         );
     }
 
