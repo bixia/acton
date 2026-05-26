@@ -369,6 +369,7 @@ export interface StateFlowRunTargetSummary {
   readonly opcodeCandidateCount: number
   readonly stateEdgeCount: number
   readonly auditSignalCount: number
+  readonly unknownFieldCount?: number | null
   readonly replayCount: number
   readonly passed: boolean
   readonly gateFailures: readonly string[]
@@ -1460,6 +1461,7 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
             `opcodes ${target.opcodeCandidateCount}`,
             `state edges ${target.stateEdgeCount}`,
             `audit signals ${target.auditSignalCount}`,
+            `unknown fields ${target.unknownFieldCount ?? 0}`,
             `replay ${target.replayCount}`,
             `${targetReplayArtifactCount(target)} ${plural(targetReplayArtifactCount(target), "replay artifact")}`,
           ].join(" · "),
@@ -1822,15 +1824,19 @@ function bundleTargetRiskCounts(target: StateFlowArtifactBundleTarget): {
     (count, artifact) => count + (artifact.auditSignalCount ?? 0),
     0,
   )
+  const schemaUnknownFieldCount = schemaArtifacts.reduce(
+    (count, artifact) => count + (artifact.unknownFieldCount ?? 0),
+    0,
+  )
   return {
     auditSignalCount:
       schemaArtifacts.length > 0
         ? schemaAuditSignalCount
         : (target.summaryTarget?.auditSignalCount ?? 0),
-    unknownFieldCount: schemaArtifacts.reduce(
-      (count, artifact) => count + (artifact.unknownFieldCount ?? 0),
-      0,
-    ),
+    unknownFieldCount:
+      schemaArtifacts.length > 0
+        ? schemaUnknownFieldCount
+        : (target.summaryTarget?.unknownFieldCount ?? 0),
   }
 }
 
@@ -2144,6 +2150,7 @@ function bundleTargetStatus(target: StateFlowArtifactBundleTarget): string {
 }
 
 function bundleTargetSummaryDetail(target: StateFlowArtifactBundleTarget): string {
+  const riskCounts = bundleTargetRiskCounts(target)
   const parts = [
     target.manifestArtifacts.length > 0
       ? `loaded ${target.loadedArtifacts.length}/${target.manifestArtifacts.length}`
@@ -2153,6 +2160,7 @@ function bundleTargetSummaryDetail(target: StateFlowArtifactBundleTarget): strin
     parts.push(
       `${target.summaryTarget.retracedCount}/${target.summaryTarget.sourceTxCount} retraced`,
       `${target.summaryTarget.replayCount} ${plural(target.summaryTarget.replayCount, "replay")}`,
+      `unknown fields ${riskCounts.unknownFieldCount}`,
       `${target.summaryTarget.failureCount} failures`,
     )
   }

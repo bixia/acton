@@ -265,6 +265,7 @@ const runSummary = {
       opcodeCandidateCount: 1,
       stateEdgeCount: 1,
       auditSignalCount: 1,
+      unknownFieldCount: 1,
       replayCount: 1,
       passed: true,
       gateFailures: [],
@@ -684,9 +685,59 @@ assert(
         row.value === "passed" &&
         row.detail?.includes("sample-protocol sample-category sample contract") === true &&
         row.detail?.includes("loaded 7/7") === true &&
+        row.detail?.includes("unknown fields 1") === true &&
         row.detail?.includes("capabilities 2/2") === true,
     ) === true,
   "expected artifact bundle target rows to merge manifest, summary, and validation evidence",
+)
+const summaryOnlyBundleView = summarizeStateFlowArtifact(
+  parseStateFlowArtifactBundleFromSources([
+    {
+      name: "out/artifacts.json",
+      raw: JSON.stringify({
+        ...artifactManifest,
+        artifacts: [{kind: "runSummary", path: "out/summary.json", targetId: undefined}],
+      }),
+    },
+    {name: "out/summary.json", raw: JSON.stringify(runSummary)},
+  ]),
+)
+assert(
+  summaryOnlyBundleView.sections
+    .find(section => section.title === "Risk Matrix")
+    ?.rows.some(
+      row =>
+        row.label === "sample-protocol / sample-category" &&
+        row.detail?.includes("audit signals 1") === true &&
+        row.detail?.includes("unknown fields 1") === true,
+    ) === true,
+  "expected artifact bundle risk matrix to use run summary unknown-field counts when schema artifacts are not loaded",
+)
+const legacySummary = {
+  ...runSummary,
+  targets: runSummary.targets.map(({unknownFieldCount: _unknownFieldCount, ...target}) => target),
+}
+const legacySummaryWithSchemaBundleView = summarizeStateFlowArtifact(
+  parseStateFlowArtifactBundleFromSources([
+    {name: "out/artifacts.json", raw: JSON.stringify(artifactManifest)},
+    {name: "out/summary.json", raw: JSON.stringify(legacySummary)},
+    {name: "out/validation.json", raw: JSON.stringify(artifactValidation)},
+    {name: "out/target-a/corpus.json", raw: JSON.stringify(corpus)},
+    {name: "out/target-a/schema.json", raw: JSON.stringify(schema)},
+    {name: "out/target-a/transaction-0.json", raw: JSON.stringify(stateFlowTx)},
+    {name: "out/target-a/retrace.json", raw: JSON.stringify(stateFlowTx)},
+    {name: "out/target-a/replay.json", raw: JSON.stringify(replay)},
+    {name: "out/target-a/replay-probe-query-id-32-64.json", raw: JSON.stringify(replay)},
+    {name: "out/target-a/report.md", raw: reportMarkdown},
+  ]),
+)
+assert(
+  legacySummaryWithSchemaBundleView.sections
+    .find(section => section.title === "Targets")
+    ?.rows.some(
+      row => row.label === "target-a" && row.detail?.includes("unknown fields 1") === true,
+    ) === true,
+  "expected artifact bundle target rows to compute unknown-field counts from loaded schema artifacts when run summary lacks the field",
 )
 assert(
   bundleView.sections

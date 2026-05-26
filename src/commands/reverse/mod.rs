@@ -1025,6 +1025,7 @@ fn run_state_flow_targets(
             opcode_candidate_count: schema.opcode_candidates.len(),
             state_edge_count: schema.state_machine.edges.len(),
             audit_signal_count: schema.audit_signals.len(),
+            unknown_field_count: ton_stateflow::schema_unknown_field_count(&schema),
             replay_count: replays.len(),
             passed: false,
             gate_failures: Vec::new(),
@@ -1555,6 +1556,7 @@ struct SmokeTargetRunSummary {
     opcode_candidate_count: usize,
     state_edge_count: usize,
     audit_signal_count: usize,
+    unknown_field_count: usize,
     replay_count: usize,
     passed: bool,
     gate_failures: Vec<String>,
@@ -4765,6 +4767,7 @@ fn validate_smoke_target_summary_evidence_keys(
         ("opcode candidate count", &["opcodeCandidateCount"][..]),
         ("state edge count", &["stateEdgeCount"][..]),
         ("audit signal count", &["auditSignalCount"][..]),
+        ("unknown field count", &["unknownFieldCount"][..]),
         ("replay count", &["replayCount"][..]),
         ("passed", &["passed"][..]),
         ("gate failures", &["gateFailures"][..]),
@@ -5055,6 +5058,13 @@ fn validate_manifest_target_content_matches_summary(
             schema.audit_signals.len(),
             "summary audit signal count",
             target.audit_signal_count,
+            gate_failures,
+        );
+        validate_target_usize_field(
+            "schema unknown field count",
+            ton_stateflow::schema_unknown_field_count(&schema),
+            "summary unknown field count",
+            target.unknown_field_count,
             gate_failures,
         );
         validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
@@ -7588,6 +7598,13 @@ fn validate_manifest_report_content_matches_summary(
         "audit signal count",
         "- Audit signals:",
         target.audit_signal_count,
+        gate_failures,
+    );
+    validate_optional_report_target_count(
+        &markdown,
+        "unknown field count",
+        "- Unknown fields:",
+        target.unknown_field_count,
         gate_failures,
     );
 
@@ -11952,6 +11969,7 @@ mod tests {
         assert_eq!(json["gateFailures"], serde_json::json!([]));
         assert_eq!(json["targets"][0]["passed"], true);
         assert_eq!(json["targets"][0]["gateFailures"], serde_json::json!([]));
+        assert_eq!(json["targets"][0]["unknownFieldCount"], 1);
         assert_eq!(
             json["targets"][0]["replays"],
             serde_json::json!(["out/target-a/replay.json"])
@@ -14342,8 +14360,12 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": [],
-                    "unknownFieldEvidence": []
+                    "unknownFields": ["message body field names require TL-B recovery"],
+                    "unknownFieldEvidence": [{
+                        "marker": "message body field names require TL-B recovery",
+                        "confidence": "medium",
+                        "evidence": ["tx-a"]
+                    }]
                 }]
             })
             .to_string(),
@@ -15347,6 +15369,13 @@ mod tests {
                 failure.contains("target-a: report audit signal count 1 is missing")
             }),
             "expected report audit signal count failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report unknown field count 1 is missing")
+            }),
+            "expected report unknown field count failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -16935,7 +16964,7 @@ mod tests {
                         "stateTransitionCount": 0,
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"],
-                        "unknowns": []
+                        "unknowns": ["message body field names require TL-B recovery"]
                     }]
                 },
                 "messageSurface": {
@@ -16949,7 +16978,7 @@ mod tests {
                         "bodyMinRefs": 0,
                         "bodyMaxRefs": 0,
                         "fields": [],
-                        "unknowns": [],
+                        "unknowns": ["message body field names require TL-B recovery"],
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"]
                     }]
@@ -17296,8 +17325,12 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": [],
-                    "unknownFieldEvidence": []
+                    "unknownFields": ["message body field names require TL-B recovery"],
+                    "unknownFieldEvidence": [{
+                        "marker": "message body field names require TL-B recovery",
+                        "confidence": "medium",
+                        "evidence": ["tx-a"]
+                    }]
                 }]
             })
             .to_string(),
@@ -17352,7 +17385,7 @@ mod tests {
                         "stateTransitionCount": 0,
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"],
-                        "unknowns": []
+                        "unknowns": ["message body field names require TL-B recovery"]
                     }]
                 },
                 "messageSurface": {
@@ -17366,7 +17399,7 @@ mod tests {
                         "bodyMinRefs": 0,
                         "bodyMaxRefs": 0,
                         "fields": [],
-                        "unknowns": [],
+                        "unknowns": ["message body field names require TL-B recovery"],
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"]
                     }]
@@ -17459,8 +17492,12 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": [],
-                    "unknownFieldEvidence": []
+                    "unknownFields": ["message body field names require TL-B recovery"],
+                    "unknownFieldEvidence": [{
+                        "marker": "message body field names require TL-B recovery",
+                        "confidence": "medium",
+                        "evidence": ["tx-a"]
+                    }]
                 }]
             })
             .to_string(),
@@ -19265,6 +19302,7 @@ mod tests {
             opcode_candidate_count: 1,
             state_edge_count: 1,
             audit_signal_count: 1,
+            unknown_field_count: 1,
             replay_count: 1,
             passed: false,
             gate_failures: Vec::new(),
@@ -19422,7 +19460,7 @@ mod tests {
                         "stateTransitionCount": 0,
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"],
-                        "unknowns": []
+                        "unknowns": ["message body field names require TL-B recovery"]
                     }]
                 },
                 "messageSurface": {
@@ -19436,7 +19474,7 @@ mod tests {
                         "bodyMinRefs": 0,
                         "bodyMaxRefs": 0,
                         "fields": [],
-                        "unknowns": [],
+                        "unknowns": ["message body field names require TL-B recovery"],
                         "confidence": "medium",
                         "evidence": ["tx-a", "tx-b"]
                     }]
@@ -19502,7 +19540,15 @@ mod tests {
                         "outboundKinds": [],
                         "outActionKinds": []
                     }],
-                    "methodSurface": sample_method_surface_json(&["tx-a", "tx-b"]),
+                    "methodSurface": {
+                        "name": "op::0x00000001",
+                        "sourceFunction": "recv_internal",
+                        "opcode": "0x00000001",
+                        "fields": [],
+                        "unknowns": ["message body field names require TL-B recovery"],
+                        "confidence": "medium",
+                        "evidence": ["tx-a", "tx-b"]
+                    },
                     "inboundBody": {
                         "minBits": 32,
                         "maxBits": 32,
@@ -19527,8 +19573,12 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": [],
-                    "unknownFieldEvidence": []
+                    "unknownFields": ["message body field names require TL-B recovery"],
+                    "unknownFieldEvidence": [{
+                        "marker": "message body field names require TL-B recovery",
+                        "confidence": "medium",
+                        "evidence": ["tx-a"]
+                    }]
                 }]
             })
             .to_string(),
@@ -19656,17 +19706,18 @@ mod tests {
             .replace("- Opcode candidates: 1", "- Opcode candidates: 9")
             .replace("- State machine edges: 1", "- State machine edges: 9")
             .replace("- Audit signals: 1", "- Audit signals: 9")
+            .replace("- Unknown fields: 1", "- Unknown fields: 9")
     }
 
     fn sample_report_markdown_with_opcode_candidate_range(address: &str) -> String {
         sample_report_markdown(address)
             .replace(
-                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |",
-                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |",
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | message body field names require TL-B recovery |",
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | message body field names require TL-B recovery |",
             )
             .replace(
-                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | none | none | medium | tx-a, tx-b |",
-                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | none | none | medium | tx-a, tx-b |",
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | none | message body field names require TL-B recovery | medium | tx-a, tx-b |",
+                "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..40 | 0..0 | none | message body field names require TL-B recovery | medium | tx-a, tx-b |",
             )
             .replace(
                 "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
@@ -19914,17 +19965,17 @@ mod tests {
             ""
         };
         let op_table_row = if include_schema_summary_rows {
-            "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | none |\n"
+            "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | 0 | 0 | outbound 0; actions 0 | 0 | medium | `tx-a`, `tx-b` | message body field names require TL-B recovery |\n"
         } else {
             ""
         };
         let method_surface_row = if include_schema_summary_rows {
-            "| `0x00000001` | `op::0x00000001` | recv_internal | none | none | medium | tx-a, tx-b |\n"
+            "| `0x00000001` | `op::0x00000001` | recv_internal | none | message body field names require TL-B recovery | medium | tx-a, tx-b |\n"
         } else {
             ""
         };
         let message_surface_row = if include_schema_summary_rows {
-            "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | none | none | medium | tx-a, tx-b |\n"
+            "| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 32..32 | 0..0 | none | message body field names require TL-B recovery | medium | tx-a, tx-b |\n"
         } else {
             ""
         };
@@ -19948,6 +19999,11 @@ mod tests {
         } else {
             ""
         };
+        let unknown_field_rows = if include_schema_summary_rows {
+            "  - message body field names require TL-B recovery (confidence: medium; evidence: `tx-a`, `tx-b`)\n"
+        } else {
+            ""
+        };
         let risk_point = if include_risk_point {
             "- Unknown fields remain. Evidence: `tx-a`.\n- Mutation flip body bit 0 changed c5/action register for tx-a. Evidence: `tx-a`.\n"
         } else {
@@ -19967,6 +20023,7 @@ mod tests {
              - Opcode candidates: 1\n\
              - State machine edges: 1\n\
              - Audit signals: 1\n\
+             - Unknown fields: 1\n\
              \n\
              ## Op Table\n\
              | Opcode | Name | Source function | Transactions | Body bits | Body refs | Body fields | Storage fields | Effects | State transitions | Confidence | Evidence | Unknowns |\n\
@@ -20038,6 +20095,7 @@ mod tests {
              \n\
              ## Unknown Fields\n\
              - `0x00000001`:\n\
+             {unknown_field_rows}\
              \n\
              ## Replay Diffs\n\
              | Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |\n\

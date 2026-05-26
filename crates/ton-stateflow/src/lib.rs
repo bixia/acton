@@ -895,6 +895,12 @@ pub fn render_state_flow_report(
     )
     .ok();
     writeln!(report, "- Audit signals: {}", schema.audit_signals.len()).ok();
+    writeln!(
+        report,
+        "- Unknown fields: {}",
+        schema_unknown_field_count(schema)
+    )
+    .ok();
     writeln!(report).ok();
 
     writeln!(report, "## Op Table").ok();
@@ -2789,6 +2795,14 @@ fn candidate_unknown_field_evidence(
             evidence: candidate.examples.clone(),
         })
         .collect()
+}
+
+pub fn schema_unknown_field_count(schema: &StateFlowSchemaReport) -> usize {
+    schema
+        .opcode_candidates
+        .iter()
+        .map(|candidate| candidate_unknown_field_evidence(candidate).len())
+        .sum()
 }
 
 fn schema_evidence(transactions: &[&StateFlowTx]) -> Vec<SchemaEvidence> {
@@ -5183,6 +5197,10 @@ mod tests {
             schema.state_machine.edges.len()
         )));
         assert!(report.contains(&format!("- Audit signals: {}", schema.audit_signals.len())));
+        assert!(report.contains(&format!(
+            "- Unknown fields: {}",
+            super::schema_unknown_field_count(&schema)
+        )));
         assert!(report.contains("## Opcode Candidates"));
         assert!(report.contains("Storage"));
         assert!(report.contains("balance -3"));
