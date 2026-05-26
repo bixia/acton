@@ -194,6 +194,8 @@ pub struct MessageSurfaceField {
     pub present_count: usize,
     pub value_samples: Vec<String>,
     pub confidence: String,
+    #[serde(default)]
+    pub value_evidence: Vec<BodyFieldValueEvidence>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -536,6 +538,15 @@ pub struct BodyFieldCandidate {
     pub present_count: usize,
     pub value_samples: Vec<String>,
     pub confidence: String,
+    #[serde(default)]
+    pub value_evidence: Vec<BodyFieldValueEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyFieldValueEvidence {
+    pub tx_hash: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1088,15 +1099,19 @@ pub fn render_state_flow_report(
     } else {
         writeln!(
             report,
-            "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |"
+            "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Value evidence | Confidence |"
         )
         .ok();
-        writeln!(report, "| --- | --- | ---: | --- | --- | --- | --- | --- |").ok();
+        writeln!(
+            report,
+            "| --- | --- | ---: | --- | --- | --- | --- | --- | --- |"
+        )
+        .ok();
         for candidate in &schema.opcode_candidates {
             for field in &candidate.inbound_body.field_candidates {
                 writeln!(
                     report,
-                    "| {} | `{}` | {} | {} | {} | {} | {} | {} |",
+                    "| {} | `{}` | {} | {} | {} | {} | {} | {} | {} |",
                     markdown_code_opt(candidate.opcode.as_deref()),
                     markdown_escape(&field.name),
                     field.bit_offset,
@@ -1104,6 +1119,7 @@ pub fn render_state_flow_report(
                     format_field_range(field.min_refs, field.max_refs),
                     markdown_escape(&field.kind),
                     markdown_code_list(&field.value_samples),
+                    markdown_escape(&format_body_field_value_evidence(&field.value_evidence)),
                     markdown_escape(&field.confidence),
                 )
                 .ok();
@@ -1693,6 +1709,17 @@ fn format_storage_value_evidence(evidence: &[StorageValueEvidence]) -> String {
                 item.tx_hash, item.pre_value, item.post_value, change_label
             )
         })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_body_field_value_evidence(evidence: &[BodyFieldValueEvidence]) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|item| format!("{}: {}", item.tx_hash, item.value))
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -2923,6 +2950,7 @@ fn message_surface_field(field: &BodyFieldCandidate) -> MessageSurfaceField {
         present_count: field.present_count,
         value_samples: field.value_samples.clone(),
         confidence: field.confidence.clone(),
+        value_evidence: field.value_evidence.clone(),
     }
 }
 
@@ -3352,8 +3380,10 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
 
     let mut candidates = Vec::new();
     let mut opcode_samples = BTreeSet::new();
+    let mut opcode_value_evidence = Vec::new();
     let mut opcode_present_count = 0;
     let mut query_id_samples = BTreeSet::new();
+    let mut query_id_value_evidence = Vec::new();
     let mut query_id_present_count = 0;
     let mut tail_min_bits = u16::MAX;
     let mut tail_max_bits = 0;
@@ -3361,6 +3391,7 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
     let mut tail_max_refs = 0;
     let mut tail_present_count = 0;
     let mut tail_samples = BTreeSet::new();
+    let mut tail_value_evidence = Vec::new();
 
     for tx in transactions {
         if tx.inbound.body.bits >= 32 {
@@ -3371,6 +3402,10 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
                 .or_else(|| read_body_u32_at(&tx.inbound.body.boc64, 0).map(format_u32_hex));
             if let Some(opcode) = opcode {
                 opcode_present_count += 1;
+                opcode_value_evidence.push(BodyFieldValueEvidence {
+                    tx_hash: tx.query_hash.clone(),
+                    value: opcode.clone(),
+                });
                 opcode_samples.insert(opcode);
             }
         }
@@ -3378,17 +3413,27 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
         if tx.inbound.body.bits >= 96 {
             if let Some(query_id) = read_body_u64_at(&tx.inbound.body.boc64, 32) {
                 query_id_present_count += 1;
-                query_id_samples.insert(format_u64_hex(query_id));
+                let value = format_u64_hex(query_id);
+                query_id_value_evidence.push(BodyFieldValueEvidence {
+                    tx_hash: tx.query_hash.clone(),
+                    value: value.clone(),
+                });
+                query_id_samples.insert(value);
             }
 
             if tx.inbound.body.bits > 96 || tx.inbound.body.refs > 0 {
                 let tail_bits = tx.inbound.body.bits.saturating_sub(96);
+                let value = format!("{tail_bits} bits, {} refs", tx.inbound.body.refs);
                 tail_min_bits = tail_min_bits.min(tail_bits);
                 tail_max_bits = tail_max_bits.max(tail_bits);
                 tail_min_refs = tail_min_refs.min(tx.inbound.body.refs);
                 tail_max_refs = tail_max_refs.max(tx.inbound.body.refs);
                 tail_present_count += 1;
-                tail_samples.insert(format!("{tail_bits} bits, {} refs", tx.inbound.body.refs));
+                tail_value_evidence.push(BodyFieldValueEvidence {
+                    tx_hash: tx.query_hash.clone(),
+                    value: value.clone(),
+                });
+                tail_samples.insert(value);
             }
         }
     }
@@ -3405,6 +3450,7 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
             present_count: opcode_present_count,
             value_samples: limited_samples(opcode_samples),
             confidence: body_field_confidence(opcode_present_count, transactions.len()),
+            value_evidence: opcode_value_evidence,
         });
     }
 
@@ -3420,6 +3466,7 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
             present_count: query_id_present_count,
             value_samples: limited_samples(query_id_samples),
             confidence: body_field_confidence(query_id_present_count, transactions.len()),
+            value_evidence: query_id_value_evidence,
         });
     }
 
@@ -3439,6 +3486,7 @@ fn inbound_body_field_candidates(transactions: &[&StateFlowTx]) -> Vec<BodyField
             present_count: tail_present_count,
             value_samples: limited_samples(tail_samples),
             confidence: "low".to_owned(),
+            value_evidence: tail_value_evidence,
         });
     }
 
@@ -4551,6 +4599,16 @@ mod tests {
             serde_json::json!(["0x0000000000000007", "0x0000000000000008"])
         );
         assert_eq!(
+            json["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"][1]["valueEvidence"],
+            serde_json::json!([{
+                "txHash": "tx-a",
+                "value": "0x0000000000000007"
+            }, {
+                "txHash": "tx-b",
+                "value": "0x0000000000000008"
+            }])
+        );
+        assert_eq!(
             json["opcodeCandidates"][0]["replayProbes"][1]["mutation"],
             serde_json::json!({
                 "type": "setBodyUint",
@@ -4604,7 +4662,14 @@ mod tests {
                     "maxRefs": 0,
                     "presentCount": 2,
                     "valueSamples": ["0x00000001"],
-                    "confidence": "high"
+                    "confidence": "high",
+                    "valueEvidence": [{
+                        "txHash": "tx-a",
+                        "value": "0x00000001"
+                    }, {
+                        "txHash": "tx-b",
+                        "value": "0x00000001"
+                    }]
                 }, {
                     "name": "query_id",
                     "kind": "uint64",
@@ -4616,7 +4681,14 @@ mod tests {
                     "maxRefs": 0,
                     "presentCount": 2,
                     "valueSamples": ["0x0000000000000007", "0x0000000000000008"],
-                    "confidence": "high"
+                    "confidence": "high",
+                    "valueEvidence": [{
+                        "txHash": "tx-a",
+                        "value": "0x0000000000000007"
+                    }, {
+                        "txHash": "tx-b",
+                        "value": "0x0000000000000008"
+                    }]
                 }, {
                     "name": "payload_tail",
                     "kind": "raw",
@@ -4628,7 +4700,14 @@ mod tests {
                     "maxRefs": 0,
                     "presentCount": 2,
                     "valueSamples": ["8 bits, 0 refs"],
-                    "confidence": "low"
+                    "confidence": "low",
+                    "valueEvidence": [{
+                        "txHash": "tx-a",
+                        "value": "8 bits, 0 refs"
+                    }, {
+                        "txHash": "tx-b",
+                        "value": "8 bits, 0 refs"
+                    }]
                 }],
                 "unknowns": [
                     "message body field names require TL-B recovery",
@@ -4643,6 +4722,8 @@ mod tests {
         assert!(report.contains("## Message Surface"));
         assert!(report.contains("| Opcode | Name | Source function | Transactions | Body bits | Body refs | Fields | Unknowns | Confidence | Evidence |"));
         assert!(report.contains("| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 104..104 | 0..0 | `opcode:uint32@body:0`, `query_id:uint64@body:32`, `payload_tail:raw@body:96` | `message body field names require TL-B recovery`, `storage field names require typed storage decoding` | medium | `tx-a`, `tx-b` |"));
+        assert!(report.contains("| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Value evidence | Confidence |"));
+        assert!(report.contains("| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | `0x0000000000000007`, `0x0000000000000008` | tx-a: 0x0000000000000007; tx-b: 0x0000000000000008 | high |"));
     }
 
     #[test]
@@ -5209,12 +5290,12 @@ mod tests {
         assert!(report.contains("## Message Body Fields"));
         assert!(
             report.contains(
-                "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |"
+                "| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Value evidence | Confidence |"
             )
         );
-        assert!(report.contains("| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | `0x0000000000000007` | high |"));
+        assert!(report.contains("| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | `0x0000000000000007` | tx-a: 0x0000000000000007 | high |"));
         assert!(report.contains(
-            "| `0x00000001` | `payload_tail` | 96 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | low |"
+            "| `0x00000001` | `payload_tail` | 96 | 8..8 | 0..0 | raw | `8 bits, 0 refs` | tx-a: 8 bits, 0 refs | low |"
         ));
         assert!(report.contains("## Replay Probes"));
         assert!(report.contains("| `0x00000001` | `query_id` | `--set-body-uint 32:64:0x0000000000000006` | high | `tx-a` |"));

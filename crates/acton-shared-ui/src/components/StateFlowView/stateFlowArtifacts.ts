@@ -190,6 +190,12 @@ export interface MessageSurfaceField {
   readonly presentCount: number
   readonly valueSamples: readonly string[]
   readonly confidence: string
+  readonly valueEvidence?: readonly BodyFieldValueEvidence[] | null
+}
+
+export interface BodyFieldValueEvidence {
+  readonly txHash: string
+  readonly value: string
 }
 
 export interface ReplaySurfaceCandidate {
@@ -545,6 +551,7 @@ export interface BodyFieldCandidate {
   readonly presentCount: number
   readonly valueSamples: readonly string[]
   readonly confidence: string
+  readonly valueEvidence?: readonly BodyFieldValueEvidence[] | null
 }
 
 export interface SchemaEvidence {
@@ -1663,6 +1670,7 @@ function reportMessageBodyFieldRows(report: StateFlowReport): readonly SummaryRo
       tableValueLabel("bits", rowValue(row, "Bits")),
       tableValueLabel("refs", rowValue(row, "Refs")),
       tableValueLabel("sample", rowValue(row, "Samples")),
+      tableValueLabel("values", rowValue(row, "Value evidence")),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
     ]
       .filter((value): value is string => value !== undefined)
@@ -2431,6 +2439,7 @@ function messageSurfaceFieldFromCandidate(field: BodyFieldCandidate): MessageSur
     presentCount: field.presentCount,
     valueSamples: field.valueSamples,
     confidence: field.confidence,
+    valueEvidence: field.valueEvidence,
   }
 }
 
@@ -2448,6 +2457,7 @@ function messageSurfaceRow(message: MessageSurfaceMessage): SummaryRow {
       `confidence ${message.confidence}`,
       `evidence ${message.evidence.map(hash => shortHash(hash)).join(", ")}`,
       message.unknowns.length > 0 ? `unknowns ${message.unknowns.join("; ")}` : undefined,
+      messageSurfaceValueEvidenceDetail(message.fields),
       message.fields.length > 0
         ? `fields ${message.fields.map(messageSurfaceFieldLabel).join(", ")}`
         : undefined,
@@ -2459,6 +2469,19 @@ function messageSurfaceRow(message: MessageSurfaceMessage): SummaryRow {
 
 function messageSurfaceFieldLabel(field: MessageSurfaceField): string {
   return `${field.name}:${field.kind}@${field.source}:${field.bitOffset}`
+}
+
+function messageSurfaceValueEvidenceDetail(
+  fields: readonly MessageSurfaceField[],
+): string | undefined {
+  const values = fields
+    .filter(field => field.valueEvidence && field.valueEvidence.length > 0)
+    .map(field => `${field.name} ${bodyFieldValueEvidenceDetail(field.valueEvidence ?? [])}`)
+  return values.length > 0 ? `values ${values.join(" | ")}` : undefined
+}
+
+function bodyFieldValueEvidenceDetail(evidence: readonly BodyFieldValueEvidence[]): string {
+  return evidence.map(item => `${item.txHash}: ${item.value}`).join("; ")
 }
 
 function schemaMethodSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

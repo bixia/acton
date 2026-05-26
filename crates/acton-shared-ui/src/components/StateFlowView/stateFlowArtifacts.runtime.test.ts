@@ -148,6 +148,10 @@ const schema = {
             presentCount: 2,
             valueSamples: ["0x00000001"],
             confidence: "high",
+            valueEvidence: [
+              {txHash: "tx-a", value: "0x00000001"},
+              {txHash: "tx-b", value: "0x00000001"},
+            ],
           },
           {
             name: "query_id",
@@ -161,6 +165,10 @@ const schema = {
             presentCount: 2,
             valueSamples: ["0x0000000000000007", "0x0000000000000008"],
             confidence: "high",
+            valueEvidence: [
+              {txHash: "tx-a", value: "0x0000000000000007"},
+              {txHash: "tx-b", value: "0x0000000000000008"},
+            ],
           },
         ],
         unknowns: ["message body field names require TL-B recovery"],
@@ -332,6 +340,10 @@ const schema = {
             presentCount: 2,
             valueSamples: ["0x00000001"],
             confidence: "high",
+            valueEvidence: [
+              {txHash: "tx-a", value: "0x00000001"},
+              {txHash: "tx-b", value: "0x00000001"},
+            ],
           },
           {
             name: "query_id",
@@ -344,6 +356,10 @@ const schema = {
             presentCount: 2,
             valueSamples: ["0x0000000000000007", "0x0000000000000008"],
             confidence: "high",
+            valueEvidence: [
+              {txHash: "tx-a", value: "0x0000000000000007"},
+              {txHash: "tx-b", value: "0x0000000000000008"},
+            ],
           },
         ],
       },
@@ -782,9 +798,9 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | \`tx-a\` | \`0x00000001\` | 0 | 1004 | 4127 | 15 | 40/2 | 1 | 1 | active -> frozen |
 
 ## Message Body Fields
-| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Confidence |
-| --- | --- | ---: | --- | --- | --- | --- | --- |
-| \`0x00000001\` | \`query_id\` | 32 | 64..64 | 0..0 | uint64 | \`0x7\` | high |
+| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Value evidence | Confidence |
+| --- | --- | ---: | --- | --- | --- | --- | --- | --- |
+| \`0x00000001\` | \`query_id\` | 32 | 64..64 | 0..0 | uint64 | \`0x7\` | tx-a: 0x7 | high |
 
 ## Replay Probes
 | Opcode | Field | CLI mutation | Confidence | Evidence |
@@ -950,7 +966,7 @@ assert(messageSurfaceRows[0]?.label === "0x00000001 op::0x00000001", "expected m
 assert(messageSurfaceRows[0]?.value === "recv_internal", "expected message surface source")
 assert(
   messageSurfaceRows[0]?.detail ===
-    "2 transactions · body 32..96 bits/0..0 refs · 2 fields · confidence medium · evidence tx-a, tx-b · unknowns message body field names require TL-B recovery · fields opcode:uint32@body:0, query_id:uint64@body:32",
+    "2 transactions · body 32..96 bits/0..0 refs · 2 fields · confidence medium · evidence tx-a, tx-b · unknowns message body field names require TL-B recovery · values opcode tx-a: 0x00000001; tx-b: 0x00000001 | query_id tx-a: 0x0000000000000007; tx-b: 0x0000000000000008 · fields opcode:uint32@body:0, query_id:uint64@body:32",
   "expected message surface detail",
 )
 const stateMachineRows = sectionRows(schemaSummary, "State Machine")
@@ -1342,6 +1358,12 @@ assert(
     "2 transactions · body 32..96 bits/0..0 refs · fields opcode:uint32@body:0, query_id:uint64@body:32 · confidence medium · evidence tx-a, tx-b · unknowns message body field names require TL-B recovery",
   "expected report message surface detail",
 )
+const reportMessageBodyRows = sectionRows(reportSummary, "Message Body Fields")
+assert(
+  reportMessageBodyRows[0]?.detail ===
+    "offset 32 · bits 64..64 · refs 0..0 · sample 0x7 · values tx-a: 0x7 · confidence high",
+  "expected report message body field value evidence",
+)
 const reportSectionRows = sectionRows(reportSummary, "Report Sections")
 assert(
   reportSectionRows.some(row => row.label === "Schema Evidence" && row.value === "3 lines"),
@@ -1379,7 +1401,6 @@ assert(
   reportRuntimeRows[0]?.detail?.includes("c5 40/2") === true,
   "expected report runtime c5 detail",
 )
-const reportMessageBodyRows = sectionRows(reportSummary, "Message Body Fields")
 assert(reportMessageBodyRows[0]?.label === "0x00000001 query_id", "expected report body field row")
 assert(reportMessageBodyRows[0]?.value === "uint64", "expected report body field kind")
 assert(

@@ -2485,10 +2485,25 @@ fn validate_schema_message_surface_evidence_keys(
                 ("max refs", &["maxRefs"][..]),
                 ("present count", &["presentCount"][..]),
                 ("value samples", &["valueSamples"][..]),
+                ("value evidence", &["valueEvidence"][..]),
                 ("confidence", &["confidence"][..]),
             ] {
                 if !json_path_exists(field, path) {
                     gate_failures.push(format!("{field_prefix} missing {label} evidence key"));
+                }
+            }
+            if let Some(value_evidence) = field
+                .get("valueEvidence")
+                .and_then(|value| value.as_array())
+            {
+                for (evidence_index, evidence) in value_evidence.iter().enumerate() {
+                    let evidence_prefix = format!("{field_prefix}.valueEvidence[{evidence_index}]");
+                    for (label, path) in [("tx hash", &["txHash"][..]), ("value", &["value"][..])] {
+                        if !json_path_exists(evidence, path) {
+                            gate_failures
+                                .push(format!("{evidence_prefix} missing {label} evidence key"));
+                        }
+                    }
                 }
             }
             validate_schema_confidence_label(field, &field_prefix, gate_failures);
@@ -2871,6 +2886,32 @@ fn validate_schema_body_field_candidate_evidence_keys(
     for (index, field) in fields.iter().enumerate() {
         let field_prefix = format!("{prefix} inboundBody.fieldCandidates[{index}]");
         validate_schema_field_candidate_evidence_keys(field, &field_prefix, gate_failures);
+        validate_schema_body_field_value_evidence_keys(field, &field_prefix, gate_failures);
+    }
+}
+
+fn validate_schema_body_field_value_evidence_keys(
+    field: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if !json_path_exists(field, &["valueEvidence"]) {
+        gate_failures.push(format!("{prefix} missing value evidence evidence key"));
+        return;
+    }
+    let Some(value_evidence) = field
+        .get("valueEvidence")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for (evidence_index, evidence) in value_evidence.iter().enumerate() {
+        let evidence_prefix = format!("{prefix}.valueEvidence[{evidence_index}]");
+        for (label, path) in [("tx hash", &["txHash"][..]), ("value", &["value"][..])] {
+            if !json_path_exists(evidence, path) {
+                gate_failures.push(format!("{evidence_prefix} missing {label} evidence key"));
+            }
+        }
     }
 }
 
@@ -5444,6 +5485,7 @@ fn corpus_opcode_body_field(
     transactions: &[&StateFlowTx],
 ) -> Option<ton_stateflow::BodyFieldCandidate> {
     let mut samples = HashSet::new();
+    let mut value_evidence = Vec::new();
     let mut present_count = 0;
     for tx in transactions {
         if tx.inbound.body.bits < 32 {
@@ -5456,6 +5498,10 @@ fn corpus_opcode_body_field(
             .or_else(|| read_body_u32_at(&tx.inbound.body.boc64, 0).map(format_u32_hex));
         if let Some(opcode) = opcode {
             present_count += 1;
+            value_evidence.push(ton_stateflow::BodyFieldValueEvidence {
+                tx_hash: tx.query_hash.clone(),
+                value: opcode.clone(),
+            });
             samples.insert(opcode);
         }
     }
@@ -5470,6 +5516,7 @@ fn corpus_opcode_body_field(
         present_count,
         value_samples: sorted_limited_values(samples),
         confidence: field_confidence_label(present_count, transactions.len()),
+        value_evidence,
     })
 }
 
@@ -5477,6 +5524,7 @@ fn corpus_query_id_body_field(
     transactions: &[&StateFlowTx],
 ) -> Option<ton_stateflow::BodyFieldCandidate> {
     let mut samples = HashSet::new();
+    let mut value_evidence = Vec::new();
     let mut present_count = 0;
     for tx in transactions {
         if tx.inbound.body.bits < 96 {
@@ -5484,7 +5532,12 @@ fn corpus_query_id_body_field(
         }
         if let Some(query_id) = read_body_u64_at(&tx.inbound.body.boc64, 32) {
             present_count += 1;
-            samples.insert(format_u64_hex(query_id));
+            let value = format_u64_hex(query_id);
+            value_evidence.push(ton_stateflow::BodyFieldValueEvidence {
+                tx_hash: tx.query_hash.clone(),
+                value: value.clone(),
+            });
+            samples.insert(value);
         }
     }
     (present_count > 0).then(|| ton_stateflow::BodyFieldCandidate {
@@ -5498,6 +5551,7 @@ fn corpus_query_id_body_field(
         present_count,
         value_samples: sorted_limited_values(samples),
         confidence: field_confidence_label(present_count, transactions.len()),
+        value_evidence,
     })
 }
 
@@ -5505,6 +5559,7 @@ fn corpus_payload_tail_body_field(
     transactions: &[&StateFlowTx],
 ) -> Option<ton_stateflow::BodyFieldCandidate> {
     let mut samples = HashSet::new();
+    let mut value_evidence = Vec::new();
     let mut present_count = 0;
     let mut min_bits = u16::MAX;
     let mut max_bits = 0;
@@ -5520,7 +5575,12 @@ fn corpus_payload_tail_body_field(
         min_refs = min_refs.min(tx.inbound.body.refs);
         max_refs = max_refs.max(tx.inbound.body.refs);
         present_count += 1;
-        samples.insert(format!("{tail_bits} bits, {} refs", tx.inbound.body.refs));
+        let value = format!("{tail_bits} bits, {} refs", tx.inbound.body.refs);
+        value_evidence.push(ton_stateflow::BodyFieldValueEvidence {
+            tx_hash: tx.query_hash.clone(),
+            value: value.clone(),
+        });
+        samples.insert(value);
     }
     (present_count > 0).then(|| ton_stateflow::BodyFieldCandidate {
         name: "payload_tail".to_owned(),
@@ -5533,6 +5593,7 @@ fn corpus_payload_tail_body_field(
         present_count,
         value_samples: sorted_limited_values(samples),
         confidence: "low".to_owned(),
+        value_evidence,
     })
 }
 
@@ -5598,6 +5659,14 @@ fn validate_schema_body_field_matches_corpus(
         &field.confidence,
         "corpus message body field confidence",
         &expected.confidence,
+        &field.name,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema message body field value evidence",
+        &report_body_field_value_evidence(&field.value_evidence),
+        "corpus message body field value evidence",
+        &report_body_field_value_evidence(&expected.value_evidence),
         &field.name,
         gate_failures,
     );
@@ -8304,6 +8373,7 @@ fn message_body_fields_report_header() -> Vec<String> {
         "Refs",
         "Kind",
         "Samples",
+        "Value evidence",
         "Confidence",
     ]
     .iter()
@@ -9234,6 +9304,13 @@ fn validate_report_message_body_field_values(
         "confidence",
         field.confidence.clone(),
         &field.name,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_message_body_field_cell(
+        "value evidence",
+        report_body_field_value_evidence(&field.value_evidence),
+        &field.name,
         row.get(7),
         gate_failures,
     );
@@ -9251,6 +9328,17 @@ fn validate_report_message_body_field_cell(
             "report message body field {label} {expected} for {field_name} is missing"
         ));
     }
+}
+
+fn report_body_field_value_evidence(evidence: &[ton_stateflow::BodyFieldValueEvidence]) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|item| format!("{}: {}", item.tx_hash, item.value))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn report_replay_probe_row(
@@ -14856,7 +14944,7 @@ mod tests {
 
         assert!(
             gate_failures.iter().any(|failure| failure.contains(
-                "report message body fields header [\"Opcode\", \"Field\", \"Offset\", \"Bits\", \"Refs\", \"Kind\", \"Samples\", \"Confidence\"] is missing"
+                "report message body fields header [\"Opcode\", \"Field\", \"Offset\", \"Bits\", \"Refs\", \"Kind\", \"Samples\", \"Value evidence\", \"Confidence\"] is missing"
             )),
             "expected message body fields header failure, got {:?}",
             gate_failures
