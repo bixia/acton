@@ -2618,8 +2618,47 @@ fn validate_state_flow_replay_evidence_keys(
             ));
         }
     }
+    validate_replay_mutation_evidence_keys(value, artifact, gate_failures);
     validate_replay_observation_evidence_keys(value, "baseline", artifact, gate_failures);
     validate_replay_observation_evidence_keys(value, "replay", artifact, gate_failures);
+}
+
+fn validate_replay_mutation_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(mutation) = value.get("mutation") else {
+        return;
+    };
+    if !json_path_exists(mutation, &["type"]) {
+        gate_failures.push(format!(
+            "replay artifact {} mutation missing type evidence key",
+            artifact.path
+        ));
+        return;
+    }
+    let Some(mutation_type) = mutation.get("type").and_then(|value| value.as_str()) else {
+        return;
+    };
+    for (label, path) in match mutation_type {
+        "none" => Vec::new(),
+        "flipBodyBit" => vec![("bit", &["bit"][..])],
+        "replaceBody" => vec![("body BOC", &["bodyBoc64"][..])],
+        "setBodyUint" => vec![
+            ("bit offset", &["bitOffset"][..]),
+            ("bits", &["bits"][..]),
+            ("value", &["value"][..]),
+        ],
+        _ => Vec::new(),
+    } {
+        if !json_path_exists(mutation, path) {
+            gate_failures.push(format!(
+                "replay artifact {} mutation {mutation_type} missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
 }
 
 fn validate_replay_observation_evidence_keys(
@@ -11298,6 +11337,84 @@ mod tests {
                 )
             }),
             "expected missing replay diff c5 changed key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_mutation_type_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"]
+            .as_object_mut()
+            .expect("mutation should be an object")
+            .remove("type");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json mutation missing type evidence key",
+                )
+            }),
+            "expected missing replay mutation type key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_flip_body_bit_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"]
+            .as_object_mut()
+            .expect("mutation should be an object")
+            .remove("bit");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json mutation flipBodyBit missing bit evidence key",
+                )
+            }),
+            "expected missing replay mutation bit key failure, got {:?}",
             validation.gate_failures
         );
     }
