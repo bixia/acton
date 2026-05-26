@@ -1,0 +1,414 @@
+ACTON-REVERSE(1)
+
+NAME
+       acton-reverse — Build TON state-flow reverse-engineering artifacts
+
+SYNOPSIS
+       acton reverse [options] command
+
+DESCRIPTION
+       acton reverse is the Acton-native TON state-machine reverse-engineering
+       surface. It emits reusable JSON and Markdown artifacts instead of
+       one-off logs, so CLI commands, the Test UI, localnet UI, fork replay
+       checks, and audit handoffs can consume the same evidence model.
+
+       The command group is organized around the state-flow loop:
+
+       o  retrace exports one StateFlowTx evidence JSON for a known transaction
+          hash
+
+       o  collect turns recent account history into a corpus of retraced
+          transactions
+
+       o  infer clusters the corpus by opcode and proposes message, storage,
+          replay, outbound effect, state-machine, confidence, and unknown-field
+          surfaces
+
+       o  replay replays or mutates a StateFlowTx on the same pre-state and
+          emits a diff
+
+       o  report renders corpus, schema, and replay artifacts into a Markdown
+          audit report
+
+       o  analyze runs collect, infer, replay, and report for one target
+          address
+
+       o  smoke runs checked-in real-chain targets through the full loop and
+          writes a manifest bundle
+
+       o  verify-artifacts validates that a bundle still contains the evidence
+          needed for the short-, medium-, and long-term reverse workflow
+
+ARTIFACT MODEL
+       The primary single-transaction artifact is StateFlowTx. It includes:
+
+       o  transaction identity and replay context
+
+       o  pre/post shard account state, including code/data hashes and cell
+          shapes
+
+       o  inbound message body/opcode evidence
+
+       o  outbound messages and parsed out actions
+
+       o  VM trace and executor trace logs
+
+       o  c5/out-action cell evidence
+
+       The higher-level artifacts reuse the same model:
+
+       o  corpus JSON contains retraced StateFlowTx entries and collection
+          failures
+
+       o  schema JSON contains opcode candidates, message/storage/effect
+          surfaces, replay probes, confidence, unknown fields, and audit
+          signals
+
+       o  replay diff JSON compares baseline and mutated observations from the
+          same pre-state
+
+       o  report Markdown renders the evidence tables used by review and audit
+
+       o  artifact manifests preserve target context, paths, and validation
+          capability checks
+
+SUBCOMMANDS
+   acton reverse retrace
+       Replay one transaction and emit StateFlowTx JSON.
+
+      Synopsis
+          acton reverse retrace [options] hash
+
+      Options
+          hash
+              Transaction hash in hex format to retrace.
+
+          --net network
+              Network to use.
+
+          -o, --output path
+              Write state-flow JSON to a file. --out is also accepted.
+
+          --pretty
+              Pretty-print JSON output.
+
+   acton reverse collect
+       Collect recent account history into a state-flow corpus.
+
+      Synopsis
+          acton reverse collect [options] address
+
+      Options
+          address
+              Account address in friendly or raw format.
+
+          --net network
+              Network to use.
+
+          --limit count
+              Maximum number of recent account transactions to collect.
+
+          -o, --output path
+              Write state-flow corpus JSON to a file. --out is also accepted.
+
+          --pretty
+              Pretty-print JSON output.
+
+   acton reverse infer
+       Infer opcode and effect schema candidates from a state-flow corpus or
+       artifact manifest.
+
+      Synopsis
+          acton reverse infer [options] [corpus]
+
+      Options
+          corpus
+              State-flow corpus JSON produced by acton reverse collect.
+
+          --artifact-manifest path
+              State-flow artifact manifest produced by acton reverse smoke or
+              acton reverse analyze.
+
+          --target-id id
+              Target id to select from an artifact manifest.
+
+          -o, --output path
+              Write schema candidate JSON to a file. --out is also accepted.
+
+          --pretty
+              Pretty-print JSON output.
+
+   acton reverse replay
+       Replay or mutate a StateFlowTx or corpus artifact and emit a diff.
+
+      Synopsis
+          acton reverse replay [options] [state-flow]
+
+      Options
+          state-flow
+              StateFlowTx JSON from acton reverse retrace or corpus JSON from
+              acton reverse collect.
+
+          --artifact-manifest path
+              State-flow artifact manifest produced by acton reverse smoke or
+              acton reverse analyze.
+
+          --target-id id
+              Target id to select from an artifact manifest.
+
+          --tx-index index
+              Transaction index to replay when the input is a corpus artifact.
+
+          --tx-hash hash
+              Transaction hash to replay when the input is a corpus artifact.
+
+          --replay-probe field
+              Replay an inferred schema probe from an artifact manifest.
+
+          --flip-body-bit bit
+              Flip one inbound message body bit before replay.
+
+          --body-boc64 boc64
+              Replace inbound message body with this base64 BoC before replay.
+
+          --set-body-uint offset:bits:value
+              Set an unsigned integer field in the inbound body before replay.
+
+          --ignore-chksig
+              Ignore TVM signature checks during local replay.
+
+          -o, --output path
+              Write replay diff JSON to a file. --out is also accepted.
+
+          --pretty
+              Pretty-print JSON output.
+
+   acton reverse report
+       Generate a state-flow reverse-engineering report.
+
+      Synopsis
+          acton reverse report [options] [corpus]
+
+      Options
+          corpus
+              State-flow corpus JSON produced by acton reverse collect.
+
+          --schema path
+              Schema candidate JSON produced by acton reverse infer.
+
+          --replay path
+              Replay diff JSON produced by acton reverse replay. May be
+              repeated.
+
+          --artifact-manifest path
+              State-flow artifact manifest produced by acton reverse smoke or
+              acton reverse analyze.
+
+          --target-id id
+              Target id to select from an artifact manifest.
+
+          -o, --output path
+              Write Markdown report to a file. --out is also accepted.
+
+   acton reverse verify-artifacts
+       Validate a state-flow artifact manifest bundle.
+
+      Synopsis
+          acton reverse verify-artifacts [options] artifacts
+
+      Options
+          artifacts
+              State-flow artifact manifest produced by acton reverse smoke or
+              acton reverse analyze.
+
+          --target-id id
+              Only validate artifacts for this target id.
+
+          -o, --output path
+              Write artifact validation JSON to a file. --out is also accepted.
+
+          --pretty
+              Pretty-print JSON output.
+
+   acton reverse analyze
+       Run collect, infer, replay, and report for one target address.
+
+      Synopsis
+          acton reverse analyze [options] address
+
+      Options
+          address
+              Account address in friendly or raw format.
+
+          --net network
+              Network to use.
+
+          --target-id id
+              Target id to write into summary, manifest, validation, and output
+              paths.
+
+          --source-url url
+              Source URL for the analyzed target.
+
+          --notes text
+              Human notes to preserve in the generated target artifacts.
+
+          --limit count
+              Maximum number of recent account transactions to collect.
+
+          --retrace-tx-hash hash
+              Transaction hash to retrace into retrace.json for this analysis
+              target.
+
+          --replay-tx-index index
+              Corpus transaction index to replay.
+
+          --replay-tx-hash hash
+              Corpus transaction hash to replay.
+
+          --flip-body-bit bit
+              Flip one inbound message body bit before replay.
+
+          --body-boc64 boc64
+              Replace inbound message body with this base64 BoC before replay.
+
+          --set-body-uint offset:bits:value
+              Set an unsigned integer field in the inbound body before replay.
+
+          --ignore-chksig
+              Ignore TVM signature checks during local replay.
+
+          --out-dir path
+              Directory for analysis output artifacts.
+
+          --pretty
+              Pretty-print JSON output artifacts.
+
+   acton reverse smoke
+       Run state-flow smoke targets through collect, infer, replay, and report.
+
+      Synopsis
+          acton reverse smoke [options]
+
+      Options
+          --targets path
+              Smoke target manifest JSON.
+
+          --target-id id
+              Only run the smoke target with this id.
+
+          --out-dir path
+              Directory for smoke output artifacts.
+
+          --pretty
+              Pretty-print JSON output artifacts.
+
+   Display Options
+       --color when
+           Control when to use colored output.
+
+           Possible values: auto, always, never
+
+   Project Options
+       --manifest-path path
+           Path to the Acton.toml file to use for this invocation.
+
+           Use this when running the command outside the project directory or
+           when the manifest lives at a non-default location.
+
+       --project-root path
+           Path to the project root to use for configuration discovery and
+           relative defaults.
+
+           This conflicts with --manifest-path.
+
+ENVIRONMENT
+       Built-in mainnet/testnet requests read TONCENTER_MAINNET_API_KEY or
+       TONCENTER_TESTNET_API_KEY, depending on the selected network.
+
+       Both built-in networks also fall back to TON_CENTER_API_KEY, which is
+       useful when one shared key is kept in a local .env file.
+
+       Acton loads .env automatically, so the simplest setup during project
+       work is usually to keep these keys there and use shell environment
+       variables only for one-off overrides or CI.
+
+OUTPUT LAYOUT
+       acton reverse analyze and acton reverse smoke write a bundle directory
+       with these stable paths:
+
+       o  summary.json: run-level target status and output paths
+
+       o  artifacts.json: portable artifact manifest
+
+       o  validation.json: bundle validation result and capability checks
+
+       o  <target>/corpus.json: collected retraced transactions
+
+       o  <target>/schema.json: inferred schema and state-machine surfaces
+
+       o  <target>/transaction-<n>.json: selected replay source transaction
+
+       o  <target>/retrace.json: explicit retrace target when configured
+
+       o  <target>/replay*.json: replay diffs, including schema probe replays
+
+       o  <target>/report.md: rendered state-flow report
+
+       Use acton reverse verify-artifacts artifacts.json after moving or
+       archiving a bundle to prove that all required evidence is still present
+       and internally consistent.
+
+EXIT STATUS
+       o  0: The requested artifact was generated or validated successfully.
+
+       o  1: Network lookup, retrace, replay, parsing, artifact validation, or
+          output writing failed.
+
+EXAMPLES
+       1. Export a single transaction evidence JSON:
+
+              acton reverse retrace bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566 \
+                  --net mainnet --out tx.json --pretty
+
+       2. Run one address through the full collect-infer-replay-report loop:
+
+              acton reverse analyze EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr \
+                  --net mainnet \
+                  --target-id tonviewer-requested-target \
+                  --source-url https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr \
+                  --retrace-tx-hash bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566 \
+                  --flip-body-bit 0 \
+                  --ignore-chksig \
+                  --out-dir target/stateflow-analysis \
+                  --pretty
+
+       3. Verify a generated bundle:
+
+              acton reverse verify-artifacts target/stateflow-analysis/artifacts.json --pretty
+
+       4. Load an inferred replay probe from a manifest:
+
+              acton reverse replay --artifact-manifest target/stateflow-analysis/artifacts.json \
+                  --target-id tonviewer-requested-target \
+                  --replay-probe 0xd5e3832f:query_id \
+                  --ignore-chksig \
+                  --out replay-query-id.json \
+                  --pretty
+
+       5. Render a report from a manifest:
+
+              acton reverse report --artifact-manifest target/stateflow-analysis/artifacts.json \
+                  --target-id tonviewer-requested-target \
+                  --out report.md
+
+SEE ALSO
+       o  acton retrace
+
+       o  acton test --ui
+
+       o  acton localnet
+
+       o  Commands overview
+          <https://ton-blockchain.github.io/acton/docs/commands/overview>
+

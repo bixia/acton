@@ -16,6 +16,7 @@
     "library",
     "!localnet",
     "retrace",
+    "reverse",
     "run",
     "compile",
     "wrapper",

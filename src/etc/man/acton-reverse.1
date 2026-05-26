@@ -1,0 +1,600 @@
+'\" t
+.TH "ACTON\-REVERSE" "1"
+.nh
+.ad l
+.ss \n[.ss] 0
+.SH "NAME"
+acton\-reverse \[em] Build TON state\-flow reverse\-engineering artifacts
+.SH "SYNOPSIS"
+\fBacton reverse\fR [\fIoptions\fR] \fIcommand\fR
+.SH "DESCRIPTION"
+\fBacton reverse\fR is the Acton\-native TON state\-machine reverse\-engineering
+surface. It emits reusable JSON and Markdown artifacts instead of one\-off logs,
+so CLI commands, the Test UI, localnet UI, fork replay checks, and audit
+handoffs can consume the same evidence model.
+.sp
+The command group is organized around the state\-flow loop:
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBretrace\fR exports one \fBStateFlowTx\fR evidence JSON for a known transaction
+hash
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBcollect\fR turns recent account history into a corpus of retraced
+transactions
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBinfer\fR clusters the corpus by opcode and proposes message, storage, replay,
+outbound effect, state\-machine, confidence, and unknown\-field surfaces
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBreplay\fR replays or mutates a \fBStateFlowTx\fR on the same pre\-state and emits a
+diff
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBreport\fR renders corpus, schema, and replay artifacts into a Markdown audit
+report
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBanalyze\fR runs collect, infer, replay, and report for one target address
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBsmoke\fR runs checked\-in real\-chain targets through the full loop and writes
+a manifest bundle
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBverify\-artifacts\fR validates that a bundle still contains the evidence needed
+for the short\-, medium\-, and long\-term reverse workflow
+.RE
+.SH "ARTIFACT MODEL"
+The primary single\-transaction artifact is \fBStateFlowTx\fR\&. It includes:
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'transaction identity and replay context
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'pre/post shard account state, including code/data hashes and cell shapes
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'inbound message body/opcode evidence
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'outbound messages and parsed out actions
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'VM trace and executor trace logs
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'c5/out\-action cell evidence
+.RE
+.sp
+The higher\-level artifacts reuse the same model:
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'corpus JSON contains retraced \fBStateFlowTx\fR entries and collection failures
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'schema JSON contains opcode candidates, message/storage/effect surfaces,
+replay probes, confidence, unknown fields, and audit signals
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'replay diff JSON compares baseline and mutated observations from the same
+pre\-state
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'report Markdown renders the evidence tables used by review and audit
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'artifact manifests preserve target context, paths, and validation capability
+checks
+.RE
+.SH "SUBCOMMANDS"
+.SS "acton reverse retrace"
+Replay one transaction and emit \fBStateFlowTx\fR JSON.
+.SS "Synopsis"
+\fBacton reverse retrace\fR [\fIoptions\fR] \fIhash\fR
+.SS "Options"
+.sp
+\fIhash\fR
+.RS 4
+Transaction hash in hex format to retrace.
+.RE
+.sp
+\fB\-\-net\fR \fInetwork\fR
+.RS 4
+Network to use.
+.RE
+.sp
+\fB\-o\fR, \fB\-\-output\fR \fIpath\fR
+.RS 4
+Write state\-flow JSON to a file. \fB\-\-out\fR is also accepted.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output.
+.RE
+.SS "acton reverse collect"
+Collect recent account history into a state\-flow corpus.
+.SS "Synopsis"
+\fBacton reverse collect\fR [\fIoptions\fR] \fIaddress\fR
+.SS "Options"
+.sp
+\fIaddress\fR
+.RS 4
+Account address in friendly or raw format.
+.RE
+.sp
+\fB\-\-net\fR \fInetwork\fR
+.RS 4
+Network to use.
+.RE
+.sp
+\fB\-\-limit\fR \fIcount\fR
+.RS 4
+Maximum number of recent account transactions to collect.
+.RE
+.sp
+\fB\-o\fR, \fB\-\-output\fR \fIpath\fR
+.RS 4
+Write state\-flow corpus JSON to a file. \fB\-\-out\fR is also accepted.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output.
+.RE
+.SS "acton reverse infer"
+Infer opcode and effect schema candidates from a state\-flow corpus or artifact
+manifest.
+.SS "Synopsis"
+\fBacton reverse infer\fR [\fIoptions\fR] [\fIcorpus\fR]
+.SS "Options"
+.sp
+\fIcorpus\fR
+.RS 4
+State\-flow corpus JSON produced by \fBacton reverse collect\fR\&.
+.RE
+.sp
+\fB\-\-artifact\-manifest\fR \fIpath\fR
+.RS 4
+State\-flow artifact manifest produced by \fBacton reverse smoke\fR or
+\fBacton reverse analyze\fR\&.
+.RE
+.sp
+\fB\-\-target\-id\fR \fIid\fR
+.RS 4
+Target id to select from an artifact manifest.
+.RE
+.sp
+\fB\-o\fR, \fB\-\-output\fR \fIpath\fR
+.RS 4
+Write schema candidate JSON to a file. \fB\-\-out\fR is also accepted.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output.
+.RE
+.SS "acton reverse replay"
+Replay or mutate a \fBStateFlowTx\fR or corpus artifact and emit a diff.
+.SS "Synopsis"
+\fBacton reverse replay\fR [\fIoptions\fR] [\fIstate\-flow\fR]
+.SS "Options"
+.sp
+\fIstate\-flow\fR
+.RS 4
+\fBStateFlowTx\fR JSON from \fBacton reverse retrace\fR or corpus JSON from
+\fBacton reverse collect\fR\&.
+.RE
+.sp
+\fB\-\-artifact\-manifest\fR \fIpath\fR
+.RS 4
+State\-flow artifact manifest produced by \fBacton reverse smoke\fR or
+\fBacton reverse analyze\fR\&.
+.RE
+.sp
+\fB\-\-target\-id\fR \fIid\fR
+.RS 4
+Target id to select from an artifact manifest.
+.RE
+.sp
+\fB\-\-tx\-index\fR \fIindex\fR
+.RS 4
+Transaction index to replay when the input is a corpus artifact.
+.RE
+.sp
+\fB\-\-tx\-hash\fR \fIhash\fR
+.RS 4
+Transaction hash to replay when the input is a corpus artifact.
+.RE
+.sp
+\fB\-\-replay\-probe\fR \fIfield\fR
+.RS 4
+Replay an inferred schema probe from an artifact manifest.
+.RE
+.sp
+\fB\-\-flip\-body\-bit\fR \fIbit\fR
+.RS 4
+Flip one inbound message body bit before replay.
+.RE
+.sp
+\fB\-\-body\-boc64\fR \fIboc64\fR
+.RS 4
+Replace inbound message body with this base64 BoC before replay.
+.RE
+.sp
+\fB\-\-set\-body\-uint\fR \fIoffset:bits:value\fR
+.RS 4
+Set an unsigned integer field in the inbound body before replay.
+.RE
+.sp
+\fB\-\-ignore\-chksig\fR
+.RS 4
+Ignore TVM signature checks during local replay.
+.RE
+.sp
+\fB\-o\fR, \fB\-\-output\fR \fIpath\fR
+.RS 4
+Write replay diff JSON to a file. \fB\-\-out\fR is also accepted.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output.
+.RE
+.SS "acton reverse report"
+Generate a state\-flow reverse\-engineering report.
+.SS "Synopsis"
+\fBacton reverse report\fR [\fIoptions\fR] [\fIcorpus\fR]
+.SS "Options"
+.sp
+\fIcorpus\fR
+.RS 4
+State\-flow corpus JSON produced by \fBacton reverse collect\fR\&.
+.RE
+.sp
+\fB\-\-schema\fR \fIpath\fR
+.RS 4
+Schema candidate JSON produced by \fBacton reverse infer\fR\&.
+.RE
+.sp
+\fB\-\-replay\fR \fIpath\fR
+.RS 4
+Replay diff JSON produced by \fBacton reverse replay\fR\&. May be repeated.
+.RE
+.sp
+\fB\-\-artifact\-manifest\fR \fIpath\fR
+.RS 4
+State\-flow artifact manifest produced by \fBacton reverse smoke\fR or
+\fBacton reverse analyze\fR\&.
+.RE
+.sp
+\fB\-\-target\-id\fR \fIid\fR
+.RS 4
+Target id to select from an artifact manifest.
+.RE
+.sp
+\fB\-o\fR, \fB\-\-output\fR \fIpath\fR
+.RS 4
+Write Markdown report to a file. \fB\-\-out\fR is also accepted.
+.RE
+.SS "acton reverse verify-artifacts"
+Validate a state\-flow artifact manifest bundle.
+.SS "Synopsis"
+\fBacton reverse verify\-artifacts\fR [\fIoptions\fR] \fIartifacts\fR
+.SS "Options"
+.sp
+\fIartifacts\fR
+.RS 4
+State\-flow artifact manifest produced by \fBacton reverse smoke\fR or
+\fBacton reverse analyze\fR\&.
+.RE
+.sp
+\fB\-\-target\-id\fR \fIid\fR
+.RS 4
+Only validate artifacts for this target id.
+.RE
+.sp
+\fB\-o\fR, \fB\-\-output\fR \fIpath\fR
+.RS 4
+Write artifact validation JSON to a file. \fB\-\-out\fR is also accepted.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output.
+.RE
+.SS "acton reverse analyze"
+Run collect, infer, replay, and report for one target address.
+.SS "Synopsis"
+\fBacton reverse analyze\fR [\fIoptions\fR] \fIaddress\fR
+.SS "Options"
+.sp
+\fIaddress\fR
+.RS 4
+Account address in friendly or raw format.
+.RE
+.sp
+\fB\-\-net\fR \fInetwork\fR
+.RS 4
+Network to use.
+.RE
+.sp
+\fB\-\-target\-id\fR \fIid\fR
+.RS 4
+Target id to write into summary, manifest, validation, and output paths.
+.RE
+.sp
+\fB\-\-source\-url\fR \fIurl\fR
+.RS 4
+Source URL for the analyzed target.
+.RE
+.sp
+\fB\-\-notes\fR \fItext\fR
+.RS 4
+Human notes to preserve in the generated target artifacts.
+.RE
+.sp
+\fB\-\-limit\fR \fIcount\fR
+.RS 4
+Maximum number of recent account transactions to collect.
+.RE
+.sp
+\fB\-\-retrace\-tx\-hash\fR \fIhash\fR
+.RS 4
+Transaction hash to retrace into \fBretrace.json\fR for this analysis target.
+.RE
+.sp
+\fB\-\-replay\-tx\-index\fR \fIindex\fR
+.RS 4
+Corpus transaction index to replay.
+.RE
+.sp
+\fB\-\-replay\-tx\-hash\fR \fIhash\fR
+.RS 4
+Corpus transaction hash to replay.
+.RE
+.sp
+\fB\-\-flip\-body\-bit\fR \fIbit\fR
+.RS 4
+Flip one inbound message body bit before replay.
+.RE
+.sp
+\fB\-\-body\-boc64\fR \fIboc64\fR
+.RS 4
+Replace inbound message body with this base64 BoC before replay.
+.RE
+.sp
+\fB\-\-set\-body\-uint\fR \fIoffset:bits:value\fR
+.RS 4
+Set an unsigned integer field in the inbound body before replay.
+.RE
+.sp
+\fB\-\-ignore\-chksig\fR
+.RS 4
+Ignore TVM signature checks during local replay.
+.RE
+.sp
+\fB\-\-out\-dir\fR \fIpath\fR
+.RS 4
+Directory for analysis output artifacts.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output artifacts.
+.RE
+.SS "acton reverse smoke"
+Run state\-flow smoke targets through collect, infer, replay, and report.
+.SS "Synopsis"
+\fBacton reverse smoke\fR [\fIoptions\fR]
+.SS "Options"
+.sp
+\fB\-\-targets\fR \fIpath\fR
+.RS 4
+Smoke target manifest JSON.
+.RE
+.sp
+\fB\-\-target\-id\fR \fIid\fR
+.RS 4
+Only run the smoke target with this id.
+.RE
+.sp
+\fB\-\-out\-dir\fR \fIpath\fR
+.RS 4
+Directory for smoke output artifacts.
+.RE
+.sp
+\fB\-\-pretty\fR
+.RS 4
+Pretty\-print JSON output artifacts.
+.RE
+.SS "Display Options"
+.sp
+\fB\-\-color\fR \fIwhen\fR
+.RS 4
+Control when to use colored output.
+.sp
+Possible values: \fBauto\fR, \fBalways\fR, \fBnever\fR
+.RE
+.SS "Project Options"
+.sp
+\fB\-\-manifest\-path\fR \fIpath\fR
+.RS 4
+Path to the \fBActon.toml\fR file to use for this invocation.
+.sp
+Use this when running the command outside the project directory or when the
+manifest lives at a non\-default location.
+.RE
+.sp
+\fB\-\-project\-root\fR \fIpath\fR
+.RS 4
+Path to the project root to use for configuration discovery and relative
+defaults.
+.sp
+This conflicts with \fB\-\-manifest\-path\fR\&.
+.RE
+.SH "ENVIRONMENT"
+Built\-in \fBmainnet\fR/\fBtestnet\fR requests read \fBTONCENTER_MAINNET_API_KEY\fR or
+\fBTONCENTER_TESTNET_API_KEY\fR, depending on the selected network.
+.sp
+Both built\-in networks also fall back to \fBTON_CENTER_API_KEY\fR, which is useful
+when one shared key is kept in a local \fB\&.env\fR file.
+.sp
+Acton loads \fB\&.env\fR automatically, so the simplest setup during project work is
+usually to keep these keys there and use shell environment variables only for
+one\-off overrides or CI.
+.SH "OUTPUT LAYOUT"
+\fBacton reverse analyze\fR and \fBacton reverse smoke\fR write a bundle directory with
+these stable paths:
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBsummary.json\fR: run\-level target status and output paths
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBartifacts.json\fR: portable artifact manifest
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBvalidation.json\fR: bundle validation result and capability checks
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB<target>/corpus.json\fR: collected retraced transactions
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB<target>/schema.json\fR: inferred schema and state\-machine surfaces
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB<target>/transaction\-<n>.json\fR: selected replay source transaction
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB<target>/retrace.json\fR: explicit retrace target when configured
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB<target>/replay*.json\fR: replay diffs, including schema probe replays
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB<target>/report.md\fR: rendered state\-flow report
+.RE
+.sp
+Use \fBacton reverse verify\-artifacts artifacts.json\fR after moving or archiving a
+bundle to prove that all required evidence is still present and internally
+consistent.
+.SH "EXIT STATUS"
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB0\fR: The requested artifact was generated or validated successfully.
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fB1\fR: Network lookup, retrace, replay, parsing, artifact validation, or output
+writing failed.
+.RE
+.SH "EXAMPLES"
+.sp
+.RS 4
+\h'-04' 1.\h'+01'Export a single transaction evidence JSON:
+.sp
+.RS 4
+.nf
+acton reverse retrace bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566 \(rs
+    \-\-net mainnet \-\-out tx.json \-\-pretty
+.fi
+.RE
+.RE
+.sp
+.RS 4
+\h'-04' 2.\h'+01'Run one address through the full collect\-infer\-replay\-report loop:
+.sp
+.RS 4
+.nf
+acton reverse analyze EQAgvOlWk7C0Pz3YgSaX\-MA7UDDhE9n6eQgQRwJahOBm4VKr \(rs
+    \-\-net mainnet \(rs
+    \-\-target\-id tonviewer\-requested\-target \(rs
+    \-\-source\-url https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX\-MA7UDDhE9n6eQgQRwJahOBm4VKr \(rs
+    \-\-retrace\-tx\-hash bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566 \(rs
+    \-\-flip\-body\-bit 0 \(rs
+    \-\-ignore\-chksig \(rs
+    \-\-out\-dir target/stateflow\-analysis \(rs
+    \-\-pretty
+.fi
+.RE
+.RE
+.sp
+.RS 4
+\h'-04' 3.\h'+01'Verify a generated bundle:
+.sp
+.RS 4
+.nf
+acton reverse verify\-artifacts target/stateflow\-analysis/artifacts.json \-\-pretty
+.fi
+.RE
+.RE
+.sp
+.RS 4
+\h'-04' 4.\h'+01'Load an inferred replay probe from a manifest:
+.sp
+.RS 4
+.nf
+acton reverse replay \-\-artifact\-manifest target/stateflow\-analysis/artifacts.json \(rs
+    \-\-target\-id tonviewer\-requested\-target \(rs
+    \-\-replay\-probe 0xd5e3832f:query_id \(rs
+    \-\-ignore\-chksig \(rs
+    \-\-out replay\-query\-id.json \(rs
+    \-\-pretty
+.fi
+.RE
+.RE
+.sp
+.RS 4
+\h'-04' 5.\h'+01'Render a report from a manifest:
+.sp
+.RS 4
+.nf
+acton reverse report \-\-artifact\-manifest target/stateflow\-analysis/artifacts.json \(rs
+    \-\-target\-id tonviewer\-requested\-target \(rs
+    \-\-out report.md
+.fi
+.RE
+.RE
+.SH "SEE ALSO"
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBacton retrace\fR
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBacton test \-\-ui\fR
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fBacton localnet\fR
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+03'\fICommands overview\fR <https://ton\-blockchain.github.io/acton/docs/commands/overview>
+.RE

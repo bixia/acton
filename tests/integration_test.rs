@@ -22,6 +22,7 @@ const MANUAL_COMMANDS: &[&str] = &[
     "disasm",
     "fmt",
     "retrace",
+    "reverse",
     "test",
     "check",
     "script",

@@ -107,6 +107,13 @@ pub(super) const COMMAND_MANUALS: &[CommandManualSpec] = &[
         docs_description: "Reference manual for the acton retrace command",
     },
     CommandManualSpec {
+        command: "reverse",
+        source_name: "acton-reverse.md",
+        docs_slug: "reverse",
+        docs_title: "acton reverse",
+        docs_description: "Reference manual for the acton reverse command",
+    },
+    CommandManualSpec {
         command: "run",
         source_name: "acton-run.md",
         docs_slug: "run",

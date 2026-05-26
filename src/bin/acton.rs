@@ -878,7 +878,10 @@ enum Commands {
         #[arg(long, help = "Debug server port", help_heading = "Debugging")]
         debug_port: Option<u16>,
     },
-    #[command(about = "Reverse-engineer TON transaction state flows")]
+    #[command(
+        about = "Reverse-engineer TON transaction state flows",
+        after_help = detailed_help_pointer("reverse")
+    )]
     Reverse {
         #[command(subcommand)]
         command: ReverseCommand,
