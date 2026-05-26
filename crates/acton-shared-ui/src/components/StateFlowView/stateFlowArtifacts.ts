@@ -74,6 +74,8 @@ export interface StateFlowArtifactBundleEntry {
   readonly targetId?: string | null
   readonly sourceName: string
   readonly artifactKind: StateFlowArtifact["kind"]
+  readonly auditSignalCount?: number
+  readonly unknownFieldCount?: number
 }
 
 export interface StateFlowArtifactBundleParseFailure {
@@ -871,6 +873,7 @@ export function parseStateFlowArtifactBundleFromSources(
         targetId: manifestArtifact.targetId,
         sourceName: sourceArtifact.source.name,
         artifactKind: sourceArtifact.artifact.kind,
+        ...stateFlowArtifactRiskCounts(sourceArtifact.artifact),
       })
     }
   } else {
@@ -879,6 +882,7 @@ export function parseStateFlowArtifactBundleFromSources(
         kind: artifact.kind,
         sourceName: source.name,
         artifactKind: artifact.kind,
+        ...stateFlowArtifactRiskCounts(artifact),
       })),
     )
   }
@@ -1593,6 +1597,7 @@ function summarizeArtifactBundle(bundle: StateFlowArtifactBundle): ArtifactSumma
     ? validationCapabilityCounts(bundle.validation, capabilityRows)
     : {total: 0, passed: 0, failed: 0}
   const coverageRows = bundleCoverageRows(bundle)
+  const riskRows = bundleRiskRows(bundle)
   return {
     title: "State Flow Artifact Bundle",
     subtitle: bundle.manifest?.summary,
@@ -1624,6 +1629,14 @@ function summarizeArtifactBundle(bundle: StateFlowArtifactBundle): ArtifactSumma
             {
               title: "Coverage Matrix",
               rows: coverageRows,
+            },
+          ]
+        : []),
+      ...(riskRows.length > 0
+        ? [
+            {
+              title: "Risk Matrix",
+              rows: riskRows,
             },
           ]
         : []),
@@ -1735,6 +1748,111 @@ function bundleCoverageRows(bundle: StateFlowArtifactBundle): readonly SummaryRo
         .filter(value => value.length > 0)
         .join(" · "),
     }))
+}
+
+function bundleRiskRows(bundle: StateFlowArtifactBundle): readonly SummaryRow[] {
+  const risks = new Map<
+    string,
+    {
+      readonly protocol: string
+      readonly category: string
+      readonly contractTypes: Set<string>
+      targetCount: number
+      riskTargetCount: number
+      auditSignalCount: number
+      unknownFieldCount: number
+    }
+  >()
+  for (const target of bundle.targets) {
+    const context = target.manifestTarget ?? target.validationTarget ?? target.summaryTarget
+    const protocol = context?.protocol
+    const category = context?.category
+    if (!protocol || !category) {
+      continue
+    }
+    const key = `${protocol}\u0000${category}`
+    const entry = risks.get(key) ?? {
+      protocol,
+      category,
+      contractTypes: new Set<string>(),
+      targetCount: 0,
+      riskTargetCount: 0,
+      auditSignalCount: 0,
+      unknownFieldCount: 0,
+    }
+    const targetRisk = bundleTargetRiskCounts(target)
+    entry.targetCount += 1
+    if (targetRisk.auditSignalCount > 0 || targetRisk.unknownFieldCount > 0) {
+      entry.riskTargetCount += 1
+    }
+    entry.auditSignalCount += targetRisk.auditSignalCount
+    entry.unknownFieldCount += targetRisk.unknownFieldCount
+    if (context.contractType) {
+      entry.contractTypes.add(context.contractType)
+    }
+    risks.set(key, entry)
+  }
+
+  return [...risks.values()]
+    .sort((left, right) =>
+      `${left.protocol}/${left.category}`.localeCompare(`${right.protocol}/${right.category}`),
+    )
+    .map(entry => ({
+      label: `${entry.protocol} / ${entry.category}`,
+      value: `${entry.targetCount} ${plural(entry.targetCount, "target")}`,
+      detail: [
+        [...entry.contractTypes].sort().join(", "),
+        `${entry.riskTargetCount} ${plural(entry.riskTargetCount, "risk target")}`,
+        `audit signals ${entry.auditSignalCount}`,
+        `unknown fields ${entry.unknownFieldCount}`,
+      ]
+        .filter(value => value.length > 0)
+        .join(" · "),
+    }))
+}
+
+function bundleTargetRiskCounts(target: StateFlowArtifactBundleTarget): {
+  readonly auditSignalCount: number
+  readonly unknownFieldCount: number
+} {
+  const schemaArtifacts = target.loadedArtifacts.filter(
+    artifact => artifact.artifactKind === "schema",
+  )
+  const schemaAuditSignalCount = schemaArtifacts.reduce(
+    (count, artifact) => count + (artifact.auditSignalCount ?? 0),
+    0,
+  )
+  return {
+    auditSignalCount:
+      schemaArtifacts.length > 0
+        ? schemaAuditSignalCount
+        : (target.summaryTarget?.auditSignalCount ?? 0),
+    unknownFieldCount: schemaArtifacts.reduce(
+      (count, artifact) => count + (artifact.unknownFieldCount ?? 0),
+      0,
+    ),
+  }
+}
+
+function stateFlowArtifactRiskCounts(artifact: StateFlowArtifact): {
+  readonly auditSignalCount?: number
+  readonly unknownFieldCount?: number
+} {
+  if (artifact.kind !== "schema") {
+    return {}
+  }
+
+  return {
+    auditSignalCount: schemaAuditSignals(artifact.data).length,
+    unknownFieldCount: schemaUnknownFieldCount(artifact.data),
+  }
+}
+
+function schemaUnknownFieldCount(schema: StateFlowSchemaReport): number {
+  return schema.opcodeCandidates.reduce(
+    (count, candidate) => count + candidateUnknownFieldEvidence(candidate).length,
+    0,
+  )
 }
 
 function summarizeReport(report: StateFlowReport): ArtifactSummary {

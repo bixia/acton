@@ -704,6 +704,19 @@ assert(
 )
 assert(
   bundleView.sections
+    .find(section => section.title === "Risk Matrix")
+    ?.rows.some(
+      row =>
+        row.label === "sample-protocol / sample-category" &&
+        row.value === "1 target" &&
+        row.detail?.includes("sample contract") === true &&
+        row.detail?.includes("audit signals 1") === true &&
+        row.detail?.includes("unknown fields 1") === true,
+    ) === true,
+  "expected artifact bundle risk matrix rows to group schema risk markers by protocol and category",
+)
+assert(
+  bundleView.sections
     .find(section => section.title === "Loaded Artifacts")
     ?.rows.some(
       row => row.label === "target-a replay" && row.value === "out/target-a/replay.json",
