@@ -1025,8 +1025,8 @@ fn run_state_flow_targets(
             opcode_candidate_count: schema.opcode_candidates.len(),
             state_edge_count: schema.state_machine.edges.len(),
             audit_signal_count: schema.audit_signals.len(),
-            unknown_field_count: ton_stateflow::schema_unknown_field_count(&schema),
-            replay_risk_signal_count: ton_stateflow::replay_risk_signal_count(&replays),
+            unknown_field_count: Some(ton_stateflow::schema_unknown_field_count(&schema)),
+            replay_risk_signal_count: Some(ton_stateflow::replay_risk_signal_count(&replays)),
             replay_count: replays.len(),
             passed: false,
             gate_failures: Vec::new(),
@@ -1557,9 +1557,10 @@ struct SmokeTargetRunSummary {
     opcode_candidate_count: usize,
     state_edge_count: usize,
     audit_signal_count: usize,
-    unknown_field_count: usize,
     #[serde(default)]
-    replay_risk_signal_count: usize,
+    unknown_field_count: Option<usize>,
+    #[serde(default)]
+    replay_risk_signal_count: Option<usize>,
     replay_count: usize,
     passed: bool,
     gate_failures: Vec<String>,
@@ -4806,8 +4807,6 @@ fn validate_smoke_target_summary_evidence_keys(
         ("opcode candidate count", &["opcodeCandidateCount"][..]),
         ("state edge count", &["stateEdgeCount"][..]),
         ("audit signal count", &["auditSignalCount"][..]),
-        ("unknown field count", &["unknownFieldCount"][..]),
-        ("replay risk signal count", &["replayRiskSignalCount"][..]),
         ("replay count", &["replayCount"][..]),
         ("passed", &["passed"][..]),
         ("gate failures", &["gateFailures"][..]),
@@ -5100,24 +5099,28 @@ fn validate_manifest_target_content_matches_summary(
             target.audit_signal_count,
             gate_failures,
         );
-        validate_target_usize_field(
-            "schema unknown field count",
-            ton_stateflow::schema_unknown_field_count(&schema),
-            "summary unknown field count",
-            target.unknown_field_count,
-            gate_failures,
-        );
+        if let Some(unknown_field_count) = target.unknown_field_count {
+            validate_target_usize_field(
+                "schema unknown field count",
+                ton_stateflow::schema_unknown_field_count(&schema),
+                "summary unknown field count",
+                unknown_field_count,
+                gate_failures,
+            );
+        }
         validate_schema_corpus_membership(&schema, corpus.as_ref(), gate_failures);
         validate_schema_replay_probe_artifacts(&schema, manifest_path, artifacts, gate_failures);
     }
     let replays =
         read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay");
-    if !replays.is_empty() {
+    if !replays.is_empty() && target.replay_risk_signal_count.is_some() {
         validate_target_usize_field(
             "replay risk signal count",
             ton_stateflow::replay_risk_signal_count(&replays),
             "summary replay risk signal count",
-            target.replay_risk_signal_count,
+            target
+                .replay_risk_signal_count
+                .expect("replay risk signal count was checked above"),
             gate_failures,
         );
     }
@@ -7627,28 +7630,28 @@ fn validate_manifest_report_content_matches_summary(
         &markdown,
         "replay diff count",
         "- Replay diffs:",
-        target.replay_count,
+        Some(target.replay_count),
         gate_failures,
     );
     validate_optional_report_target_count(
         &markdown,
         "opcode candidate count",
         "- Opcode candidates:",
-        target.opcode_candidate_count,
+        Some(target.opcode_candidate_count),
         gate_failures,
     );
     validate_optional_report_target_count(
         &markdown,
         "state edge count",
         "- State machine edges:",
-        target.state_edge_count,
+        Some(target.state_edge_count),
         gate_failures,
     );
     validate_optional_report_target_count(
         &markdown,
         "audit signal count",
         "- Audit signals:",
-        target.audit_signal_count,
+        Some(target.audit_signal_count),
         gate_failures,
     );
     validate_optional_report_target_count(
@@ -8015,9 +8018,12 @@ fn validate_optional_report_target_count(
     markdown: &str,
     label: &str,
     prefix: &str,
-    expected: usize,
+    expected: Option<usize>,
     gate_failures: &mut Vec<String>,
 ) {
+    let Some(expected) = expected else {
+        return;
+    };
     if markdown
         .lines()
         .any(|line| line.trim_start().starts_with(prefix))
@@ -19064,6 +19070,37 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_accepts_legacy_summary_without_derived_risk_counts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let summary_path = temp_dir.path().join("summary.json");
+        let mut summary: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("summary should be readable"),
+        )
+        .expect("summary should parse");
+        let target = summary["targets"][0]
+            .as_object_mut()
+            .expect("summary target should be an object");
+        target.remove("unknownFieldCount");
+        target.remove("replayRiskSignalCount");
+        write_sample_validation_artifact(temp_dir.path(), "summary.json", &summary.to_string());
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(
+            validation.passed,
+            "legacy summary should validate from schema/replay artifacts, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_summary_missing_transaction_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -19451,8 +19488,8 @@ mod tests {
             opcode_candidate_count: 1,
             state_edge_count: 1,
             audit_signal_count: 1,
-            unknown_field_count: 1,
-            replay_risk_signal_count: 1,
+            unknown_field_count: Some(1),
+            replay_risk_signal_count: Some(1),
             replay_count: 1,
             passed: false,
             gate_failures: Vec::new(),
