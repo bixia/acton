@@ -4516,15 +4516,7 @@ fn artifact_capability_checks(
     gate_failures: &[String],
 ) -> Vec<ArtifactCapabilityCheck> {
     vec![
-        artifact_capability_check(
-            "stateFlowTx",
-            "StateFlowTx evidence JSON",
-            &["transaction"],
-            &["retrace"],
-            artifacts,
-            gate_failures,
-            "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
-        ),
+        state_flow_tx_artifact_capability_check(artifacts, gate_failures),
         artifact_capability_check(
             "corpus",
             "Collect corpus",
@@ -4564,6 +4556,30 @@ fn artifact_capability_checks(
     ]
 }
 
+fn state_flow_tx_artifact_capability_check(
+    artifacts: &[&SmokeArtifactManifestEntry],
+    gate_failures: &[String],
+) -> ArtifactCapabilityCheck {
+    let evidence_kinds = ["transaction", "retrace"];
+    let missing = if evidence_kinds
+        .iter()
+        .any(|kind| artifacts.iter().any(|artifact| artifact.kind == *kind))
+    {
+        Vec::new()
+    } else {
+        vec!["missing transaction or retrace artifact".to_owned()]
+    };
+    artifact_capability_check_with_missing(
+        "stateFlowTx",
+        "StateFlowTx evidence JSON",
+        &evidence_kinds,
+        missing,
+        artifacts,
+        gate_failures,
+        "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
+    )
+}
+
 fn artifact_capability_check(
     id: &str,
     label: &str,
@@ -4578,6 +4594,31 @@ fn artifact_capability_check(
         .chain(related_kinds.iter())
         .copied()
         .collect::<Vec<_>>();
+    let missing = required_kinds
+        .iter()
+        .filter(|kind| !artifacts.iter().any(|artifact| artifact.kind == **kind))
+        .map(|kind| format!("missing {kind} artifact"))
+        .collect::<Vec<_>>();
+    artifact_capability_check_with_missing(
+        id,
+        label,
+        &evidence_kinds,
+        missing,
+        artifacts,
+        gate_failures,
+        success_evidence,
+    )
+}
+
+fn artifact_capability_check_with_missing(
+    id: &str,
+    label: &str,
+    evidence_kinds: &[&str],
+    missing: Vec<String>,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    gate_failures: &[String],
+    success_evidence: &str,
+) -> ArtifactCapabilityCheck {
     let paths = evidence_kinds
         .iter()
         .flat_map(|kind| {
@@ -4586,11 +4627,6 @@ fn artifact_capability_check(
                 .filter(move |artifact| artifact.kind == *kind)
                 .map(move |artifact| format!("{kind}:{}", artifact.path))
         })
-        .collect::<Vec<_>>();
-    let missing = required_kinds
-        .iter()
-        .filter(|kind| !artifacts.iter().any(|artifact| artifact.kind == **kind))
-        .map(|kind| format!("missing {kind} artifact"))
         .collect::<Vec<_>>();
     let scoped_failures = gate_failures
         .iter()
@@ -12544,6 +12580,57 @@ mod tests {
             "expected StateFlowTx evidence to include retrace artifact, got {:?}",
             state_flow_check.evidence
         );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_accepts_retrace_as_state_flow_capability() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        summary.targets[0].transaction = None;
+        summary.targets[0].retrace = Some("target-a/retrace.json".to_owned());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "summary.json",
+            &serde_json::to_string(&summary).expect("summary should serialize"),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/retrace.json",
+            &sample_state_flow_json("tx-a").to_string(),
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest
+            .artifacts
+            .retain(|artifact| artifact.kind != "transaction");
+        manifest.artifacts.insert(
+            3,
+            super::SmokeArtifactManifestEntry::new(
+                "retrace",
+                "target-a/retrace.json",
+                Some("target-a".to_owned()),
+            ),
+        );
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        let state_flow_check = validation.targets[0]
+            .capability_checks
+            .iter()
+            .find(|check| check.id == "stateFlowTx")
+            .expect("stateFlowTx capability check should exist");
+        assert!(
+            state_flow_check.passed,
+            "retrace StateFlowTx artifact should satisfy the stateFlowTx capability, got {:?}",
+            state_flow_check
+        );
+        assert_eq!(validation.targets[0].capability_failed_count, 0);
+        assert_eq!(validation.capability_failed_count, 0);
     }
 
     #[test]
