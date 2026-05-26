@@ -1820,11 +1820,15 @@ pub fn replay_diff_surface(replay: &StateFlowReplayDiff) -> ReplayDiffSurface {
     }
 
     if replay.diff.state_changed == Some(true) {
+        let (baseline_label, replay_label) = replay_state_surface_labels(
+            replay.baseline.state.as_ref(),
+            replay.replay.state.as_ref(),
+        );
         changes.push(replay_diff_change(
             "state",
             "Shard account state",
-            replay_state_label(replay.baseline.state.as_ref()),
-            replay_state_label(replay.replay.state.as_ref()),
+            baseline_label,
+            replay_label,
             None,
             "high",
             source,
@@ -1940,10 +1944,37 @@ fn replay_diff_change(
     }
 }
 
+fn replay_state_surface_labels(
+    baseline: Option<&ShardAccountSnapshot>,
+    replay: Option<&ShardAccountSnapshot>,
+) -> (String, String) {
+    if let Some((baseline, replay)) = baseline.zip(replay) {
+        if baseline.status == replay.status {
+            return (
+                replay_state_fingerprint(baseline),
+                replay_state_fingerprint(replay),
+            );
+        }
+    }
+    (replay_state_label(baseline), replay_state_label(replay))
+}
+
 fn replay_state_label(state: Option<&ShardAccountSnapshot>) -> String {
     state
         .map(|state| state.status.clone())
         .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn replay_state_fingerprint(state: &ShardAccountSnapshot) -> String {
+    format!(
+        "{} balance {} lt {} last {} code {} data {}",
+        state.status,
+        state.balance_nanotons,
+        state.last_trans_lt,
+        state.last_trans_hash,
+        state.code_hash.as_deref().unwrap_or("<none>"),
+        state.data_hash.as_deref().unwrap_or("<none>")
+    )
 }
 
 fn replay_state_code_hash(state: Option<&ShardAccountSnapshot>) -> String {
@@ -5145,6 +5176,35 @@ mod tests {
         assert!(report.contains("## Replay Diff Surface"));
         assert!(report.contains("| Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |"));
         assert!(report.contains("| `tx-a` | flip body bit 0 | state | Shard account state | none | active | n/a | high | `tx-a` |"));
+    }
+
+    #[test]
+    fn replay_diff_state_surface_distinguishes_same_status_state_changes() {
+        let mut replay = sample_replay_diff(
+            "tx-a",
+            ReplayMutation::FlipBodyBit { bit: 0 },
+            true,
+            Some(true),
+        );
+        let flow = sample_flow("tx-a", Some("0x00000001"));
+        let mut replay_state = flow.state.post.clone();
+        replay_state.last_trans_lt = 43;
+        replay_state.last_trans_hash = "22".to_owned();
+        replay_state.balance_nanotons = "2".to_owned();
+        replay.baseline.state = Some(flow.state.post);
+        replay.replay.state = Some(replay_state);
+
+        let surface = super::replay_diff_surface(&replay);
+
+        assert_eq!(surface.changes[0].kind, "state");
+        assert_eq!(
+            surface.changes[0].baseline,
+            "active balance 1 lt 42 last 11 code code data data"
+        );
+        assert_eq!(
+            surface.changes[0].replay,
+            "active balance 2 lt 43 last 22 code code data data"
+        );
     }
 
     #[test]

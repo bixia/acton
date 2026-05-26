@@ -559,6 +559,43 @@ const setBodyUintReplay = {
   mutation: {type: "setBodyUint", bitOffset: 32, bits: 64, value: "42"},
 }
 
+const replayWithoutDiffSurface = {
+  ...replay,
+  baseline: {
+    ...replay.baseline,
+    state: {
+      shardAccountBoc64: "baseline-state",
+      lastTransLt: 42,
+      lastTransHash: "11",
+      accountAddress: "addr",
+      status: "active",
+      balanceNanotons: "1",
+      codeHash: "code",
+      dataHash: "data",
+      codeCell: null,
+      dataCell: null,
+      frozenHash: null,
+    },
+  },
+  replay: {
+    ...replay.replay,
+    state: {
+      shardAccountBoc64: "replay-state",
+      lastTransLt: 43,
+      lastTransHash: "22",
+      accountAddress: "addr",
+      status: "active",
+      balanceNanotons: "2",
+      codeHash: "code",
+      dataHash: "data",
+      codeCell: null,
+      dataCell: null,
+      frozenHash: null,
+    },
+  },
+  diffSurface: undefined,
+}
+
 const runSummary = {
   schemaVersion: 1,
   targetCount: 2,
@@ -1064,6 +1101,15 @@ assert(
   replayDiffSurfaceRows[0]?.detail ===
     "baseline active · replay frozen · severity high · evidence tx-hash",
   "expected replay diff surface detail",
+)
+const replayFallbackSummary = summarizeStateFlowArtifact(
+  parseStateFlowArtifact(JSON.stringify(replayWithoutDiffSurface)),
+)
+const replayFallbackSurfaceRows = sectionRows(replayFallbackSummary, "Replay Diff Surface")
+assert(
+  replayFallbackSurfaceRows[0]?.detail ===
+    "baseline active balance 1 lt 42 last 11 code code data data · replay active balance 2 lt 43 last 22 code code data data · severity high · evidence tx-a",
+  "expected fallback replay diff surface to distinguish same-status state changes",
 )
 const replayRiskRows = sectionRows(replaySummary, "Risk Points")
 assert(

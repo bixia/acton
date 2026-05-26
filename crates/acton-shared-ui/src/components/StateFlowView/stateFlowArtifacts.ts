@@ -3077,12 +3077,16 @@ function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSur
   }
 
   if (replay.diff.stateChanged === true) {
+    const [baselineState, replayState] = replayStateSurfaceLabels(
+      replay.baseline.state,
+      replay.replay.state,
+    )
     changes.push(
       replayDiffChange(
         "state",
         "Shard account state",
-        replay.baseline.state?.status ?? "n/a",
-        replay.replay.state?.status ?? "n/a",
+        baselineState,
+        replayState,
         null,
         "high",
         replay,
@@ -3214,6 +3218,20 @@ function replayDiffChange(
     severity,
     evidence: [replay.sourceQueryHash],
   }
+}
+
+function replayStateSurfaceLabels(
+  baseline: ShardAccountSnapshot | null | undefined,
+  replay: ShardAccountSnapshot | null | undefined,
+): readonly [string, string] {
+  if (baseline && replay && baseline.status === replay.status) {
+    return [replayStateFingerprint(baseline), replayStateFingerprint(replay)]
+  }
+  return [baseline?.status ?? "n/a", replay?.status ?? "n/a"]
+}
+
+function replayStateFingerprint(state: ShardAccountSnapshot): string {
+  return `${state.status} balance ${state.balanceNanotons} lt ${state.lastTransLt} last ${state.lastTransHash} code ${state.codeHash ?? "<none>"} data ${state.dataHash ?? "<none>"}`
 }
 
 function replayBalanceDeltaLabel(observation: ReplayObservation): string {
