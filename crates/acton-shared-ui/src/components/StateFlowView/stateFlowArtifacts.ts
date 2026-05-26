@@ -121,6 +121,8 @@ export interface StateFlowRunSummary {
   readonly passed: boolean
   readonly absolutePathCount?: number
   readonly gateFailures: readonly string[]
+  readonly artifactManifest?: string | null
+  readonly validation?: string | null
   readonly targets: readonly StateFlowRunTargetSummary[]
 }
 
@@ -766,6 +768,7 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
 
 function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
   const artifactRows = runSummaryArtifactRows(summary)
+  const bundleRows = runSummaryBundleRows(summary)
   return {
     title: "State Flow Run Summary",
     metrics: [
@@ -796,6 +799,14 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
           ].join(" · "),
         })),
       },
+      ...(bundleRows.length > 0
+        ? [
+            {
+              title: "Bundle Artifacts",
+              rows: bundleRows,
+            },
+          ]
+        : []),
       ...(artifactRows.length > 0
         ? [
             {
@@ -1555,6 +1566,15 @@ function formatGateFailureRow(failure: string): SummaryRow {
 
 function runSummaryArtifactRows(summary: StateFlowRunSummary): readonly SummaryRow[] {
   return summary.targets.flatMap(target => targetArtifactRows(target))
+}
+
+function runSummaryBundleRows(summary: StateFlowRunSummary): readonly SummaryRow[] {
+  return [
+    ...(summary.artifactManifest
+      ? [{label: "Artifact Manifest", value: summary.artifactManifest}]
+      : []),
+    ...(summary.validation ? [{label: "Validation", value: summary.validation}] : []),
+  ]
 }
 
 function targetArtifactRows(target: StateFlowRunTargetSummary): readonly SummaryRow[] {

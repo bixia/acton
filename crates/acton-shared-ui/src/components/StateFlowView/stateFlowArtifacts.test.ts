@@ -216,6 +216,8 @@ const runSummary = {
   passed: true,
   absolutePathCount: 0,
   gateFailures: [],
+  artifactManifest: "out/artifacts.json",
+  validation: "out/validation.json",
   targets: [
     {
       id: "target-a",
@@ -475,6 +477,12 @@ assert(runSummaryView.title === "State Flow Run Summary", "expected run summary 
 assert(
   runSummaryView.sections[0]?.rows[0]?.detail?.includes("opcodes 1") === true,
   "expected run summary target detail",
+)
+assert(
+  runSummaryView.sections
+    .find(section => section.title === "Bundle Artifacts")
+    ?.rows.some(row => row.label === "Validation" && row.value === "out/validation.json") === true,
+  "expected run summary to include bundle artifact entrypoints",
 )
 assert(
   runSummaryView.sections

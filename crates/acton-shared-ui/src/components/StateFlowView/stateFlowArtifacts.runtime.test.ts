@@ -298,6 +298,8 @@ const runSummary = {
   passed: false,
   absolutePathCount: 0,
   gateFailures: ["target-b: replays 0"],
+  artifactManifest: "out/artifacts.json",
+  validation: "out/validation.json",
   targets: [
     {
       id: "target-a",
@@ -682,6 +684,11 @@ assert(
 )
 assert(targetRows[1]?.value === "failed", "expected failed target value")
 const runArtifactRows = sectionRows(runSummaryView, "Target Artifacts")
+const bundleArtifactRows = sectionRows(runSummaryView, "Bundle Artifacts")
+assert(bundleArtifactRows[0]?.label === "Artifact Manifest", "expected manifest bundle row")
+assert(bundleArtifactRows[0]?.value === "out/artifacts.json", "expected manifest bundle path")
+assert(bundleArtifactRows[1]?.label === "Validation", "expected validation bundle row")
+assert(bundleArtifactRows[1]?.value === "out/validation.json", "expected validation bundle path")
 assert(runArtifactRows[0]?.label === "target-a corpus", "expected target corpus artifact row")
 assert(runArtifactRows[0]?.value === "out/target-a/corpus.json", "expected corpus artifact path")
 assert(runArtifactRows[1]?.label === "target-a schema", "expected target schema artifact row")

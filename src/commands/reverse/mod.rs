@@ -921,8 +921,13 @@ fn write_smoke_summary_and_gate(
     out_dir: &Path,
     pretty: bool,
 ) -> anyhow::Result<()> {
-    let portable_summary = summary.with_paths_relative_to(out_dir);
     let summary_path = out_dir.join("summary.json");
+    let manifest_path = out_dir.join("artifacts.json");
+    let validation_path = out_dir.join(VALIDATION_ARTIFACT_PATH);
+    let portable_summary = summary.with_paths_relative_to(out_dir).with_bundle_paths(
+        manifest_relative_path(&manifest_path, out_dir),
+        manifest_relative_path(&validation_path, out_dir),
+    );
     write_json(
         &portable_summary,
         Some(summary_path.clone()),
@@ -930,14 +935,12 @@ fn write_smoke_summary_and_gate(
         "State-flow smoke summary JSON",
     )?;
     let manifest = SmokeArtifactManifest::from_summary(&portable_summary, out_dir);
-    let manifest_path = out_dir.join("artifacts.json");
     write_json(
         &manifest,
         Some(manifest_path.clone()),
         pretty,
         "State-flow artifact manifest JSON",
     )?;
-    let validation_path = out_dir.join(VALIDATION_ARTIFACT_PATH);
     let pending_validation = pending_artifact_manifest_validation(&manifest, &manifest_path);
     write_json_to_path(&pending_validation, &validation_path, pretty)?;
 
@@ -1217,6 +1220,10 @@ struct SmokeRunSummary {
     passed: bool,
     absolute_path_count: usize,
     gate_failures: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artifact_manifest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validation: Option<String>,
     targets: Vec<SmokeTargetRunSummary>,
 }
 
@@ -1228,6 +1235,8 @@ impl SmokeRunSummary {
             passed: false,
             absolute_path_count: 0,
             gate_failures: Vec::new(),
+            artifact_manifest: None,
+            validation: None,
             targets,
         };
         summary.refresh_gate_status();
@@ -1236,11 +1245,27 @@ impl SmokeRunSummary {
 
     fn with_paths_relative_to(&self, artifact_dir: &Path) -> Self {
         let mut summary = self.clone();
+        if let Some(artifact_manifest) = &summary.artifact_manifest {
+            summary.artifact_manifest = Some(manifest_relative_path(
+                Path::new(artifact_manifest),
+                artifact_dir,
+            ));
+        }
+        if let Some(validation) = &summary.validation {
+            summary.validation = Some(manifest_relative_path(Path::new(validation), artifact_dir));
+        }
         for target in &mut summary.targets {
             target.rewrite_paths_relative_to(artifact_dir);
         }
         summary.refresh_gate_status();
         summary
+    }
+
+    fn with_bundle_paths(mut self, artifact_manifest: String, validation: String) -> Self {
+        self.artifact_manifest = Some(artifact_manifest);
+        self.validation = Some(validation);
+        self.refresh_gate_status();
+        self
     }
 
     fn refresh_gate_status(&mut self) {
@@ -1249,7 +1274,8 @@ impl SmokeRunSummary {
             .targets
             .iter()
             .map(smoke_target_absolute_path_count)
-            .sum();
+            .sum::<usize>()
+            + smoke_summary_bundle_absolute_path_count(self);
         for target in &mut self.targets {
             target.refresh_gate_status();
         }
@@ -1409,6 +1435,17 @@ fn smoke_target_absolute_path_count(target: &SmokeTargetRunSummary) -> usize {
             .iter()
             .filter(|path| Path::new(path).is_absolute())
             .count()
+}
+
+fn smoke_summary_bundle_absolute_path_count(summary: &SmokeRunSummary) -> usize {
+    [
+        summary.artifact_manifest.as_deref(),
+        summary.validation.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|path| Path::new(path).is_absolute())
+    .count()
 }
 
 fn smoke_manifest_absolute_path_count(
@@ -1614,7 +1651,13 @@ fn validate_artifact_manifest_bundle_with_mode(
 
     let summary = validate_manifest_summary_artifact(manifest, manifest_path, &mut gate_failures);
     if let Some(summary) = &summary {
-        validate_manifest_summary_targets(manifest, &target_ids, summary, &mut gate_failures);
+        validate_manifest_summary_targets(
+            manifest,
+            manifest_path,
+            &target_ids,
+            summary,
+            &mut gate_failures,
+        );
     }
     let mut target_artifact_gate_failures = BTreeMap::<String, Vec<String>>::new();
     for artifact in manifest
@@ -1777,6 +1820,7 @@ fn validate_manifest_summary_artifact(
 
 fn validate_manifest_summary_targets(
     manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
     manifest_target_ids: &[String],
     summary: &SmokeRunSummary,
     gate_failures: &mut Vec<String>,
@@ -1808,6 +1852,43 @@ fn validate_manifest_summary_targets(
             "manifest target count {} does not match summary target count {}",
             manifest.target_count,
             summary.targets.len()
+        ));
+    }
+
+    validate_manifest_summary_bundle_paths(manifest, manifest_path, summary, gate_failures);
+}
+
+fn validate_manifest_summary_bundle_paths(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    summary: &SmokeRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    if let Some(summary_manifest_path) = &summary.artifact_manifest {
+        let resolved_summary_manifest_path =
+            resolve_manifest_artifact_path(manifest_path, summary_manifest_path);
+        if resolved_summary_manifest_path != manifest_path {
+            gate_failures.push(format!(
+                "summary artifactManifest {} does not match manifest {}",
+                summary_manifest_path,
+                manifest_path.display()
+            ));
+        }
+    }
+
+    let Some(summary_validation_path) = &summary.validation else {
+        return;
+    };
+    let has_matching_validation = manifest.artifacts.iter().any(|artifact| {
+        artifact.kind == "validation"
+            && artifact.target_id.is_none()
+            && resolve_manifest_artifact_path(manifest_path, &artifact.path)
+                == resolve_manifest_artifact_path(manifest_path, summary_validation_path)
+    });
+    if !has_matching_validation {
+        gate_failures.push(format!(
+            "summary validation {} has no validation artifact entry",
+            summary_validation_path
         ));
     }
 }
@@ -2359,6 +2440,18 @@ fn validate_schema_storage_evidence_keys(
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
+    validate_schema_cell_shape_range_evidence_keys(
+        storage,
+        "postDataShape",
+        &format!("{prefix} storage.postDataShape"),
+        gate_failures,
+    );
+    validate_schema_cell_shape_range_evidence_keys(
+        storage,
+        "postCodeShape",
+        &format!("{prefix} storage.postCodeShape"),
+        gate_failures,
+    );
     validate_schema_storage_field_candidate_evidence_keys(storage, prefix, gate_failures);
 }
 
@@ -2485,6 +2578,42 @@ fn validate_schema_effect_evidence_keys(
             if !json_path_exists(effect, path) {
                 gate_failures.push(format!("{effect_prefix} missing {label} evidence key"));
             }
+        }
+        validate_schema_cell_shape_range_evidence_keys(
+            effect,
+            "bodyShape",
+            &format!("{effect_prefix} bodyShape"),
+            gate_failures,
+        );
+        validate_schema_cell_shape_range_evidence_keys(
+            effect,
+            "codeShape",
+            &format!("{effect_prefix} codeShape"),
+            gate_failures,
+        );
+    }
+}
+
+fn validate_schema_cell_shape_range_evidence_keys(
+    value: &serde_json::Value,
+    shape_key: &str,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(shape) = value.get(shape_key) else {
+        return;
+    };
+    if shape.is_null() {
+        return;
+    }
+    for (label, path) in [
+        ("min bits", &["minBits"][..]),
+        ("max bits", &["maxBits"][..]),
+        ("min refs", &["minRefs"][..]),
+        ("max refs", &["maxRefs"][..]),
+    ] {
+        if !json_path_exists(shape, path) {
+            gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
 }
@@ -7992,6 +8121,8 @@ mod tests {
             serde_json::json!(["target-a/replay.json"])
         );
         assert_eq!(json["targets"][0]["report"], "target-a/report.md");
+        assert_eq!(json["artifactManifest"], "artifacts.json");
+        assert_eq!(json["validation"], "validation.json");
         assert_eq!(json["absolutePathCount"], 0);
 
         let validation = fs::read_to_string(temp_dir.path().join("validation.json"))
@@ -8822,6 +8953,96 @@ mod tests {
                 )
             }),
             "expected missing schema replay probe mutation value key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_storage_post_data_shape_missing_min_bits_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["storage"]["postDataShape"] = serde_json::json!({
+            "maxBits": 96,
+            "minRefs": 0,
+            "maxRefs": 1
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] storage.postDataShape missing min bits evidence key",
+                )
+            }),
+            "expected missing schema storage post data shape min bits key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_outbound_effect_body_shape_missing_min_bits_key()
+    {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["outboundEffects"] = serde_json::json!([{
+            "kind": "internal",
+            "count": 1,
+            "txHashes": ["tx-a"],
+            "modes": [],
+            "destinations": ["dst"],
+            "valueNanotonsMin": "11",
+            "valueNanotonsMax": "11",
+            "bodyShape": {
+                "maxBits": 40,
+                "minRefs": 1,
+                "maxRefs": 1
+            },
+            "codeShape": null,
+            "libraryHashes": []
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] outboundEffects[0] bodyShape missing min bits evidence key",
+                )
+            }),
+            "expected missing schema outbound effect body shape min bits key failure, got {:?}",
             validation.gate_failures
         );
     }
