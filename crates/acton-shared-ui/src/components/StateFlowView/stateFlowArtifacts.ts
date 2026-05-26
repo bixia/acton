@@ -804,6 +804,7 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
 function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
   const artifactRows = runSummaryArtifactRows(summary)
   const bundleRows = runSummaryBundleRows(summary)
+  const targetSourceRows = runSummaryTargetSourceRows(summary)
   return {
     title: "State Flow Run Summary",
     metrics: [
@@ -834,6 +835,14 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
           ].join(" · "),
         })),
       },
+      ...(targetSourceRows.length > 0
+        ? [
+            {
+              title: "Target Sources",
+              rows: targetSourceRows,
+            },
+          ]
+        : []),
       ...(bundleRows.length > 0
         ? [
             {
@@ -1702,6 +1711,16 @@ function runSummaryBundleRows(summary: StateFlowRunSummary): readonly SummaryRow
       : []),
     ...(summary.validation ? [{label: "Validation", value: summary.validation}] : []),
   ]
+}
+
+function runSummaryTargetSourceRows(summary: StateFlowRunSummary): readonly SummaryRow[] {
+  return summary.targets.map(target => ({
+    label: target.id,
+    value: target.address,
+    detail: [target.network, target.sourceUrl ?? undefined]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(" · "),
+  }))
 }
 
 function targetArtifactRows(target: StateFlowRunTargetSummary): readonly SummaryRow[] {

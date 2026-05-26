@@ -721,6 +721,19 @@ assert(
   "expected target detail to include replay artifact count",
 )
 assert(targetRows[1]?.value === "failed", "expected failed target value")
+const runTargetSourceRows = sectionRows(runSummaryView, "Target Sources")
+assert(runTargetSourceRows[0]?.label === "target-a", "expected first target source row")
+assert(runTargetSourceRows[0]?.value === "addr-a", "expected first target source address")
+assert(
+  runTargetSourceRows[0]?.detail === "mainnet",
+  "expected first target source network without source URL",
+)
+assert(runTargetSourceRows[1]?.label === "target-b", "expected second target source row")
+assert(runTargetSourceRows[1]?.value === "addr-b", "expected second target source address")
+assert(
+  runTargetSourceRows[1]?.detail === "mainnet · https://tonviewer.com/addr-b",
+  "expected second target source network and source URL",
+)
 const runArtifactRows = sectionRows(runSummaryView, "Target Artifacts")
 const bundleArtifactRows = sectionRows(runSummaryView, "Bundle Artifacts")
 assert(bundleArtifactRows[0]?.label === "Artifact Manifest", "expected manifest bundle row")
