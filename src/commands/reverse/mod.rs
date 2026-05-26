@@ -2739,6 +2739,12 @@ fn validate_state_flow_tx_cell_consistency(
         "block config",
         gate_failures,
     );
+    validate_rand_seed_hex_consistency(
+        &format!("{prefix} replay randSeedHex"),
+        &flow.replay.rand_seed_hex,
+        &flow.query_hash,
+        gate_failures,
+    );
     if let Some(libs_boc64) = flow.replay.libs_boc64.as_deref() {
         validate_required_boc_decodable_consistency(
             &format!("{prefix} replay libsBoc64"),
@@ -2933,6 +2939,19 @@ fn action_effect_from_decoded_c5(index: usize, action: &OutAction) -> Option<Act
                 library: Some(library),
             })
         }
+    }
+}
+
+fn validate_rand_seed_hex_consistency(
+    label: &str,
+    rand_seed_hex: &str,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if !hex::decode(rand_seed_hex).is_ok_and(|bytes| bytes.len() == 32) {
+        gate_failures.push(format!(
+            "{label} for {tx_hash} is not a 32-byte random seed"
+        ));
     }
 }
 
@@ -16979,6 +16998,33 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_corpus_validation_rejects_malformed_rand_seed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let corpus_path = temp_dir.path().join("corpus.json");
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["transactions"][0]["replay"]["randSeedHex"] = serde_json::json!("ff");
+        fs::write(&corpus_path, corpus.to_string()).expect("corpus artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "corpus",
+            "corpus.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_corpus_artifact(&corpus_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("corpus artifact corpus.json replay randSeedHex")
+                    && failure.contains("for tx-a is not a 32-byte random seed")
+            }),
+            "expected malformed corpus random seed failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -17115,9 +17161,7 @@ mod tests {
         );
         assert!(
             validation.gate_failures.iter().any(|failure| {
-                failure.contains(
-                    "target-a: transaction replay rand seed ff for tx-a does not match corpus replay rand seed 00",
-                )
+                failure.contains("target-a: transaction replay rand seed ff for tx-a does not match corpus replay rand seed")
             }),
             "expected transaction replay rand seed mismatch failure, got {:?}",
             validation.gate_failures
@@ -17364,6 +17408,32 @@ mod tests {
                     && failure.contains("for tx-a is not a decodable libraries BOC")
             }),
             "expected malformed libs failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_malformed_rand_seed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["replay"]["randSeedHex"] = serde_json::json!("ff");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json replay randSeedHex")
+                    && failure.contains("for tx-a is not a 32-byte random seed")
+            }),
+            "expected malformed random seed failure, got {:?}",
             gate_failures
         );
     }
@@ -23665,7 +23735,7 @@ mod tests {
             },
             "replay": {
                 "mcSeqno": 7,
-                "randSeedHex": "00",
+                "randSeedHex": sample_rand_seed_hex(),
                 "replayedPrevTxCount": 0,
                 "blockConfigBoc64": test_boc64_with_u32(0x636f_6e66),
                 "libsBoc64": test_boc64_with_u32(0x6c69_6273)
@@ -23766,5 +23836,9 @@ mod tests {
         let mut builder = CellBuilder::new();
         builder.store_u32(value).expect("value should store");
         Boc::encode_base64(builder.build().expect("cell should build"))
+    }
+
+    fn sample_rand_seed_hex() -> String {
+        "00".repeat(32)
     }
 }
