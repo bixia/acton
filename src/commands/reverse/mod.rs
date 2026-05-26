@@ -2331,6 +2331,7 @@ fn validate_schema_opcode_candidate_evidence_keys(
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
+    validate_schema_confidence_label(value, &prefix, gate_failures);
     validate_schema_candidate_evidence_entry_keys(value, &prefix, gate_failures);
     validate_schema_inbound_body_evidence_keys(value, &prefix, gate_failures);
     validate_schema_storage_evidence_keys(value, &prefix, gate_failures);
@@ -2495,6 +2496,7 @@ fn validate_schema_field_candidate_evidence_keys(
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
+    validate_schema_confidence_label(field, prefix, gate_failures);
 }
 
 fn validate_schema_state_transition_evidence_keys(
@@ -2546,6 +2548,7 @@ fn validate_schema_replay_probe_evidence_keys(
                 gate_failures.push(format!("{probe_prefix} missing {label} evidence key"));
             }
         }
+        validate_schema_confidence_label(probe, &probe_prefix, gate_failures);
         if let Some(mutation) = probe.get("mutation") {
             validate_replay_mutation_value_evidence_keys(mutation, &probe_prefix, gate_failures);
         }
@@ -2591,6 +2594,21 @@ fn validate_schema_effect_evidence_keys(
             &format!("{effect_prefix} codeShape"),
             gate_failures,
         );
+    }
+}
+
+fn validate_schema_confidence_label(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(confidence) = value.get("confidence").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if !matches!(confidence, "low" | "medium" | "high") {
+        gate_failures.push(format!(
+            "{prefix} unsupported confidence label {confidence}; expected low, medium, or high"
+        ));
     }
 }
 
@@ -8905,6 +8923,42 @@ mod tests {
                 )
             }),
             "expected missing schema candidate evidence tx hash key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_candidate_invalid_confidence_label() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["opcodeCandidates"][0]["confidence"] = serde_json::json!("speculative");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] unsupported confidence label speculative",
+                )
+            }),
+            "expected unsupported schema candidate confidence label failure, got {:?}",
             validation.gate_failures
         );
     }
