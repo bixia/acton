@@ -2912,6 +2912,20 @@ fn validate_state_flow_tx_evidence_keys_with_prefix(
         "executor trace",
         gate_failures,
     );
+    validate_required_log_artifact_non_empty(
+        value,
+        &["vmTrace"],
+        prefix,
+        "VM trace",
+        gate_failures,
+    );
+    validate_required_log_artifact_non_empty(
+        value,
+        &["executorTrace"],
+        prefix,
+        "executor trace",
+        gate_failures,
+    );
     validate_out_action_evidence_keys(value, prefix, gate_failures);
 }
 
@@ -3162,6 +3176,29 @@ fn validate_log_artifact_evidence_keys(
     if line_count != actual_line_count {
         gate_failures.push(format!(
             "{prefix} {label_prefix} line count {line_count} does not match text line count {actual_line_count}"
+        ));
+    }
+}
+
+fn validate_required_log_artifact_non_empty(
+    value: &serde_json::Value,
+    path: &[&str],
+    prefix: &str,
+    label_prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(log) = json_path_value(value, path) else {
+        return;
+    };
+    let Some(line_count) = log.get("lineCount").and_then(|value| value.as_u64()) else {
+        return;
+    };
+    let Some(text) = log.get("text").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if line_count == 0 || !text.lines().any(|line| !line.trim().is_empty()) {
+        gate_failures.push(format!(
+            "{prefix} {label_prefix} must contain at least one log line"
         ));
     }
 }
@@ -10358,6 +10395,48 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_transaction_empty_runtime_logs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["vmTrace"] = serde_json::json!({"lineCount": 0, "text": ""});
+        tx["executorTrace"] = serde_json::json!({"lineCount": 0, "text": ""});
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json VM trace must contain at least one log line",
+                )
+            }),
+            "expected empty VM trace failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "transaction artifact target-a/transaction-0.json executor trace must contain at least one log line",
+                )
+            }),
+            "expected empty executor trace failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_missing_compute_success_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -14528,8 +14607,8 @@ mod tests {
             },
             "c5": null,
             "outActions": [],
-            "vmTrace": {"lineCount": 0, "text": ""},
-            "executorTrace": {"lineCount": 0, "text": ""}
+            "vmTrace": {"lineCount": 1, "text": "execute SETCP 0"},
+            "executorTrace": {"lineCount": 1, "text": "execute transaction"}
         })
     }
 
