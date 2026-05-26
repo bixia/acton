@@ -2641,6 +2641,14 @@ fn validate_replay_observation_cell_consistency(
     tx_hash: &str,
     gate_failures: &mut Vec<String>,
 ) {
+    if let Some(state) = &observation.state {
+        validate_state_snapshot_cell_consistency(
+            &format!("{label} state"),
+            state,
+            tx_hash,
+            gate_failures,
+        );
+    }
     validate_message_artifact_cell_consistency(
         &format!("{label} inbound"),
         &observation.inbound,
@@ -2701,6 +2709,18 @@ fn validate_state_flow_tx_cell_consistency(
     gate_failures: &mut Vec<String>,
 ) {
     let prefix = format!("{} artifact {}", artifact.kind, artifact.path);
+    validate_state_snapshot_cell_consistency(
+        &format!("{prefix} pre"),
+        &flow.state.pre,
+        &flow.query_hash,
+        gate_failures,
+    );
+    validate_state_snapshot_cell_consistency(
+        &format!("{prefix} post"),
+        &flow.state.post,
+        &flow.query_hash,
+        gate_failures,
+    );
     validate_message_artifact_cell_consistency(
         &format!("{prefix} inbound"),
         &flow.inbound,
@@ -2755,6 +2775,59 @@ fn validate_state_flow_tx_cell_consistency(
     }
 }
 
+fn validate_state_snapshot_cell_consistency(
+    label: &str,
+    snapshot: &ShardAccountSnapshot,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_optional_state_cell_shape_consistency(
+        label,
+        "codeHash",
+        snapshot.code_hash.as_deref(),
+        "codeCell",
+        snapshot.code_cell.as_ref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_optional_state_cell_shape_consistency(
+        label,
+        "dataHash",
+        snapshot.data_hash.as_deref(),
+        "dataCell",
+        snapshot.data_cell.as_ref(),
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_optional_state_cell_shape_consistency(
+    label: &str,
+    hash_field: &str,
+    hash: Option<&str>,
+    shape_field: &str,
+    shape: Option<&ton_stateflow::CellShape>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if let Some(shape) = shape {
+        validate_cell_shape_decodable_consistency(
+            &format!("{label} {shape_field}"),
+            shape,
+            tx_hash,
+            gate_failures,
+        );
+    }
+    validate_evidence_optional_text_field(
+        &format!("{label} {hash_field}"),
+        hash,
+        &format!("{shape_field} hash"),
+        shape.map(|shape| shape.hash.as_str()),
+        tx_hash,
+        gate_failures,
+    );
+}
+
 fn validate_message_artifact_cell_consistency(
     label: &str,
     message: &MessageArtifact,
@@ -2764,6 +2837,45 @@ fn validate_message_artifact_cell_consistency(
     validate_cell_artifact_decodable_consistency(
         &format!("{label} body"),
         &message.body,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_cell_shape_decodable_consistency(
+    label: &str,
+    shape: &ton_stateflow::CellShape,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(boc64) = &shape.boc64 else {
+        return;
+    };
+    let Ok(cell) = Boc::decode_base64(boc64) else {
+        return;
+    };
+    let slice = cell.as_slice_allow_exotic();
+    validate_evidence_text_field(
+        &format!("{label} hash"),
+        &shape.hash,
+        "decoded cell hash",
+        &hex::encode(cell.hash(0)),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{label} bits"),
+        shape.bits,
+        "decoded cell bits",
+        slice.size_bits(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        &format!("{label} refs"),
+        shape.refs,
+        "decoded cell refs",
+        slice.size_refs(),
         tx_hash,
         gate_failures,
     );
@@ -16480,6 +16592,60 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_tx_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["state"]["post"]["codeHash"] = serde_json::json!("wrong-hash");
+        tx["state"]["post"]["codeCell"] = test_cell_shape_json(0x0000_0001, Some("wrong-hash"));
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json post codeCell hash")
+                    && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
+            }),
+            "expected decodable state cell shape hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_tx_validation_rejects_state_hash_mismatch_with_cell_shape() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["state"]["post"]["dataHash"] = serde_json::json!("wrong-data-hash");
+        tx["state"]["post"]["dataCell"] = test_cell_shape_json(0x0000_0002, None);
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json post dataHash")
+                    && failure.contains("wrong-data-hash for tx-a does not match dataCell hash")
+            }),
+            "expected state hash/cell shape mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_transaction_effect_evidence_mismatch_with_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -20298,6 +20464,60 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_replay_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["state"]["codeHash"] = serde_json::json!("wrong-hash");
+        baseline_observation["state"]["codeCell"] =
+            test_cell_shape_json(0x0000_0001, Some("wrong-hash"));
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline state codeCell hash")
+                    && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
+            }),
+            "expected replay state cell shape hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_none_replay_with_input_change() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -21844,6 +22064,10 @@ mod tests {
             "bits": 32,
             "refs": 0
         })
+    }
+
+    fn test_cell_shape_json(body_word: u32, hash: Option<&str>) -> serde_json::Value {
+        test_cell_artifact_json(body_word, hash)
     }
 
     fn test_to_cell<T: Store + ?Sized>(obj: &T) -> Cell {
