@@ -5,9 +5,11 @@ import {Button} from "../ui/Button"
 
 import {StateFlowArtifactView} from "./StateFlowArtifactView"
 import {
+  parseStateFlowArtifactBundleFromSources,
   parseStateFlowArtifactFromSource,
   STATE_FLOW_ARTIFACT_FILE_ACCEPT,
   type StateFlowArtifact,
+  type StateFlowArtifactSource,
 } from "./stateFlowArtifacts"
 import styles from "./StateFlowArtifactWorkbench.module.css"
 
@@ -61,18 +63,38 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
 
   const handleFileChange = React.useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.currentTarget.files?.[0]
-      if (!file) {
+      const files = [...(event.currentTarget.files ?? [])]
+      if (files.length === 0) {
         return
       }
 
-      void file.text().then(text => {
-        setRaw(text)
-        loadArtifact(text, file.name)
+      void Promise.all(files.map(file => readArtifactSource(file))).then(sources => {
+        if (sources.length === 1) {
+          const [source] = sources
+          setRaw(source.raw)
+          loadArtifact(source.raw, source.name)
+          return
+        }
+
+        const bundleArtifact = parseStateFlowArtifactBundleFromSources(sources)
+        const bundleRaw = JSON.stringify(
+          {
+            kind: "stateFlowArtifactBundle",
+            sources,
+          },
+          undefined,
+          2,
+        )
+        setRaw(bundleRaw)
+        setArtifact(bundleArtifact)
+        setError(undefined)
+        if (storageKey) {
+          globalThis.localStorage?.setItem(storageKey, bundleRaw)
+        }
       })
       event.currentTarget.value = ""
     },
-    [loadArtifact],
+    [loadArtifact, storageKey],
   )
 
   const handleClear = React.useCallback(() => {
@@ -101,6 +123,7 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
           ref={fileInputRef}
           className={styles.fileInput}
           type="file"
+          multiple
           accept={STATE_FLOW_ARTIFACT_FILE_ACCEPT}
           onChange={handleFileChange}
         />
@@ -144,5 +167,12 @@ function parseInitialArtifact(raw: string): StateFlowArtifact | undefined {
     return parseStateFlowArtifactFromSource(raw)
   } catch {
     return undefined
+  }
+}
+
+async function readArtifactSource(file: File): Promise<StateFlowArtifactSource> {
+  return {
+    name: file.webkitRelativePath || file.name,
+    raw: await file.text(),
   }
 }

@@ -7,6 +7,7 @@ export type StateFlowArtifact =
   | {readonly kind: "runSummary"; readonly data: StateFlowRunSummary}
   | {readonly kind: "artifactManifest"; readonly data: StateFlowArtifactManifest}
   | {readonly kind: "artifactValidation"; readonly data: StateFlowArtifactValidation}
+  | {readonly kind: "artifactBundle"; readonly data: StateFlowArtifactBundle}
   | {readonly kind: "report"; readonly data: StateFlowReport}
 
 export const STATE_FLOW_ARTIFACT_FILE_ACCEPT =
@@ -37,6 +38,50 @@ export interface SummaryRow {
 
 export interface ParseStateFlowArtifactOptions {
   readonly artifactKind?: string | null
+}
+
+export interface StateFlowArtifactSource {
+  readonly name: string
+  readonly raw: string
+}
+
+export interface StateFlowArtifactBundle {
+  readonly sourceCount: number
+  readonly manifest?: StateFlowArtifactManifest
+  readonly summary?: StateFlowRunSummary
+  readonly validation?: StateFlowArtifactValidation
+  readonly targets: readonly StateFlowArtifactBundleTarget[]
+  readonly loadedArtifacts: readonly StateFlowArtifactBundleEntry[]
+  readonly missingArtifacts: readonly StateFlowArtifactManifestEntry[]
+  readonly parseFailures: readonly StateFlowArtifactBundleParseFailure[]
+}
+
+export interface StateFlowArtifactBundleTarget {
+  readonly id: string
+  readonly manifestTarget?: StateFlowArtifactManifestTarget
+  readonly summaryTarget?: StateFlowRunTargetSummary
+  readonly validationTarget?: StateFlowArtifactValidationTarget
+  readonly manifestArtifacts: readonly StateFlowArtifactManifestEntry[]
+  readonly loadedArtifacts: readonly StateFlowArtifactBundleEntry[]
+  readonly missingArtifacts: readonly StateFlowArtifactManifestEntry[]
+}
+
+export interface StateFlowArtifactBundleEntry {
+  readonly kind: string
+  readonly path?: string
+  readonly targetId?: string | null
+  readonly sourceName: string
+  readonly artifactKind: StateFlowArtifact["kind"]
+}
+
+export interface StateFlowArtifactBundleParseFailure {
+  readonly sourceName: string
+  readonly error: string
+}
+
+interface ParsedStateFlowArtifactSource {
+  readonly source: StateFlowArtifactSource
+  readonly artifact: StateFlowArtifact
 }
 
 export interface StateFlowTx {
@@ -252,7 +297,7 @@ export interface StorageLayoutField {
   readonly maxRefs: number
   readonly kind: string
   readonly observationCount: number
-  readonly opcodes: readonly (string | null)[]
+  readonly opcodes: readonly (string | null | undefined)[]
   readonly valueSamples: readonly string[]
   readonly confidence: string
   readonly evidence: readonly string[]
@@ -699,6 +744,13 @@ export function parseStateFlowArtifact(
     throw new Error("StateFlow artifact must be a JSON object")
   }
 
+  if (
+    parsed.kind === "stateFlowArtifactBundle" &&
+    Array.isArray(parsed.sources) &&
+    parsed.sources.every(source => isArtifactBundleSource(source))
+  ) {
+    return parseStateFlowArtifactBundleFromSources(parsed.sources)
+  }
   if (Array.isArray(parsed.transactions) && Array.isArray(parsed.opcodeSummary)) {
     return {kind: "corpus", data: parsed as unknown as StateFlowCorpus}
   }
@@ -750,6 +802,115 @@ export function parseStateFlowArtifact(
   throw new Error("Unsupported StateFlow artifact shape")
 }
 
+export function parseStateFlowArtifactBundleFromSources(
+  sources: readonly StateFlowArtifactSource[],
+): StateFlowArtifact {
+  if (sources.length === 0) {
+    throw new Error("StateFlow artifact bundle is empty")
+  }
+
+  const parsedSources = sources.map(source => {
+    try {
+      return {
+        source,
+        artifact: parseStateFlowArtifactFromSource(source.raw, source.name),
+        error: undefined,
+      }
+    } catch (error) {
+      return {
+        source,
+        artifact: undefined,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  })
+  const artifacts = parsedSources.flatMap(parsed =>
+    parsed.artifact ? [{source: parsed.source, artifact: parsed.artifact}] : [],
+  )
+  const parseFailures = parsedSources.flatMap(parsed =>
+    parsed.error ? [{sourceName: parsed.source.name, error: parsed.error}] : [],
+  )
+  const manifest = artifacts.find(({artifact}) => artifact.kind === "artifactManifest")?.artifact
+    .data as StateFlowArtifactManifest | undefined
+  const summary = artifacts.find(({artifact}) => artifact.kind === "runSummary")?.artifact.data as
+    | StateFlowRunSummary
+    | undefined
+  const validation = artifacts.find(({artifact}) => artifact.kind === "artifactValidation")
+    ?.artifact.data as StateFlowArtifactValidation | undefined
+
+  const loadedArtifacts: StateFlowArtifactBundleEntry[] = []
+  const missingArtifacts: StateFlowArtifactManifestEntry[] = []
+  if (manifest) {
+    for (const manifestArtifact of manifest.artifacts) {
+      const sourceArtifact = findSourceArtifactForManifestPath(artifacts, manifestArtifact.path)
+      if (!sourceArtifact) {
+        missingArtifacts.push(manifestArtifact)
+        continue
+      }
+      loadedArtifacts.push({
+        kind: manifestArtifact.kind,
+        path: manifestArtifact.path,
+        targetId: manifestArtifact.targetId,
+        sourceName: sourceArtifact.source.name,
+        artifactKind: sourceArtifact.artifact.kind,
+      })
+    }
+  } else {
+    loadedArtifacts.push(
+      ...artifacts.map(({source, artifact}) => ({
+        kind: artifact.kind,
+        sourceName: source.name,
+        artifactKind: artifact.kind,
+      })),
+    )
+  }
+
+  const targetIds = new Set<string>()
+  for (const target of manifest?.targets ?? []) {
+    targetIds.add(target.id)
+  }
+  for (const artifact of manifest?.artifacts ?? []) {
+    if (artifact.targetId) {
+      targetIds.add(artifact.targetId)
+    }
+  }
+  for (const target of summary?.targets ?? []) {
+    targetIds.add(target.id)
+  }
+  for (const target of validation?.targets ?? []) {
+    targetIds.add(target.id)
+  }
+
+  return {
+    kind: "artifactBundle",
+    data: {
+      sourceCount: sources.length,
+      manifest,
+      summary,
+      validation,
+      targets: [...targetIds].map(targetId => {
+        const manifestTarget = manifest?.targets?.find(target => target.id === targetId)
+        const summaryTarget = summary?.targets.find(target => target.id === targetId)
+        const validationTarget = validation?.targets.find(target => target.id === targetId)
+        const manifestArtifacts =
+          manifest?.artifacts.filter(artifact => artifact.targetId === targetId) ?? []
+        return {
+          id: targetId,
+          manifestTarget,
+          summaryTarget,
+          validationTarget,
+          manifestArtifacts,
+          loadedArtifacts: loadedArtifacts.filter(artifact => artifact.targetId === targetId),
+          missingArtifacts: missingArtifacts.filter(artifact => artifact.targetId === targetId),
+        }
+      }),
+      loadedArtifacts,
+      missingArtifacts,
+      parseFailures,
+    },
+  }
+}
+
 export function parseStateFlowArtifactFromSource(
   raw: string,
   sourceName?: string | null,
@@ -785,6 +946,9 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
     case "artifactValidation": {
       return summarizeArtifactValidation(artifact.data)
     }
+    case "artifactBundle": {
+      return summarizeArtifactBundle(artifact.data)
+    }
     case "report": {
       return summarizeReport(artifact.data)
     }
@@ -794,6 +958,42 @@ export function summarizeStateFlowArtifact(artifact: StateFlowArtifact): Artifac
 function artifactKindFromSourceName(sourceName: string | null | undefined): string | undefined {
   const fileName = sourceName?.split(/[\\/]/).pop()?.toLowerCase()
   return fileName === "retrace.json" ? "retrace" : undefined
+}
+
+function isArtifactBundleSource(value: unknown): value is StateFlowArtifactSource {
+  return isRecord(value) && typeof value.name === "string" && typeof value.raw === "string"
+}
+
+function findSourceArtifactForManifestPath(
+  artifacts: readonly ParsedStateFlowArtifactSource[],
+  manifestPath: string,
+): ParsedStateFlowArtifactSource | undefined {
+  const normalizedPath = normalizeArtifactPath(manifestPath)
+  const exact = artifacts.find(({source}) => normalizeArtifactPath(source.name) === normalizedPath)
+  if (exact) {
+    return exact
+  }
+
+  const suffix = artifacts.find(({source}) =>
+    normalizeArtifactPath(source.name).endsWith(`/${normalizedPath}`),
+  )
+  if (suffix) {
+    return suffix
+  }
+
+  const baseName = artifactPathBaseName(normalizedPath)
+  const baseNameMatches = artifacts.filter(
+    ({source}) => artifactPathBaseName(normalizeArtifactPath(source.name)) === baseName,
+  )
+  return baseNameMatches.length === 1 ? baseNameMatches[0] : undefined
+}
+
+function normalizeArtifactPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "")
+}
+
+function artifactPathBaseName(path: string): string {
+  return path.split("/").pop() ?? path
 }
 
 function summarizeTransaction(
@@ -1268,6 +1468,79 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
   }
 }
 
+function summarizeArtifactBundle(bundle: StateFlowArtifactBundle): ArtifactSummary {
+  const capabilityRows = bundle.validation ? validationCapabilityRows(bundle.validation) : []
+  const capabilityCounts = bundle.validation
+    ? validationCapabilityCounts(bundle.validation, capabilityRows)
+    : {total: 0, passed: 0, failed: 0}
+  return {
+    title: "State Flow Artifact Bundle",
+    subtitle: bundle.manifest?.summary,
+    metrics: [
+      {label: "Sources", value: bundle.sourceCount.toString()},
+      {label: "Targets", value: bundle.targets.length.toString()},
+      {label: "Loaded", value: bundle.loadedArtifacts.length.toString()},
+      {label: "Missing", value: bundle.missingArtifacts.length.toString()},
+      {label: "Parse Failures", value: bundle.parseFailures.length.toString()},
+      {label: "Capability Checks", value: capabilityCounts.total.toString()},
+    ],
+    sections: [
+      {
+        title: "Targets",
+        rows: bundle.targets.map(target => ({
+          label: target.id,
+          value: bundleTargetStatus(target),
+          detail: [
+            targetSourceDetail(target.manifestTarget ?? target.validationTarget),
+            bundleTargetSummaryDetail(target),
+            bundleTargetCapabilityDetail(target),
+          ]
+            .filter((value): value is string => value !== undefined && value.length > 0)
+            .join(" · "),
+        })),
+      },
+      {
+        title: "Loaded Artifacts",
+        rows: bundle.loadedArtifacts.map(artifact => ({
+          label: [artifact.targetId ?? "bundle", artifact.kind].join(" "),
+          value: artifact.path ?? artifact.sourceName,
+          detail: artifact.artifactKind,
+        })),
+      },
+      ...(bundle.missingArtifacts.length > 0
+        ? [
+            {
+              title: "Missing Artifacts",
+              rows: bundle.missingArtifacts.map(artifact => ({
+                label: [artifact.targetId ?? "bundle", artifact.kind].join(" "),
+                value: artifact.path,
+              })),
+            },
+          ]
+        : []),
+      ...(capabilityRows.length > 0
+        ? [
+            {
+              title: "Capability Checks",
+              rows: capabilityRows,
+            },
+          ]
+        : []),
+      ...(bundle.parseFailures.length > 0
+        ? [
+            {
+              title: "Parse Failures",
+              rows: bundle.parseFailures.map(failure => ({
+                label: failure.sourceName,
+                value: failure.error,
+              })),
+            },
+          ]
+        : []),
+    ],
+  }
+}
+
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
   const opTableRows = reportOpTableRows(report)
@@ -1546,6 +1819,40 @@ function targetCapabilityDetail(target: StateFlowArtifactValidationTarget): stri
     return "capabilities n/a"
   }
   return `capabilities ${passed}/${total}`
+}
+
+function bundleTargetStatus(target: StateFlowArtifactBundleTarget): string {
+  const passed = target.validationTarget?.passed ?? target.summaryTarget?.passed
+  if (passed === undefined) {
+    return target.missingArtifacts.length === 0 ? "loaded" : "partial"
+  }
+  return passed ? "passed" : "failed"
+}
+
+function bundleTargetSummaryDetail(target: StateFlowArtifactBundleTarget): string {
+  const parts = [
+    target.manifestArtifacts.length > 0
+      ? `loaded ${target.loadedArtifacts.length}/${target.manifestArtifacts.length}`
+      : `${target.loadedArtifacts.length} loaded`,
+  ]
+  if (target.summaryTarget) {
+    parts.push(
+      `${target.summaryTarget.retracedCount}/${target.summaryTarget.sourceTxCount} retraced`,
+      `${target.summaryTarget.replayCount} ${plural(target.summaryTarget.replayCount, "replay")}`,
+      `${target.summaryTarget.failureCount} failures`,
+    )
+  }
+  if (target.missingArtifacts.length > 0) {
+    parts.push(`${target.missingArtifacts.length} missing`)
+  }
+  return parts.join(" · ")
+}
+
+function bundleTargetCapabilityDetail(target: StateFlowArtifactBundleTarget): string | undefined {
+  if (!target.validationTarget) {
+    return undefined
+  }
+  return targetCapabilityDetail(target.validationTarget)
 }
 
 function targetSourceDetail(
@@ -2586,7 +2893,7 @@ function schemaStorageLayoutRows(schema: StateFlowSchemaReport): readonly Summar
         : undefined,
       field.valueSamples.join(", "),
     ]
-      .filter(value => value.length > 0)
+      .filter((value): value is string => value !== undefined && value.length > 0)
       .join(" · "),
   }))
 }
@@ -2695,7 +3002,7 @@ function aggregateStorageLayoutFields(
       maxRefs: number
       kind: string
       observationCount: number
-      opcodes: Set<string | null | undefined>
+      opcodes: Set<string | undefined>
       valueSamples: Set<string>
       confidence: string
       evidence: Set<string>
@@ -2715,7 +3022,7 @@ function aggregateStorageLayoutFields(
         maxRefs: field.maxRefs,
         kind: field.kind,
         observationCount: 0,
-        opcodes: new Set<string | null | undefined>(),
+        opcodes: new Set<string | undefined>(),
         valueSamples: new Set<string>(),
         confidence: field.confidence,
         evidence: new Set<string>(),
@@ -2726,7 +3033,7 @@ function aggregateStorageLayoutFields(
       entry.maxRefs = Math.max(entry.maxRefs, field.maxRefs)
       entry.kind = entry.kind === field.kind ? entry.kind : "mixed"
       entry.observationCount += field.presentCount
-      entry.opcodes.add(candidate.opcode)
+      entry.opcodes.add(candidate.opcode ?? undefined)
       for (const sample of field.valueSamples) entry.valueSamples.add(sample)
       entry.confidence = weakerConfidence(entry.confidence, field.confidence)
       for (const hash of candidate.examples) entry.evidence.add(hash)
@@ -3291,7 +3598,7 @@ function replayDiffChange(
   label: string,
   baseline: string,
   replayValue: string,
-  delta: string | null,
+  delta: string | undefined,
   severity: string,
   replay: StateFlowReplayDiff,
 ): ReplayDiffChange {
@@ -3300,7 +3607,7 @@ function replayDiffChange(
     label,
     baseline,
     replay: replayValue,
-    delta,
+    ...(delta === undefined ? {} : {delta}),
     severity,
     evidence: [replay.sourceQueryHash],
   }

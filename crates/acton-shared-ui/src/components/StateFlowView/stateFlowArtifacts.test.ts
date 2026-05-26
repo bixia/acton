@@ -1,5 +1,6 @@
 import {
   parseStateFlowArtifact,
+  parseStateFlowArtifactBundleFromSources,
   parseStateFlowArtifactFromSource,
   summarizeStateFlowArtifact,
   type StateFlowArtifact,
@@ -640,6 +641,49 @@ assert(
     ?.rows.some(row => row.label === "target-b" && row.value === "missing replay artifact") ===
     true,
   "expected artifact validation target failure rows",
+)
+const bundleView = summarizeStateFlowArtifact(
+  parseStateFlowArtifactBundleFromSources([
+    {name: "out/artifacts.json", raw: JSON.stringify(artifactManifest)},
+    {name: "out/summary.json", raw: JSON.stringify(runSummary)},
+    {name: "out/validation.json", raw: JSON.stringify(artifactValidation)},
+    {name: "out/target-a/corpus.json", raw: JSON.stringify(corpus)},
+    {name: "out/target-a/schema.json", raw: JSON.stringify(schema)},
+    {name: "out/target-a/transaction-0.json", raw: JSON.stringify(stateFlowTx)},
+    {name: "out/target-a/retrace.json", raw: JSON.stringify(stateFlowTx)},
+    {name: "out/target-a/replay.json", raw: JSON.stringify(replay)},
+    {name: "out/target-a/replay-probe-query-id-32-64.json", raw: JSON.stringify(replay)},
+    {name: "out/target-a/report.md", raw: reportMarkdown},
+  ]),
+)
+assert(bundleView.title === "State Flow Artifact Bundle", "expected artifact bundle title")
+assert(
+  bundleView.metrics.some(metric => metric.label === "Targets" && metric.value === "2"),
+  "expected artifact bundle target count",
+)
+assert(
+  bundleView.metrics.some(metric => metric.label === "Missing" && metric.value === "0"),
+  "expected artifact bundle to resolve all manifest entries",
+)
+assert(
+  bundleView.sections
+    .find(section => section.title === "Targets")
+    ?.rows.some(
+      row =>
+        row.label === "target-a" &&
+        row.value === "passed" &&
+        row.detail?.includes("loaded 7/7") === true &&
+        row.detail?.includes("capabilities 2/2") === true,
+    ) === true,
+  "expected artifact bundle target rows to merge manifest, summary, and validation evidence",
+)
+assert(
+  bundleView.sections
+    .find(section => section.title === "Loaded Artifacts")
+    ?.rows.some(
+      row => row.label === "target-a replay" && row.value === "out/target-a/replay.json",
+    ) === true,
+  "expected artifact bundle loaded rows to include target replay artifacts",
 )
 const reportView = summarizeStateFlowArtifact(parseStateFlowArtifact(reportMarkdown))
 assert(reportView.title === "TON State Flow Reverse Report", "expected report summary title")
