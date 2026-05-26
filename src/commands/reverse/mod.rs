@@ -11620,6 +11620,44 @@ fn validate_replay_mutation_matches_observations(
             );
         }
     }
+    validate_replay_mutated_inbound_matches_mutation(replay, gate_failures);
+}
+
+fn validate_replay_mutated_inbound_matches_mutation(
+    replay: &StateFlowReplayDiff,
+    gate_failures: &mut Vec<String>,
+) {
+    let Ok(expected) = ton_stateflow::replay_mutated_inbound_artifact(
+        &replay.baseline.inbound.message_boc64,
+        &replay.mutation,
+    ) else {
+        return;
+    };
+    let tx_hash = &replay.source_query_hash;
+    validate_evidence_blob_field(
+        "replay mutated inbound message boc64",
+        &replay.replay.inbound.message_boc64,
+        "expected mutated inbound message boc64",
+        &expected.message_boc64,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        "replay mutated inbound opcode",
+        replay.replay.inbound.opcode.as_deref(),
+        "expected mutated inbound opcode",
+        expected.opcode.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_cell_artifact_matches_corpus(
+        "replay mutated inbound body",
+        &replay.replay.inbound.body,
+        "expected mutated inbound body",
+        &expected.body,
+        tx_hash,
+        gate_failures,
+    );
 }
 
 fn validate_replay_diff_matches_observations(
@@ -12357,7 +12395,12 @@ mod tests {
         fs,
         path::{Path, PathBuf},
     };
-    use ton_stateflow::ReplayMutation;
+    use ton_stateflow::{ReplayMutation, StateFlowReplayDiff};
+    use tycho_types::{
+        boc::Boc,
+        cell::{Cell, CellBuilder, CellFamily, Store},
+        models::{IntMsgInfo, MsgInfo, OwnedMessage},
+    };
 
     #[test]
     fn smoke_manifest_deserializes_checked_in_targets() {
@@ -19926,6 +19969,52 @@ mod tests {
     }
 
     #[test]
+    fn replay_mutation_validation_rejects_mutated_inbound_message_mismatch() {
+        let replay: StateFlowReplayDiff = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "sourceQueryHash": "tx-a",
+            "mutation": {"type": "flipBodyBit", "bit": 0},
+            "ignoreChksig": false,
+            "baseline": sample_replay_observation_with_inbound_json(
+                true,
+                test_internal_message_artifact_json(0x0000_0000),
+            ),
+            "replay": sample_replay_observation_with_inbound_json(
+                true,
+                test_internal_message_artifact_json(0x4000_0000),
+            ),
+            "diff": {
+                "replayAccepted": true,
+                "inputChanged": true,
+                "stateChanged": false,
+                "codeHashChanged": false,
+                "dataHashChanged": false,
+                "balanceDeltaDiff": 0,
+                "exitCodeChanged": false,
+                "outboundCountDelta": 0,
+                "actionCountDelta": 0,
+                "c5Changed": false
+            },
+            "diffSurface": {"changes": []},
+            "riskSignals": []
+        }))
+        .expect("replay diff should parse");
+        let mut gate_failures = Vec::new();
+
+        super::validate_replay_mutation_matches_observations(&replay, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay mutated inbound message boc64")
+                    && failure
+                        .contains("for tx-a does not match expected mutated inbound message boc64")
+            }),
+            "expected mutated inbound message mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_none_replay_with_input_change() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -21377,6 +21466,15 @@ mod tests {
         })
     }
 
+    fn sample_replay_observation_with_inbound_json(
+        accepted: bool,
+        inbound: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut observation = sample_replay_observation_json(accepted);
+        observation["inbound"] = inbound;
+        observation
+    }
+
     fn sample_mutated_replay_observation_json(accepted: bool) -> serde_json::Value {
         let mut observation = sample_replay_observation_json(accepted);
         observation["inbound"]["messageBoc64"] = serde_json::json!("mutated-msg");
@@ -21413,6 +21511,47 @@ mod tests {
             "code": null,
             "library": null
         })
+    }
+
+    fn test_internal_message_artifact_json(body_word: u32) -> serde_json::Value {
+        let mut body_builder = CellBuilder::new();
+        body_builder
+            .store_u32(body_word)
+            .expect("body word should store");
+        let body = body_builder.build().expect("body should build");
+        let message = OwnedMessage {
+            info: MsgInfo::Int(IntMsgInfo::default()),
+            init: None,
+            body: body.clone().into(),
+            layout: None,
+        };
+        let message = test_to_cell(&message);
+
+        serde_json::json!({
+            "direction": "inbound",
+            "index": null,
+            "kind": "internal",
+            "src": "addr",
+            "dst": "addr",
+            "valueNanotons": "0",
+            "bounced": false,
+            "bounce": false,
+            "opcode": format!("0x{body_word:08x}"),
+            "messageBoc64": Boc::encode_base64(message),
+            "body": {
+                "boc64": Boc::encode_base64(body.clone()),
+                "hash": hex::encode(body.hash(0)),
+                "bits": 32,
+                "refs": 0
+            }
+        })
+    }
+
+    fn test_to_cell<T: Store + ?Sized>(obj: &T) -> Cell {
+        let mut builder = CellBuilder::new();
+        obj.store_into(&mut builder, Cell::empty_context())
+            .expect("object should store into a cell");
+        builder.build().expect("cell should build")
     }
 
     fn sample_state_flow_json(query_hash: &str) -> serde_json::Value {

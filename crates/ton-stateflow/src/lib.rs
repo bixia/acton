@@ -796,8 +796,8 @@ pub fn replay_state_flow_tx(
     mutation: ReplayMutation,
     ignore_chksig: bool,
 ) -> anyhow::Result<StateFlowReplayDiff> {
-    let message_boc64 = apply_replay_mutation(&flow.inbound.message_boc64, &mutation)?;
-    let replay_inbound = inbound_artifact_from_boc64(&message_boc64)?;
+    let replay_inbound = replay_mutated_inbound_artifact(&flow.inbound.message_boc64, &mutation)?;
+    let message_boc64 = replay_inbound.message_boc64.clone();
     let result = ton_retrace::replay_transaction(replay_args_from_flow(
         flow,
         message_boc64.clone(),
@@ -843,6 +843,14 @@ pub fn replay_state_flow_tx(
     replay_diff.risk_signals = replay_audit_signals(&replay_diff);
 
     Ok(replay_diff)
+}
+
+pub fn replay_mutated_inbound_artifact(
+    message_boc64: &str,
+    mutation: &ReplayMutation,
+) -> anyhow::Result<MessageArtifact> {
+    let message_boc64 = apply_replay_mutation(message_boc64, mutation)?;
+    inbound_artifact_from_boc64(&message_boc64)
 }
 
 fn replay_args_from_flow(
