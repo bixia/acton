@@ -818,6 +818,25 @@ pub fn collect_state_flow_artifact_sources(
     Ok(sources)
 }
 
+pub fn default_state_flow_artifact_manifest_path(
+    project_root: impl AsRef<Path>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let project_root = fs::canonicalize(project_root.as_ref())
+        .with_context(|| format!("failed to resolve {}", project_root.as_ref().display()))?;
+    for relative_dir in DEFAULT_STATE_FLOW_ARTIFACT_BUNDLE_DIRS {
+        let Some(bundle_dir) =
+            resolve_existing_path_within_root(&project_root, Path::new(relative_dir))
+        else {
+            continue;
+        };
+        let manifest_path = bundle_dir.join("artifacts.json");
+        if manifest_path.is_file() {
+            return Ok(Some(manifest_path));
+        }
+    }
+    Ok(None)
+}
+
 pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaReport {
     let mut by_opcode = BTreeMap::<Option<String>, Vec<&StateFlowTx>>::new();
     for tx in &corpus.transactions {
@@ -4489,6 +4508,30 @@ mod tests {
         assert_eq!(
             bundle.sources[0].raw,
             r#"{"kind":"stateFlowArtifactManifest","targetCount":1}"#
+        );
+    }
+
+    #[test]
+    fn default_state_flow_artifact_manifest_path_prefers_smoke_bundle() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let project_root = temp.path();
+        let smoke_dir = project_root.join("target/stateflow-smoke");
+        let analysis_dir = project_root.join("target/stateflow-analysis");
+        fs::create_dir_all(&smoke_dir).expect("smoke dir should be created");
+        fs::create_dir_all(&analysis_dir).expect("analysis dir should be created");
+        fs::write(smoke_dir.join("artifacts.json"), "{}")
+            .expect("smoke manifest should be written");
+        fs::write(analysis_dir.join("artifacts.json"), "{}")
+            .expect("analysis manifest should be written");
+
+        let manifest = super::default_state_flow_artifact_manifest_path(project_root)
+            .expect("default manifest lookup should succeed")
+            .expect("default manifest should be found");
+
+        assert_eq!(
+            manifest,
+            fs::canonicalize(smoke_dir.join("artifacts.json"))
+                .expect("smoke manifest should canonicalize")
         );
     }
 

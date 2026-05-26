@@ -76,7 +76,7 @@ pub enum ReverseCommand {
         #[arg(
             long,
             value_name = "ARTIFACTS",
-            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+            help = "State-flow artifact manifest, bundle directory, or project root"
         )]
         artifact_manifest: Option<PathBuf>,
         #[arg(
@@ -107,7 +107,7 @@ pub enum ReverseCommand {
         #[arg(
             long,
             value_name = "ARTIFACTS",
-            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+            help = "State-flow artifact manifest, bundle directory, or project root"
         )]
         artifact_manifest: Option<PathBuf>,
         #[arg(
@@ -199,7 +199,7 @@ pub enum ReverseCommand {
         #[arg(
             long,
             value_name = "ARTIFACTS",
-            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+            help = "State-flow artifact manifest, bundle directory, or project root"
         )]
         artifact_manifest: Option<PathBuf>,
         #[arg(
@@ -221,7 +221,7 @@ pub enum ReverseCommand {
     VerifyArtifacts {
         #[arg(
             value_name = "ARTIFACTS",
-            help = "State-flow artifact manifest produced by `acton reverse smoke`"
+            help = "State-flow artifact manifest, bundle directory, or project root"
         )]
         artifacts: PathBuf,
         #[arg(long, help = "Only validate artifacts for this target id")]
@@ -518,7 +518,7 @@ fn infer_corpus_input_path(
     target_id: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     if let Some(manifest_path) = artifact_manifest {
-        let manifest = load_artifact_manifest(&manifest_path)?;
+        let (manifest, manifest_path) = load_artifact_manifest_input(&manifest_path)?;
         return infer_corpus_from_manifest(&manifest, &manifest_path, target_id);
     }
 
@@ -542,7 +542,7 @@ fn reverse_replay_cmd(
     if let Some(replay_probe) = replay_probe {
         let manifest_path =
             artifact_manifest.context("--replay-probe requires --artifact-manifest")?;
-        let manifest = load_artifact_manifest(&manifest_path)?;
+        let (manifest, manifest_path) = load_artifact_manifest_input(&manifest_path)?;
         let plan = replay_probe_from_manifest(
             &manifest,
             &manifest_path,
@@ -575,7 +575,7 @@ fn replay_state_flow_input_path(
     prefer_manifest_transaction: bool,
 ) -> anyhow::Result<PathBuf> {
     if let Some(manifest_path) = artifact_manifest {
-        let manifest = load_artifact_manifest(&manifest_path)?;
+        let (manifest, manifest_path) = load_artifact_manifest_input(&manifest_path)?;
         return replay_state_flow_from_manifest(
             &manifest,
             &manifest_path,
@@ -772,7 +772,7 @@ fn reverse_report_cmd(
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let report_artifacts = if let Some(manifest_path) = artifact_manifest {
-        let manifest = load_artifact_manifest(&manifest_path)?;
+        let (manifest, manifest_path) = load_artifact_manifest_input(&manifest_path)?;
         report_artifacts_from_manifest(&manifest, &manifest_path, target_id.as_deref())?
     } else {
         ReportArtifactInputs {
@@ -818,7 +818,7 @@ fn reverse_verify_artifacts_cmd(
     output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
-    let manifest = load_artifact_manifest(&artifacts)?;
+    let (manifest, artifacts) = load_artifact_manifest_input(&artifacts)?;
     let validation =
         validate_artifact_manifest_bundle(&manifest, &artifacts, target_id.as_deref())?;
     write_json(
@@ -1329,6 +1329,41 @@ fn analysis_target_from_args(
             options.ignore_chksig,
         )?),
     })
+}
+
+fn load_artifact_manifest_input(
+    artifacts: &Path,
+) -> anyhow::Result<(SmokeArtifactManifest, PathBuf)> {
+    let manifest_path = resolve_artifact_manifest_input(artifacts)?;
+    let manifest = load_artifact_manifest(&manifest_path)?;
+    Ok((manifest, manifest_path))
+}
+
+fn resolve_artifact_manifest_input(artifacts: &Path) -> anyhow::Result<PathBuf> {
+    if artifacts.is_file() {
+        return fs::canonicalize(artifacts)
+            .with_context(|| format!("failed to resolve {}", artifacts.display()));
+    }
+
+    if artifacts.is_dir() {
+        let direct_manifest = artifacts.join("artifacts.json");
+        if direct_manifest.is_file() {
+            return fs::canonicalize(&direct_manifest)
+                .with_context(|| format!("failed to resolve {}", direct_manifest.display()));
+        }
+
+        if let Some(manifest_path) =
+            ton_stateflow::default_state_flow_artifact_manifest_path(artifacts)
+                .with_context(|| format!("failed to scan {}", artifacts.display()))?
+        {
+            return Ok(manifest_path);
+        }
+    }
+
+    anyhow::bail!(
+        "state-flow artifact input {} is neither a manifest file nor a bundle/project directory containing artifacts.json",
+        artifacts.display()
+    )
 }
 
 fn load_artifact_manifest(manifest_path: &Path) -> anyhow::Result<SmokeArtifactManifest> {
@@ -13709,6 +13744,32 @@ mod tests {
             super::manifest_relative_path(Path::new("out/target-a/corpus.json"), Path::new("out"));
 
         assert_eq!(path, "target-a/corpus.json");
+    }
+
+    #[test]
+    fn artifact_manifest_input_resolves_project_root_and_bundle_dir() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let project_root = temp_dir.path();
+        let bundle_dir = project_root.join("target/stateflow-smoke");
+        fs::create_dir_all(&bundle_dir).expect("bundle dir should be created");
+        fs::write(
+            bundle_dir.join("artifacts.json"),
+            r#"{"kind":"stateFlowArtifactManifest","schemaVersion":1,"summary":"summary.json","targetCount":0,"targets":[],"artifacts":[]}"#,
+        )
+        .expect("manifest should be written");
+        let manifest_path =
+            fs::canonicalize(bundle_dir.join("artifacts.json")).expect("manifest should resolve");
+
+        assert_eq!(
+            super::resolve_artifact_manifest_input(project_root)
+                .expect("project root input should resolve"),
+            manifest_path
+        );
+        assert_eq!(
+            super::resolve_artifact_manifest_input(&bundle_dir)
+                .expect("bundle dir input should resolve"),
+            manifest_path
+        );
     }
 
     #[test]
