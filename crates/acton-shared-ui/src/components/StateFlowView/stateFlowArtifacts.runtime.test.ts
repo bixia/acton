@@ -632,6 +632,16 @@ assert(
   "expected replay probe CLI arg",
 )
 assert(replayProbeRows[0]?.detail?.includes("tx-a") === true, "expected replay probe evidence")
+const schemaUnknownRows = sectionRows(schemaSummary, "Unknown Fields")
+assert(schemaUnknownRows[0]?.label === "0x00000001", "expected schema unknown opcode")
+assert(
+  schemaUnknownRows[0]?.value === "message body field names require TL-B recovery",
+  "expected schema unknown field text",
+)
+assert(
+  schemaUnknownRows[0]?.detail === "confidence low · evidence tx-a, tx-b",
+  "expected schema unknown field confidence and evidence",
+)
 
 const schemaRiskRows = sectionRows(schemaSummary, "Risk Points")
 assert(

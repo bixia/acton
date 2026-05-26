@@ -669,6 +669,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const effectRows = schemaEffectRows(schema)
   const evidenceRows = schemaEvidenceRows(schema)
   const replayProbeRows = schemaReplayProbeRows(schema)
+  const unknownFieldRows = schemaUnknownFieldRows(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
@@ -751,6 +752,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
                 value: `${edge.fromStatus} -> ${edge.toStatus}`,
                 detail: stateMachineEdgeDetail(edge),
               })),
+            },
+          ]
+        : []),
+      ...(unknownFieldRows.length > 0
+        ? [
+            {
+              title: "Unknown Fields",
+              rows: unknownFieldRows,
             },
           ]
         : []),
@@ -1901,6 +1910,22 @@ function schemaReplayProbeRows(schema: StateFlowSchemaReport): readonly SummaryR
         probe.evidence.map(hash => shortHash(hash)).join(", "),
       ]
         .filter(value => value.length > 0)
+        .join(" · "),
+    }))
+  })
+}
+
+function schemaUnknownFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  return schema.opcodeCandidates.flatMap(candidate => {
+    const opcode = candidate.opcode ?? "<none>"
+    return candidate.unknownFields.map(field => ({
+      label: opcode,
+      value: field,
+      detail: [
+        tableValueLabel("confidence", candidate.confidence),
+        tableValueLabel("evidence", candidate.examples.map(hash => shortHash(hash)).join(", ")),
+      ]
+        .filter((value): value is string => value !== undefined)
         .join(" · "),
     }))
   })
