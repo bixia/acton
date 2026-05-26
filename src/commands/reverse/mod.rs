@@ -2683,7 +2683,7 @@ fn validate_replay_observation_cell_consistency(
     );
     for action in &observation.out_actions {
         if let Some(body) = &action.body {
-            validate_cell_artifact_decodable_consistency(
+            validate_required_cell_artifact_decodable_consistency(
                 &format!("{label} outActions[{}] body", action.index),
                 body,
                 tx_hash,
@@ -2691,7 +2691,7 @@ fn validate_replay_observation_cell_consistency(
             );
         }
         if let Some(code) = &action.code {
-            validate_cell_artifact_decodable_consistency(
+            validate_required_cell_artifact_decodable_consistency(
                 &format!("{label} outActions[{}] code", action.index),
                 code,
                 tx_hash,
@@ -2703,7 +2703,7 @@ fn validate_replay_observation_cell_consistency(
             .as_ref()
             .and_then(|library| library.cell.as_ref())
         {
-            validate_cell_artifact_decodable_consistency(
+            validate_required_cell_artifact_decodable_consistency(
                 &format!("{label} outActions[{}] library cell", action.index),
                 cell,
                 tx_hash,
@@ -2762,7 +2762,7 @@ fn validate_state_flow_tx_cell_consistency(
     );
     for action in &flow.out_actions {
         if let Some(body) = &action.body {
-            validate_cell_artifact_decodable_consistency(
+            validate_required_cell_artifact_decodable_consistency(
                 &format!("{prefix} outActions[{}] body", action.index),
                 body,
                 &flow.query_hash,
@@ -2770,7 +2770,7 @@ fn validate_state_flow_tx_cell_consistency(
             );
         }
         if let Some(code) = &action.code {
-            validate_cell_artifact_decodable_consistency(
+            validate_required_cell_artifact_decodable_consistency(
                 &format!("{prefix} outActions[{}] code", action.index),
                 code,
                 &flow.query_hash,
@@ -2782,7 +2782,7 @@ fn validate_state_flow_tx_cell_consistency(
             .as_ref()
             .and_then(|library| library.cell.as_ref())
         {
-            validate_cell_artifact_decodable_consistency(
+            validate_required_cell_artifact_decodable_consistency(
                 &format!("{prefix} outActions[{}] library cell", action.index),
                 cell,
                 &flow.query_hash,
@@ -3227,6 +3227,29 @@ fn validate_cell_artifact_decodable_consistency(
     let Ok(cell) = Boc::decode_base64(&artifact.boc64) else {
         return;
     };
+    validate_cell_artifact_matches_decoded_cell(label, artifact, tx_hash, gate_failures, &cell);
+}
+
+fn validate_required_cell_artifact_decodable_consistency(
+    label: &str,
+    artifact: &CellArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Ok(cell) = Boc::decode_base64(&artifact.boc64) else {
+        gate_failures.push(format!("{label} for {tx_hash} is not a decodable cell"));
+        return;
+    };
+    validate_cell_artifact_matches_decoded_cell(label, artifact, tx_hash, gate_failures, &cell);
+}
+
+fn validate_cell_artifact_matches_decoded_cell(
+    label: &str,
+    artifact: &CellArtifact,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+    cell: &Cell,
+) {
     let slice = cell.as_slice_allow_exotic();
     validate_evidence_text_field(
         &format!("{label} hash"),
@@ -17036,6 +17059,41 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_tx_validation_rejects_malformed_out_action_body_cell() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["outActions"] = serde_json::json!([{
+            "index": 0,
+            "kind": "send-message",
+            "mode": "SendMsgFlags(0x0)",
+            "valueNanotons": "11",
+            "destination": "dst",
+            "body": {"boc64": "not-a-boc", "hash": "hash", "bits": 0, "refs": 0},
+            "code": null,
+            "library": null
+        }]);
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json outActions[0] body")
+                    && failure.contains("is not a decodable cell")
+            }),
+            "expected malformed out action body failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_tx_validation_rejects_malformed_c5_action_list() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let tx_path = temp_dir.path().join("transaction.json");
@@ -21132,6 +21190,67 @@ mod tests {
                     )
             }),
             "expected replay decoded c5 action mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_replay_validation_rejects_malformed_out_action_body_cell() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["outActions"] = serde_json::json!([{
+            "index": 0,
+            "kind": "send-message",
+            "mode": "SendMsgFlags(0x0)",
+            "valueNanotons": "11",
+            "destination": "dst",
+            "body": {"boc64": "not-a-boc", "hash": "hash", "bits": 0, "refs": 0},
+            "code": null,
+            "library": null
+        }]);
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline outActions[0] body")
+                    && failure.contains("is not a decodable cell")
+            }),
+            "expected replay malformed out action body failure, got {:?}",
             gate_failures
         );
     }
