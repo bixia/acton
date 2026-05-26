@@ -2300,6 +2300,22 @@ fn validate_schema_audit_signal_evidence_keys(
                 gate_failures.push(format!("{prefix} missing {label} evidence key"));
             }
         }
+        validate_schema_audit_signal_severity_label(signal, &prefix, gate_failures);
+    }
+}
+
+fn validate_schema_audit_signal_severity_label(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(severity) = value.get("severity").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if !matches!(severity, "info" | "low" | "medium" | "high" | "critical") {
+        gate_failures.push(format!(
+            "{prefix} unsupported severity label {severity}; expected info, low, medium, high, or critical"
+        ));
     }
 }
 
@@ -8845,6 +8861,42 @@ mod tests {
                 )
             }),
             "expected missing schema audit signal evidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_audit_signal_invalid_severity_label() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["auditSignals"][0]["severity"] = serde_json::json!("urgent");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json auditSignals[0] unsupported severity label urgent",
+                )
+            }),
+            "expected unsupported schema audit signal severity label failure, got {:?}",
             validation.gate_failures
         );
     }
