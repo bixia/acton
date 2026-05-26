@@ -933,35 +933,35 @@ fn run_state_flow_targets(
         let mut replay_path = None;
         let mut transaction_path = None;
         if let Some(plan) = &target.replay_mutation {
-            let (flow_index, flow) = select_corpus_transaction_ref(
+            if let Some((flow_index, flow)) = select_smoke_replay_transaction_ref(
                 &corpus,
-                target.replay_tx_index,
-                target.replay_tx_hash.as_deref(),
+                target,
                 &format!("smoke target {}", target.id),
-            )?;
-            let tx_path = target_dir.join(format!("transaction-{flow_index}.json"));
-            write_json(
-                flow,
-                Some(tx_path.clone()),
-                pretty,
-                "State-flow smoke transaction JSON",
-            )?;
-            let replay = ton_stateflow::replay_state_flow_tx(
-                flow,
-                plan.to_replay_mutation()?,
-                plan.ignore_chksig,
-            )?;
-            let path = target_dir.join("replay.json");
-            write_json(
-                &replay,
-                Some(path.clone()),
-                pretty,
-                "State-flow smoke replay diff JSON",
-            )?;
-            transaction_path = Some(tx_path);
-            replay_path = Some(path.clone());
-            replay_paths.push(path);
-            replays.push(replay);
+            )? {
+                let tx_path = target_dir.join(format!("transaction-{flow_index}.json"));
+                write_json(
+                    flow,
+                    Some(tx_path.clone()),
+                    pretty,
+                    "State-flow smoke transaction JSON",
+                )?;
+                let replay = ton_stateflow::replay_state_flow_tx(
+                    flow,
+                    plan.to_replay_mutation()?,
+                    plan.ignore_chksig,
+                )?;
+                let path = target_dir.join("replay.json");
+                write_json(
+                    &replay,
+                    Some(path.clone()),
+                    pretty,
+                    "State-flow smoke replay diff JSON",
+                )?;
+                transaction_path = Some(tx_path);
+                replay_path = Some(path.clone());
+                replay_paths.push(path);
+                replays.push(replay);
+            }
 
             let probe_replays = run_schema_replay_probes(
                 &corpus,
@@ -1073,6 +1073,23 @@ fn run_schema_replay_probes(
     }
 
     Ok(replays)
+}
+
+fn select_smoke_replay_transaction_ref<'a>(
+    corpus: &'a StateFlowCorpus,
+    target: &SmokeTarget,
+    label: &str,
+) -> anyhow::Result<Option<(usize, &'a StateFlowTx)>> {
+    if corpus.transactions.is_empty() {
+        return Ok(None);
+    }
+    select_corpus_transaction_ref(
+        corpus,
+        target.replay_tx_index,
+        target.replay_tx_hash.as_deref(),
+        label,
+    )
+    .map(Some)
 }
 
 fn unique_replay_probe_path(
@@ -18919,6 +18936,53 @@ mod tests {
 
         assert!(err.contains("corpus transaction index 9 out of range"));
         assert!(err.contains("2 transaction(s)"));
+    }
+
+    #[test]
+    fn smoke_replay_selection_skips_empty_corpus_so_failure_bundle_can_be_written() {
+        let corpus: super::StateFlowCorpus = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "network": "mainnet",
+            "address": "addr",
+            "requestedLimit": 2,
+            "sourceTxCount": 2,
+            "retracedCount": 0,
+            "failureCount": 2,
+            "opcodeSummary": [],
+            "transactions": [],
+            "failures": [{
+                "hash": "tx-failed",
+                "lt": 1,
+                "error": "Block is out of scope"
+            }]
+        }))
+        .expect("empty failure corpus should deserialize");
+        let target = super::SmokeTarget {
+            id: "target-a".to_owned(),
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            source_url: None,
+            notes: None,
+            collect_limit: 2,
+            replay_tx_index: None,
+            replay_tx_hash: None,
+            retrace_tx_hash: None,
+            replay_mutation: Some(super::SmokeReplayMutation {
+                mutation_type: "flipBodyBit".to_owned(),
+                bit: Some(0),
+                body_boc64: None,
+                bit_offset: None,
+                bits: None,
+                value: None,
+                ignore_chksig: true,
+            }),
+        };
+
+        let selection =
+            super::select_smoke_replay_transaction_ref(&corpus, &target, "smoke target target-a")
+                .expect("empty failed corpus should not abort replay selection");
+
+        assert!(selection.is_none());
     }
 
     #[test]
