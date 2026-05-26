@@ -2643,9 +2643,30 @@ fn validate_schema_storage_layout_evidence_keys(
             ("value samples", &["valueSamples"][..]),
             ("confidence", &["confidence"][..]),
             ("evidence", &["evidence"][..]),
+            ("value evidence", &["valueEvidence"][..]),
         ] {
             if !json_path_exists(field, path) {
                 gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        if let Some(value_evidence) = field
+            .get("valueEvidence")
+            .and_then(|value| value.as_array())
+        {
+            for (evidence_index, evidence) in value_evidence.iter().enumerate() {
+                let evidence_prefix = format!("{prefix} valueEvidence[{evidence_index}]");
+                for (label, path) in [
+                    ("tx hash", &["txHash"][..]),
+                    ("opcode", &["opcode"][..]),
+                    ("pre value", &["preValue"][..]),
+                    ("post value", &["postValue"][..]),
+                    ("changed", &["changed"][..]),
+                ] {
+                    if !json_path_exists(evidence, path) {
+                        gate_failures
+                            .push(format!("{evidence_prefix} missing {label} evidence key"));
+                    }
+                }
             }
         }
         validate_schema_confidence_label(field, &prefix, gate_failures);
@@ -4833,8 +4854,16 @@ fn validate_schema_corpus_membership(
                 gate_failures,
             );
         }
+        for evidence in &field.value_evidence {
+            validate_corpus_hash_membership(
+                "schema storage layout value evidence",
+                &evidence.tx_hash,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
     }
-    validate_schema_storage_layout_matches_candidates(schema, gate_failures);
+    validate_schema_storage_layout_matches_candidates(schema, corpus, gate_failures);
     for edge in &schema.state_machine.edges {
         for example in &edge.examples {
             validate_corpus_hash_membership(
@@ -6747,9 +6776,10 @@ fn effect_surface_label(effect: &ton_stateflow::EffectSurfaceEntry) -> String {
 
 fn validate_schema_storage_layout_matches_candidates(
     schema: &StateFlowSchemaReport,
+    corpus: &StateFlowCorpus,
     gate_failures: &mut Vec<String>,
 ) {
-    let expected = ton_stateflow::storage_layout_from_candidates(&schema.opcode_candidates);
+    let expected = ton_stateflow::storage_layout_from_corpus(corpus, &schema.opcode_candidates);
     let expected_by_key = expected
         .fields
         .iter()
@@ -6826,6 +6856,14 @@ fn validate_schema_storage_layout_matches_candidates(
             &report_sample_list(&field.evidence),
             "schema candidate aggregate evidence",
             &report_sample_list(&expected.evidence),
+            &field.name,
+            gate_failures,
+        );
+        validate_evidence_text_field(
+            "schema storage layout field value evidence",
+            &report_storage_value_evidence(&field.value_evidence),
+            "schema candidate aggregate value evidence",
+            &report_storage_value_evidence(&expected.value_evidence),
             &field.name,
             gate_failures,
         );
@@ -8381,6 +8419,7 @@ fn storage_layout_report_header() -> Vec<String> {
         "Samples",
         "Confidence",
         "Evidence",
+        "Value evidence",
     ]
     .iter()
     .map(|header| header.to_string())
@@ -9527,6 +9566,13 @@ fn validate_report_storage_layout_field_values(
         row.get(10),
         gate_failures,
     );
+    validate_report_storage_layout_field_cell(
+        "value evidence",
+        report_storage_value_evidence(&field.value_evidence),
+        &field.name,
+        row.get(11),
+        gate_failures,
+    );
 }
 
 fn validate_report_storage_layout_field_cell(
@@ -9541,6 +9587,23 @@ fn validate_report_storage_layout_field_cell(
             "report storage layout field {label} {expected} for {field_name} is missing"
         ));
     }
+}
+
+fn report_storage_value_evidence(evidence: &[ton_stateflow::StorageValueEvidence]) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|item| {
+            let change_label = if item.changed { "changed" } else { "same" };
+            format!(
+                "{}: {} -> {} ({})",
+                item.tx_hash, item.pre_value, item.post_value, change_label
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn report_unknown_field_line_for<'a>(
@@ -12692,7 +12755,8 @@ mod tests {
             "opcodes": ["0x00000001"],
             "valueSamples": ["0xdeadbeef"],
             "confidence": "high",
-            "evidence": ["tx-a", "tx-b"]
+            "evidence": ["tx-a", "tx-b"],
+            "valueEvidence": []
         }]);
         write_sample_validation_artifact(
             temp_dir.path(),

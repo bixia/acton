@@ -275,6 +275,18 @@ pub struct StorageLayoutField {
     pub value_samples: Vec<String>,
     pub confidence: String,
     pub evidence: Vec<String>,
+    #[serde(default)]
+    pub value_evidence: Vec<StorageValueEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageValueEvidence {
+    pub tx_hash: String,
+    pub opcode: Option<String>,
+    pub pre_value: String,
+    pub post_value: String,
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -750,7 +762,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
     let message_surface = message_surface_from_candidates(&opcode_candidates);
     let replay_surface = replay_surface_from_candidates(&opcode_candidates);
     let effect_surface = effect_surface_from_candidates(&opcode_candidates);
-    let storage_layout = storage_layout_from_candidates(&opcode_candidates);
+    let storage_layout = storage_layout_from_corpus(corpus, &opcode_candidates);
 
     StateFlowSchemaReport {
         schema_version: STATE_FLOW_SCHEMA_VERSION,
@@ -1209,16 +1221,16 @@ pub fn render_state_flow_report(
         )
         .ok();
     } else {
-        writeln!(report, "| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence |").ok();
+        writeln!(report, "| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence | Value evidence |").ok();
         writeln!(
             report,
-            "| --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- |"
+            "| --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- | --- |"
         )
         .ok();
         for field in &schema.storage_layout.fields {
             writeln!(
                 report,
-                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 markdown_escape(&field.name),
                 markdown_escape(&field.cell_path),
                 field.bit_offset,
@@ -1230,6 +1242,7 @@ pub fn render_state_flow_report(
                 markdown_code_list(&field.value_samples),
                 markdown_escape(&field.confidence),
                 markdown_code_list(&field.evidence),
+                markdown_escape(&format_storage_value_evidence(&field.value_evidence)),
             )
             .ok();
         }
@@ -1661,6 +1674,23 @@ fn format_state_machine_state_evidence(evidence: &[StateMachineStateEvidence]) -
             format!(
                 "{}: {} -> {}",
                 item.tx_hash, item.pre_state, item.post_state
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_storage_value_evidence(evidence: &[StorageValueEvidence]) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|item| {
+            let change_label = if item.changed { "changed" } else { "same" };
+            format!(
+                "{}: {} -> {} ({})",
+                item.tx_hash, item.pre_value, item.post_value, change_label
             )
         })
         .collect::<Vec<_>>()
@@ -3001,6 +3031,17 @@ fn effect_surface_entry(
     }
 }
 
+pub fn storage_layout_from_corpus(
+    corpus: &StateFlowCorpus,
+    candidates: &[OpcodeSchemaCandidate],
+) -> StorageLayoutCandidate {
+    let mut layout = storage_layout_from_candidates(candidates);
+    for field in &mut layout.fields {
+        field.value_evidence = storage_layout_field_value_evidence(&corpus.transactions, field);
+    }
+    layout
+}
+
 pub fn storage_layout_from_candidates(
     candidates: &[OpcodeSchemaCandidate],
 ) -> StorageLayoutCandidate {
@@ -3078,9 +3119,67 @@ pub fn storage_layout_from_candidates(
                 value_samples: limited_samples(field.value_samples),
                 confidence: field.confidence,
                 evidence: field.evidence.into_iter().collect(),
+                value_evidence: Vec::new(),
             })
             .collect(),
     }
+}
+
+fn storage_layout_field_value_evidence(
+    transactions: &[StateFlowTx],
+    field: &StorageLayoutField,
+) -> Vec<StorageValueEvidence> {
+    field
+        .evidence
+        .iter()
+        .filter_map(|tx_hash| {
+            let tx = transactions.iter().find(|tx| &tx.query_hash == tx_hash)?;
+            let pre_value = storage_layout_field_value(&tx.state.pre, field);
+            let post_value = storage_layout_field_value(&tx.state.post, field);
+            if pre_value.is_none() && post_value.is_none() {
+                return None;
+            }
+            let pre_value = pre_value.unwrap_or_else(|| "<none>".to_owned());
+            let post_value = post_value.unwrap_or_else(|| "<none>".to_owned());
+            Some(StorageValueEvidence {
+                tx_hash: tx.query_hash.clone(),
+                opcode: tx.inbound.opcode.clone(),
+                changed: pre_value != post_value,
+                pre_value,
+                post_value,
+            })
+        })
+        .collect()
+}
+
+fn storage_layout_field_value(
+    snapshot: &ShardAccountSnapshot,
+    field: &StorageLayoutField,
+) -> Option<String> {
+    if field.cell_path != "data" {
+        return None;
+    }
+    let data_cell = data_cell_from_snapshot(snapshot)?;
+    storage_data_field_value(&data_cell, field)
+}
+
+fn storage_data_field_value(data_cell: &Cell, field: &StorageLayoutField) -> Option<String> {
+    let slice = data_cell.as_slice_allow_exotic();
+    let bits = slice.size_bits();
+    let refs = slice.size_refs();
+
+    if field.bit_offset == 0 && field.min_bits == 32 && bits >= 32 {
+        return read_cell_u32_at(data_cell, 0).map(format_u32_hex);
+    }
+
+    if field.bit_offset == 32 {
+        let tail_bits = bits.saturating_sub(32);
+        if tail_bits > 0 || refs > 0 {
+            return Some(format!("{tail_bits} bits, {refs} refs"));
+        }
+    }
+
+    None
 }
 
 fn weaker_confidence(left: &str, right: &str) -> String {
@@ -3114,7 +3213,7 @@ fn storage_field_candidates(transactions: &[&StateFlowTx]) -> Vec<StorageFieldCa
     let mut tail_samples = BTreeSet::new();
 
     for tx in transactions {
-        let Some(data_cell) = post_data_cell(&tx.state.post) else {
+        let Some(data_cell) = data_cell_from_snapshot(&tx.state.post) else {
             continue;
         };
         let slice = data_cell.as_slice_allow_exotic();
@@ -3179,7 +3278,7 @@ fn storage_field_candidates(transactions: &[&StateFlowTx]) -> Vec<StorageFieldCa
     candidates
 }
 
-fn post_data_cell(snapshot: &ShardAccountSnapshot) -> Option<Cell> {
+fn data_cell_from_snapshot(snapshot: &ShardAccountSnapshot) -> Option<Cell> {
     if let Some(boc64) = snapshot
         .data_cell
         .as_ref()
@@ -5003,14 +5102,27 @@ mod tests {
                 "opcodes": ["0x00000001"],
                 "valueSamples": ["0xcafebabe", "0xdeadbeef"],
                 "confidence": "high",
-                "evidence": ["tx-a", "tx-b"]
+                "evidence": ["tx-a", "tx-b"],
+                "valueEvidence": [{
+                    "txHash": "tx-a",
+                    "opcode": "0x00000001",
+                    "preValue": "<none>",
+                    "postValue": "0xdeadbeef",
+                    "changed": true
+                }, {
+                    "txHash": "tx-b",
+                    "opcode": "0x00000001",
+                    "preValue": "<none>",
+                    "postValue": "0xcafebabe",
+                    "changed": true
+                }]
             })
         );
 
         let report = super::render_state_flow_report(&corpus, &schema, &[]);
         assert!(report.contains("## Storage Layout"));
-        assert!(report.contains("| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence |"));
-        assert!(report.contains("| `data_word_0` | data | 0 | 32..32 | 0..0 | uint32 | 2 | `0x00000001` | `0xcafebabe`, `0xdeadbeef` | high | `tx-a`, `tx-b` |"));
+        assert!(report.contains("| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence | Value evidence |"));
+        assert!(report.contains("| `data_word_0` | data | 0 | 32..32 | 0..0 | uint32 | 2 | `0x00000001` | `0xcafebabe`, `0xdeadbeef` | high | `tx-a`, `tx-b` | tx-a: <none> -> 0xdeadbeef (changed); tx-b: <none> -> 0xcafebabe (changed) |"));
     }
 
     #[test]

@@ -250,6 +250,15 @@ export interface StorageLayoutField {
   readonly valueSamples: readonly string[]
   readonly confidence: string
   readonly evidence: readonly string[]
+  readonly valueEvidence?: readonly StorageValueEvidence[] | null
+}
+
+export interface StorageValueEvidence {
+  readonly txHash: string
+  readonly opcode?: string | null
+  readonly preValue: string
+  readonly postValue: string
+  readonly changed: boolean
 }
 
 export interface StateFlowReplayDiff {
@@ -1758,6 +1767,7 @@ function reportStorageLayoutRows(report: StateFlowReport): readonly SummaryRow[]
       tableValueLabel("opcodes", rowValue(row, "Opcodes")),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
       tableValueLabel("evidence", rowValue(row, "Evidence")),
+      tableValueLabel("values", rowValue(row, "Value evidence")),
       tableValueLabel("samples", rowValue(row, "Samples")),
     ]
       .filter((value): value is string => value !== undefined)
@@ -2510,6 +2520,9 @@ function schemaStorageLayoutRows(schema: StateFlowSchemaReport): readonly Summar
       `opcodes ${formatOpcodeList(field.opcodes)}`,
       `confidence ${field.confidence}`,
       `evidence ${field.evidence.map(hash => shortHash(hash)).join(", ")}`,
+      field.valueEvidence && field.valueEvidence.length > 0
+        ? `values ${storageValueEvidenceDetail(field.valueEvidence)}`
+        : undefined,
       field.valueSamples.join(", "),
     ]
       .filter(value => value.length > 0)
@@ -2523,6 +2536,15 @@ function schemaStorageLayoutFields(schema: StateFlowSchemaReport): readonly Stor
     return structured
   }
   return aggregateStorageLayoutFields(schema.opcodeCandidates)
+}
+
+function storageValueEvidenceDetail(evidence: readonly StorageValueEvidence[]): string {
+  return evidence
+    .map(item => {
+      const changeLabel = item.changed ? "changed" : "same"
+      return `${item.txHash}: ${item.preValue} -> ${item.postValue} (${changeLabel})`
+    })
+    .join("; ")
 }
 
 function schemaEffectSurfaceRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {

@@ -244,6 +244,22 @@ const schema = {
         valueSamples: ["0xcafebabe", "0xdeadbeef"],
         confidence: "high",
         evidence: ["tx-a", "tx-b"],
+        valueEvidence: [
+          {
+            txHash: "tx-a",
+            opcode: "0x00000001",
+            preValue: "<none>",
+            postValue: "0xdeadbeef",
+            changed: true,
+          },
+          {
+            txHash: "tx-b",
+            opcode: "0x00000001",
+            preValue: "<none>",
+            postValue: "0xcafebabe",
+            changed: true,
+          },
+        ],
       },
     ],
   },
@@ -786,9 +802,9 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | \`0x00000001\` | \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | \`0xdeadbeef\` | medium |
 
 ## Storage Layout
-| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence |
-| --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- |
-| \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | 2 | \`0x00000001\` | \`0xcafebabe\`, \`0xdeadbeef\` | high | \`tx-a\`, \`tx-b\` |
+| Field | Cell | Offset | Bits | Refs | Kind | Observations | Opcodes | Samples | Confidence | Evidence | Value evidence |
+| --- | --- | ---: | --- | --- | --- | ---: | --- | --- | --- | --- | --- |
+| \`data_word_0\` | data | 0 | 32..32 | 0..0 | uint32 | 2 | \`0x00000001\` | \`0xcafebabe\`, \`0xdeadbeef\` | high | \`tx-a\`, \`tx-b\` | tx-a: <none> -> 0xdeadbeef (changed); tx-b: <none> -> 0xcafebabe (changed) |
 
 ## Effect Surface
 | Opcode | Name | Source | Kind | Count | Value | Modes | Destinations | Body | Code | Libraries | Confidence | Evidence |
@@ -978,7 +994,7 @@ assert(storageLayoutRows[0]?.label === "data_word_0", "expected storage layout r
 assert(storageLayoutRows[0]?.value === "uint32 @data:0", "expected storage layout location")
 assert(
   storageLayoutRows[0]?.detail ===
-    "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · 0xcafebabe, 0xdeadbeef",
+    "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · values tx-a: <none> -> 0xdeadbeef (changed); tx-b: <none> -> 0xcafebabe (changed) · 0xcafebabe, 0xdeadbeef",
   "expected storage layout detail",
 )
 const effectRows = sectionRows(schemaSummary, "Outbound Effects")
@@ -1402,7 +1418,7 @@ assert(reportStorageLayoutRows[0]?.label === "data_word_0", "expected report sto
 assert(reportStorageLayoutRows[0]?.value === "uint32 @ data:0", "expected report layout field")
 assert(
   reportStorageLayoutRows[0]?.detail ===
-    "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · samples 0xcafebabe, 0xdeadbeef",
+    "32..32 bits · 0..0 refs · 2 observations · opcodes 0x00000001 · confidence high · evidence tx-a, tx-b · values tx-a: <none> -> 0xdeadbeef (changed); tx-b: <none> -> 0xcafebabe (changed) · samples 0xcafebabe, 0xdeadbeef",
   "expected report storage layout detail",
 )
 const reportEffectSurfaceRows = sectionRows(reportSummary, "Effect Surface")
