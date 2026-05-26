@@ -4,7 +4,11 @@ import {FileUp, Trash2} from "lucide-react"
 import {Button} from "../ui/Button"
 
 import {StateFlowArtifactView} from "./StateFlowArtifactView"
-import {parseStateFlowArtifactFromSource, type StateFlowArtifact} from "./stateFlowArtifacts"
+import {
+  parseStateFlowArtifactFromSource,
+  STATE_FLOW_ARTIFACT_FILE_ACCEPT,
+  type StateFlowArtifact,
+} from "./stateFlowArtifacts"
 import styles from "./StateFlowArtifactWorkbench.module.css"
 
 export interface StateFlowArtifactWorkbenchProps {
@@ -97,7 +101,7 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
           ref={fileInputRef}
           className={styles.fileInput}
           type="file"
-          accept="application/json,.json"
+          accept={STATE_FLOW_ARTIFACT_FILE_ACCEPT}
           onChange={handleFileChange}
         />
         {error ? <div className={styles.error}>{error}</div> : undefined}

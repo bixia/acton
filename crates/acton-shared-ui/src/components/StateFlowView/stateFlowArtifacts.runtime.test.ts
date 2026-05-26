@@ -2,6 +2,7 @@ import {
   parseStateFlowArtifact,
   parseStateFlowArtifactFromSource,
   summarizeStateFlowArtifact,
+  STATE_FLOW_ARTIFACT_FILE_ACCEPT,
 } from "./stateFlowArtifacts.ts"
 
 const stateFlowTx = {
@@ -819,6 +820,11 @@ const reportArtifact = parseStateFlowArtifact(reportMarkdown)
 assert(reportArtifact.kind === "report", "expected report markdown artifact kind")
 const reportSummary = summarizeStateFlowArtifact(reportArtifact)
 assert(reportSummary.title === "TON State Flow Reverse Report", "expected report title")
+assert(
+  STATE_FLOW_ARTIFACT_FILE_ACCEPT.includes(".md") &&
+    STATE_FLOW_ARTIFACT_FILE_ACCEPT.includes("text/markdown"),
+  "expected artifact file picker to accept report markdown files",
+)
 assert(
   reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "11"),
   "expected report section count metric",

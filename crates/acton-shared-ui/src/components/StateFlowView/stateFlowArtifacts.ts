@@ -9,6 +9,9 @@ export type StateFlowArtifact =
   | {readonly kind: "artifactValidation"; readonly data: StateFlowArtifactValidation}
   | {readonly kind: "report"; readonly data: StateFlowReport}
 
+export const STATE_FLOW_ARTIFACT_FILE_ACCEPT =
+  "application/json,text/markdown,text/plain,.json,.md,.txt"
+
 export interface ArtifactSummary {
   readonly title: string
   readonly subtitle?: string
