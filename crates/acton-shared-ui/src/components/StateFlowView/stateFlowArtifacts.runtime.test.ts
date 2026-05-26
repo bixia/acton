@@ -489,7 +489,7 @@ stateDiagram-v2
 
 ## Unknown Fields
 - \`0x00000001\`:
-  - message body field names require TL-B recovery
+  - message body field names require TL-B recovery (confidence: medium; evidence: \`tx-a\`, \`tx-b\`)
 
 ## Risk Points
 - Unknown fields remain for opcode 0x00000001.
@@ -937,6 +937,10 @@ assert(reportUnknownRows[0]?.label === "0x00000001", "expected report unknown op
 assert(
   reportUnknownRows[0]?.value === "message body field names require TL-B recovery",
   "expected report unknown field value",
+)
+assert(
+  reportUnknownRows[0]?.detail === "confidence medium · evidence tx-a, tx-b",
+  "expected report unknown field confidence and evidence detail",
 )
 const reportRiskRows = sectionRows(reportSummary, "Risk Points")
 assert(reportRiskRows[0]?.label === "risk 1", "expected report risk row label")

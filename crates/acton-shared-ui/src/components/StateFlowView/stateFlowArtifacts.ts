@@ -1404,14 +1404,41 @@ function reportUnknownFieldRows(report: StateFlowReport): readonly SummaryRow[] 
 
     const nested = line.match(/^\s+-\s*(.+)$/)
     if (nested) {
+      const unknown = parseUnknownFieldLine(nested[1] ?? "")
       rows.push({
         label: opcode,
-        value: stripMarkdownInline(nested[1] ?? ""),
+        value: unknown.value,
+        detail: unknown.detail,
       })
     }
   }
 
   return rows
+}
+
+function parseUnknownFieldLine(raw: string): Pick<SummaryRow, "value" | "detail"> {
+  const text = stripMarkdownInline(raw)
+  const metaMatch = text.match(/^(.*?)\s*\((confidence:\s*[^;()]+;\s*evidence:\s*[^()]+)\)$/)
+  if (!metaMatch) {
+    return {value: text}
+  }
+  const value = metaMatch[1]?.trim() ?? text
+  const metadata = metaMatch[2] ?? ""
+  const details = metadata
+    .split(";")
+    .map(part => part.trim())
+    .map(formatUnknownFieldMetadata)
+    .filter(part => part.length > 0)
+  return {
+    value,
+    detail: details.length > 0 ? details.join(" · ") : undefined,
+  }
+}
+
+function formatUnknownFieldMetadata(value: string): string {
+  const [label, ...rest] = value.split(":")
+  const detail = rest.join(":").trim()
+  return detail.length > 0 ? `${label.trim()} ${detail}` : value
 }
 
 function reportRiskPointRows(report: StateFlowReport): readonly SummaryRow[] {
