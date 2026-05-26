@@ -114,7 +114,7 @@ const AppContent: React.FC<AppContentProps> = ({client, theme, setTheme}) => {
             path="/state-flow"
             element={
               <DashboardPage client={client} theme={theme} setTheme={setTheme}>
-                <StateFlowPage />
+                <StateFlowPage client={client} />
               </DashboardPage>
             }
           />

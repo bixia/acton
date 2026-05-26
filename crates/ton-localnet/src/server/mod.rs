@@ -6,6 +6,7 @@ use crate::localnet::Localnet;
 use acton_config::color::OwoColorize;
 use axum::extract::FromRef;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize)]
@@ -24,6 +25,7 @@ pub struct ServerState {
     pub node: Arc<Localnet>,
     pub startup_wallets: Arc<Vec<StartupWallet>>,
     pub state_source: Arc<StateSourceInfo>,
+    pub project_root: Arc<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,6 +53,12 @@ impl FromRef<ServerState> for Arc<StateSourceInfo> {
     }
 }
 
+impl FromRef<ServerState> for Arc<PathBuf> {
+    fn from_ref(state: &ServerState) -> Self {
+        state.project_root.clone()
+    }
+}
+
 pub struct ServerArgs {
     pub port: u16,
     pub db_path: Option<String>,
@@ -58,6 +66,7 @@ pub struct ServerArgs {
     pub fork_block_number: Option<u64>,
     pub rate_limit_rps: Option<u32>,
     pub startup_wallets: Vec<StartupWallet>,
+    pub project_root: PathBuf,
 }
 
 pub async fn run_server(node: Arc<Localnet>, args: ServerArgs) -> anyhow::Result<()> {
@@ -75,6 +84,7 @@ pub async fn run_server(node: Arc<Localnet>, args: ServerArgs) -> anyhow::Result
             node,
             startup_wallets: Arc::new(args.startup_wallets),
             state_source: Arc::new(state_source),
+            project_root: Arc::new(args.project_root),
         },
         args.rate_limit_rps,
     );

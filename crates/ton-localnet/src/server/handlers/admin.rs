@@ -7,10 +7,17 @@ use crate::server::models::{
 };
 use crate::server::{StartupWallet, StateSourceInfo};
 use crate::types::Hash256;
+use anyhow::Context;
 use axum::{Json, extract::State};
 use serde::Serialize;
 use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const STATE_FLOW_ARTIFACT_BUNDLE_DIRS: &[&str] =
+    &["target/stateflow-smoke", "target/stateflow-analysis"];
+const STATE_FLOW_ARTIFACT_SOURCE_KIND: &str = "stateFlowArtifactBundle";
 
 pub async fn faucet(
     State(node): State<Arc<Localnet>>,
@@ -30,6 +37,18 @@ struct LocalnetAdminStatus {
     state_source: StateSourceInfo,
 }
 
+#[derive(Serialize)]
+struct StateFlowArtifactBundleResponse {
+    kind: &'static str,
+    sources: Vec<StateFlowArtifactSource>,
+}
+
+#[derive(Serialize)]
+struct StateFlowArtifactSource {
+    name: String,
+    raw: String,
+}
+
 pub async fn get_status(
     State(node): State<Arc<Localnet>>,
     State(state_source): State<Arc<StateSourceInfo>>,
@@ -42,6 +61,20 @@ pub async fn get_status(
                 uptime_seconds: node.uptime_seconds(),
                 last_block_seqno: u64::from(masterchain_info.last.seqno),
                 state_source: state_source.as_ref().clone(),
+            })
+        },
+        |res| serde_json::to_value(res).unwrap_or(Value::Null),
+    )
+    .await
+}
+
+pub async fn get_state_flow_artifacts(State(project_root): State<Arc<PathBuf>>) -> Json<Value> {
+    handle_result(
+        async move {
+            let sources = collect_state_flow_artifact_sources(&project_root)?;
+            Ok::<_, anyhow::Error>(StateFlowArtifactBundleResponse {
+                kind: STATE_FLOW_ARTIFACT_SOURCE_KIND,
+                sources,
             })
         },
         |res| serde_json::to_value(res).unwrap_or(Value::Null),
@@ -155,4 +188,70 @@ fn parse_hash_any(hash: &str) -> anyhow::Result<Hash256> {
         return Ok(parsed);
     }
     anyhow::bail!("Invalid hash format")
+}
+
+fn collect_state_flow_artifact_sources(
+    project_root: &Path,
+) -> anyhow::Result<Vec<StateFlowArtifactSource>> {
+    let mut sources = Vec::new();
+    for relative_dir in STATE_FLOW_ARTIFACT_BUNDLE_DIRS {
+        let bundle_dir = project_root.join(relative_dir);
+        if !bundle_dir.join("artifacts.json").is_file() {
+            continue;
+        }
+
+        let bundle_dir = fs::canonicalize(&bundle_dir)
+            .with_context(|| format!("failed to resolve {}", bundle_dir.display()))?;
+        if !bundle_dir.starts_with(project_root) {
+            continue;
+        }
+
+        collect_state_flow_artifact_sources_from_dir(project_root, &bundle_dir, &mut sources)?;
+    }
+    sources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(sources)
+}
+
+fn collect_state_flow_artifact_sources_from_dir(
+    project_root: &Path,
+    dir: &Path,
+    sources: &mut Vec<StateFlowArtifactSource>,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to list {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_state_flow_artifact_sources_from_dir(project_root, &path, sources)?;
+            continue;
+        }
+        if !file_type.is_file() || !is_state_flow_artifact_source_file(&path) {
+            continue;
+        }
+
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let name = path
+            .strip_prefix(project_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        sources.push(StateFlowArtifactSource { name, raw });
+    }
+
+    Ok(())
+}
+
+fn is_state_flow_artifact_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("json" | "md" | "txt")
+    )
 }

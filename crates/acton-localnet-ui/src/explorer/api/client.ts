@@ -10,6 +10,7 @@ import type {
   JettonWalletData,
   LocalnetNodeInfo,
   NftItem,
+  StateFlowArtifactBundleResponse,
   StartupWallet,
   Transaction,
   V3RunGetMethodResponse,
@@ -289,6 +290,11 @@ export class TonClient {
   async getStartupWallets(): Promise<StartupWallet[]> {
     const url = this.buildUrl(this.addressNameBaseUrl, "/acton_getStartupWallets")
     return this.request(url, "Failed to fetch startup wallets")
+  }
+
+  async getStateFlowArtifacts(): Promise<StateFlowArtifactBundleResponse> {
+    const url = this.buildUrl(this.addressNameBaseUrl, "/acton_getStateFlowArtifacts")
+    return this.request(url, "Failed to fetch state-flow artifacts")
   }
 
   async setAddressName(address: string, name: string): Promise<void> {

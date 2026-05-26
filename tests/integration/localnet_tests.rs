@@ -616,6 +616,56 @@ fn localnet_serves_embedded_ui_and_spa_routes() {
 }
 
 #[test]
+fn localnet_serves_default_state_flow_artifact_bundles() {
+    let project = ProjectBuilder::new("localnet-stateflow-artifacts").build();
+    let smoke_dir = project.path().join("target/stateflow-smoke");
+    let nested_dir = smoke_dir.join("target-a");
+    fs::create_dir_all(&nested_dir).expect("Failed to create stateflow artifact directory");
+    fs::write(
+        smoke_dir.join("artifacts.json"),
+        r#"{"kind":"stateFlowTx","contract":"counter"}"#,
+    )
+    .expect("Failed to write stateflow artifacts.json");
+    fs::write(smoke_dir.join("summary.json"), r#"{"transactions":1}"#)
+        .expect("Failed to write stateflow summary.json");
+    fs::write(nested_dir.join("report.md"), "# target A\n")
+        .expect("Failed to write nested stateflow report");
+    fs::write(smoke_dir.join("ignored.bin"), "ignored")
+        .expect("Failed to write ignored stateflow artifact");
+
+    let node = project.localnet().start();
+    let response = node.get_json("/acton_getStateFlowArtifacts");
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["kind"].as_str(),
+        Some("stateFlowArtifactBundle")
+    );
+
+    let sources = response["result"]["sources"]
+        .as_array()
+        .expect("Expected stateflow sources array");
+    let source_names = sources
+        .iter()
+        .map(|source| source["name"].as_str().expect("source name").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        source_names,
+        vec![
+            "target/stateflow-smoke/artifacts.json",
+            "target/stateflow-smoke/summary.json",
+            "target/stateflow-smoke/target-a/report.md",
+        ]
+    );
+    assert_eq!(
+        sources[0]["raw"].as_str(),
+        Some(r#"{"kind":"stateFlowTx","contract":"counter"}"#)
+    );
+
+    node.stop();
+}
+
+#[test]
 fn localnet_supports_pre_start_commands_and_get_out_msg_queue_size() {
     let project = ProjectBuilder::new("localnet-pre-start-commands")
         .contract("child", CHILD_CONTRACT)

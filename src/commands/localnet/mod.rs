@@ -3,7 +3,7 @@ mod status;
 use crate::context::Wallet;
 use crate::wallets;
 use acton_config::color::OwoColorize;
-use acton_config::config::ActonConfig;
+use acton_config::config::{ActonConfig, project_root as configured_project_root};
 use anyhow::Context;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -79,6 +79,8 @@ pub async fn localnet_start_cmd(
             fork_block_number,
             rate_limit_rps: rate_limit,
             startup_wallets,
+            project_root: dunce::canonicalize(configured_project_root())
+                .unwrap_or_else(|_| configured_project_root().to_path_buf()),
         },
     )
     .await;

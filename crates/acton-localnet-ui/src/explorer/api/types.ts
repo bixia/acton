@@ -180,6 +180,16 @@ export interface StartupWallet {
   readonly wallet_id: number
 }
 
+export interface StateFlowArtifactSource {
+  readonly name: string
+  readonly raw: string
+}
+
+export interface StateFlowArtifactBundleResponse {
+  readonly kind: "stateFlowArtifactBundle"
+  readonly sources: readonly StateFlowArtifactSource[]
+}
+
 export interface V3RunGetMethodStackEntry {
   readonly type: string
   readonly value: unknown
