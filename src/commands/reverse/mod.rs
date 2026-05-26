@@ -12442,11 +12442,18 @@ fn validate_replay_mutated_inbound_matches_mutation(
     replay: &StateFlowReplayDiff,
     gate_failures: &mut Vec<String>,
 ) {
-    let Ok(expected) = ton_stateflow::replay_mutated_inbound_artifact(
+    let expected = match ton_stateflow::replay_mutated_inbound_artifact(
         &replay.baseline.inbound.message_boc64,
         &replay.mutation,
-    ) else {
-        return;
+    ) {
+        Ok(expected) => expected,
+        Err(error) => {
+            gate_failures.push(format!(
+                "replay mutation for {} cannot be applied to baseline inbound: {error}",
+                replay.source_query_hash
+            ));
+            return;
+        }
     };
     let tx_hash = &replay.source_query_hash;
     validate_evidence_blob_field(
@@ -21623,6 +21630,52 @@ mod tests {
                         .contains("for tx-a does not match expected mutated inbound message boc64")
             }),
             "expected mutated inbound message mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn replay_mutation_validation_rejects_unapplicable_replace_body_mutation() {
+        let mut replay_inbound = test_internal_message_artifact_json(0x0000_0001);
+        replay_inbound["body"]["boc64"] = serde_json::json!("not-a-boc");
+        let replay: StateFlowReplayDiff = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "sourceQueryHash": "tx-a",
+            "mutation": {"type": "replaceBody", "bodyBoc64": "not-a-boc"},
+            "ignoreChksig": false,
+            "baseline": sample_replay_observation_with_inbound_json(
+                true,
+                test_internal_message_artifact_json(0x0000_0001),
+            ),
+            "replay": sample_replay_observation_with_inbound_json(
+                true,
+                replay_inbound,
+            ),
+            "diff": {
+                "replayAccepted": true,
+                "inputChanged": true,
+                "stateChanged": false,
+                "codeHashChanged": false,
+                "dataHashChanged": false,
+                "balanceDeltaDiff": 0,
+                "exitCodeChanged": false,
+                "outboundCountDelta": 0,
+                "actionCountDelta": 0,
+                "c5Changed": false
+            },
+            "diffSurface": {"changes": []},
+            "riskSignals": []
+        }))
+        .expect("replay diff should parse");
+        let mut gate_failures = Vec::new();
+
+        super::validate_replay_mutation_matches_observations(&replay, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay mutation for tx-a cannot be applied to baseline inbound")
+            }),
+            "expected unapplicable replay mutation failure, got {:?}",
             gate_failures
         );
     }
