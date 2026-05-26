@@ -14,7 +14,7 @@ use ton_stateflow::{
 };
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, CellSlice, Store};
-use tycho_types::models::{Message, StdAddr, StdAddrFormat};
+use tycho_types::models::{IntAddr, Message, MsgInfo, StdAddr, StdAddrFormat};
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
 const VALIDATION_ARTIFACT_PATH: &str = "validation.json";
@@ -2855,6 +2855,7 @@ fn validate_message_artifact_decodable_consistency(
     let Ok(decoded) = cell.parse::<Message<'_>>() else {
         return;
     };
+    validate_message_header_matches_decoded(label, message, &decoded, tx_hash, gate_failures);
     validate_message_body_matches_decoded(label, message, &decoded, tx_hash, gate_failures);
     validate_evidence_optional_text_field(
         &format!("{label} opcode"),
@@ -2865,6 +2866,109 @@ fn validate_message_artifact_decodable_consistency(
         tx_hash,
         gate_failures,
     );
+}
+
+fn validate_message_header_matches_decoded(
+    label: &str,
+    message: &MessageArtifact,
+    decoded: &Message<'_>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let decoded_fields = decoded_message_header_fields(decoded);
+    validate_evidence_text_field(
+        &format!("{label} kind"),
+        &message.kind,
+        "decoded message kind",
+        &decoded_fields.kind,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{label} src"),
+        message.src.as_deref(),
+        "decoded message src",
+        decoded_fields.src.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{label} dst"),
+        message.dst.as_deref(),
+        "decoded message dst",
+        decoded_fields.dst.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_text_field(
+        &format!("{label} value"),
+        message.value_nanotons.as_deref(),
+        "decoded message value",
+        decoded_fields.value_nanotons.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        &format!("{label} bounced"),
+        message.bounced,
+        "decoded message bounced",
+        decoded_fields.bounced,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_field(
+        &format!("{label} bounce"),
+        message.bounce,
+        "decoded message bounce",
+        decoded_fields.bounce,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn decoded_message_header_fields(message: &Message<'_>) -> DecodedMessageHeaderFields {
+    match &message.info {
+        MsgInfo::Int(info) => DecodedMessageHeaderFields {
+            kind: "internal".to_owned(),
+            src: Some(format_int_addr(&info.src)),
+            dst: Some(format_int_addr(&info.dst)),
+            value_nanotons: Some(info.value.tokens.to_string()),
+            bounced: Some(info.bounced),
+            bounce: Some(info.bounce),
+        },
+        MsgInfo::ExtIn(info) => DecodedMessageHeaderFields {
+            kind: "external-in".to_owned(),
+            src: info.src.as_ref().map(ToString::to_string),
+            dst: Some(format_int_addr(&info.dst)),
+            value_nanotons: None,
+            bounced: None,
+            bounce: None,
+        },
+        MsgInfo::ExtOut(info) => DecodedMessageHeaderFields {
+            kind: "external-out".to_owned(),
+            src: Some(format_int_addr(&info.src)),
+            dst: info.dst.as_ref().map(ToString::to_string),
+            value_nanotons: None,
+            bounced: None,
+            bounce: None,
+        },
+    }
+}
+
+struct DecodedMessageHeaderFields {
+    kind: String,
+    src: Option<String>,
+    dst: Option<String>,
+    value_nanotons: Option<String>,
+    bounced: Option<bool>,
+    bounce: Option<bool>,
+}
+
+fn format_int_addr(addr: &IntAddr) -> String {
+    match addr {
+        IntAddr::Std(addr) => addr.display_base64_url(false).to_string(),
+        _ => addr.to_string(),
+    }
 }
 
 fn validate_message_body_matches_decoded(
@@ -2927,7 +3031,7 @@ fn cell_artifact_from_message_body(body: &CellSlice<'_>) -> Option<CellArtifact>
 fn decoded_message_bounced(message: &Message<'_>) -> bool {
     matches!(
         &message.info,
-        tycho_types::models::MsgInfo::Int(info) if info.bounced
+        MsgInfo::Int(info) if info.bounced
     )
 }
 
@@ -16726,6 +16830,44 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_tx_validation_rejects_message_header_mismatch_with_decoded_message() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        tx["inbound"]["kind"] = serde_json::json!("external-in");
+        tx["inbound"]["valueNanotons"] = serde_json::json!("99");
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound kind")
+                    && failure.contains(
+                        "external-in for tx-a does not match decoded message kind internal",
+                    )
+            }),
+            "expected decoded message kind mismatch failure, got {:?}",
+            gate_failures
+        );
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json inbound value")
+                    && failure.contains("99 for tx-a does not match decoded message value 0")
+            }),
+            "expected decoded message value mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_tx_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let tx_path = temp_dir.path().join("transaction.json");
@@ -20647,6 +20789,62 @@ mod tests {
                     && failure.contains("does not match decoded message body hash")
             }),
             "expected replay decoded message body mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_replay_validation_rejects_message_header_mismatch_with_decoded_message() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["inbound"] = test_internal_message_artifact_json(0x0000_0001);
+        baseline_observation["inbound"]["kind"] = serde_json::json!("external-in");
+        baseline_observation["inbound"]["valueNanotons"] = serde_json::json!("99");
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline inbound kind")
+                    && failure.contains(
+                        "external-in for tx-a does not match decoded message kind internal",
+                    )
+            }),
+            "expected replay decoded message kind mismatch failure, got {:?}",
             gate_failures
         );
     }
