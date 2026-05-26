@@ -10806,19 +10806,19 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
-    validate_evidence_text_field(
-        "transaction pre state status",
-        &flow.state.pre.status,
-        "corpus pre state status",
-        &corpus_flow.state.pre.status,
+    validate_state_snapshot_matches_corpus(
+        "transaction pre state",
+        &flow.state.pre,
+        "corpus pre state",
+        &corpus_flow.state.pre,
         tx_hash,
         gate_failures,
     );
-    validate_evidence_text_field(
-        "transaction post state status",
-        &flow.state.post.status,
-        "corpus post state status",
-        &corpus_flow.state.post.status,
+    validate_state_snapshot_matches_corpus(
+        "transaction post state",
+        &flow.state.post,
+        "corpus post state",
+        &corpus_flow.state.post,
         tx_hash,
         gate_failures,
     );
@@ -11393,58 +11393,120 @@ fn validate_replay_baseline_state_matches_corpus(
         gate_failures.push(format!("replay baseline state for {tx_hash} is missing"));
         return;
     };
-    validate_evidence_text_field(
-        "replay baseline state status",
-        &baseline_state.status,
-        "corpus post state status",
-        &corpus_state.status,
+    validate_state_snapshot_matches_corpus(
+        "replay baseline state",
+        baseline_state,
+        "corpus post state",
+        corpus_state,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_state_snapshot_matches_corpus(
+    actual_label: &str,
+    actual: &ShardAccountSnapshot,
+    expected_label: &str,
+    expected: &ShardAccountSnapshot,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_evidence_optional_address_field(
+        &format!("{actual_label} account address"),
+        actual.account_address.as_deref(),
+        &format!("{expected_label} account address"),
+        expected.account_address.as_deref(),
         tx_hash,
         gate_failures,
     );
     validate_evidence_text_field(
-        "replay baseline state balance",
-        &baseline_state.balance_nanotons,
-        "corpus post state balance",
-        &corpus_state.balance_nanotons,
+        &format!("{actual_label} status"),
+        &actual.status,
+        &format!("{expected_label} status"),
+        &expected.status,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        &format!("{actual_label} balance"),
+        &actual.balance_nanotons,
+        &format!("{expected_label} balance"),
+        &expected.balance_nanotons,
         tx_hash,
         gate_failures,
     );
     validate_evidence_value_field(
-        "replay baseline state last tx lt",
-        baseline_state.last_trans_lt,
-        "corpus post state last tx lt",
-        corpus_state.last_trans_lt,
+        &format!("{actual_label} last tx lt"),
+        actual.last_trans_lt,
+        &format!("{expected_label} last tx lt"),
+        expected.last_trans_lt,
         tx_hash,
         gate_failures,
     );
     validate_evidence_text_field(
-        "replay baseline state last tx hash",
-        &baseline_state.last_trans_hash,
-        "corpus post state last tx hash",
-        &corpus_state.last_trans_hash,
+        &format!("{actual_label} last tx hash"),
+        &actual.last_trans_hash,
+        &format!("{expected_label} last tx hash"),
+        &expected.last_trans_hash,
         tx_hash,
         gate_failures,
     );
-    let actual_code_hash = option_text_label(baseline_state.code_hash.as_deref());
-    let expected_code_hash = option_text_label(corpus_state.code_hash.as_deref());
+    let actual_code_hash = option_text_label(actual.code_hash.as_deref());
+    let expected_code_hash = option_text_label(expected.code_hash.as_deref());
     validate_evidence_text_field(
-        "replay baseline state code hash",
+        &format!("{actual_label} code hash"),
         &actual_code_hash,
-        "corpus post state code hash",
+        &format!("{expected_label} code hash"),
         &expected_code_hash,
         tx_hash,
         gate_failures,
     );
-    let actual_data_hash = option_text_label(baseline_state.data_hash.as_deref());
-    let expected_data_hash = option_text_label(corpus_state.data_hash.as_deref());
+    let actual_data_hash = option_text_label(actual.data_hash.as_deref());
+    let expected_data_hash = option_text_label(expected.data_hash.as_deref());
     validate_evidence_text_field(
-        "replay baseline state data hash",
+        &format!("{actual_label} data hash"),
         &actual_data_hash,
-        "corpus post state data hash",
+        &format!("{expected_label} data hash"),
         &expected_data_hash,
         tx_hash,
         gate_failures,
     );
+    let actual_frozen_hash = option_text_label(actual.frozen_hash.as_deref());
+    let expected_frozen_hash = option_text_label(expected.frozen_hash.as_deref());
+    validate_evidence_text_field(
+        &format!("{actual_label} frozen hash"),
+        &actual_frozen_hash,
+        &format!("{expected_label} frozen hash"),
+        &expected_frozen_hash,
+        tx_hash,
+        gate_failures,
+    );
+}
+
+fn validate_evidence_optional_address_field(
+    actual_label: &str,
+    actual: Option<&str>,
+    expected_label: &str,
+    expected: Option<&str>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if optional_state_flow_addresses_match(actual, expected) {
+        return;
+    }
+    gate_failures.push(format!(
+        "{actual_label} {} for {tx_hash} does not match {expected_label} {}",
+        option_text_label(actual),
+        option_text_label(expected)
+    ));
+}
+
+fn optional_state_flow_addresses_match(actual: Option<&str>, expected: Option<&str>) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some(actual), Some(expected)) => state_flow_addresses_match(actual, expected),
+        _ => false,
+    }
 }
 
 fn validate_replay_baseline_log_matches_corpus(
@@ -15532,6 +15594,59 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_transaction_state_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let corpus_path = temp_dir.path().join("target-a/corpus.json");
+        let mut corpus: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&corpus_path).expect("corpus artifact should be readable"),
+        )
+        .expect("corpus artifact should parse");
+        corpus["transactions"][0]["state"]["post"]["accountAddress"] = serde_json::json!("addr");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["state"]["post"]["accountAddress"] = serde_json::json!("other-addr");
+        tx["state"]["post"]["balanceNanotons"] = serde_json::json!("999");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction post state account address other-addr for tx-a does not match corpus post state account address addr",
+                )
+            }),
+            "expected transaction post state account address mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction post state balance 999 for tx-a does not match corpus post state balance 0",
+                )
+            }),
+            "expected transaction post state balance mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_replay_count_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -18336,6 +18451,63 @@ mod tests {
                 )
             }),
             "expected replay baseline body hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_baseline_state_evidence_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let corpus_path = temp_dir.path().join("target-a/corpus.json");
+        let mut corpus: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&corpus_path).expect("corpus artifact should be readable"),
+        )
+        .expect("corpus artifact should parse");
+        corpus["transactions"][0]["state"]["post"]["accountAddress"] = serde_json::json!("addr");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["baseline"]["state"]["accountAddress"] = serde_json::json!("other-addr");
+        replay["baseline"]["state"]["balanceNanotons"] = serde_json::json!("999");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline state account address other-addr for tx-a does not match corpus post state account address addr",
+                )
+            }),
+            "expected replay baseline state account address mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay baseline state balance 999 for tx-a does not match corpus post state balance 0",
+                )
+            }),
+            "expected replay baseline state balance mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
