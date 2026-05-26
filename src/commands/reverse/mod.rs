@@ -843,7 +843,10 @@ fn run_state_flow_targets(
             None
         };
 
-        let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
+        let mut report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
+        if let Some(source_url) = &target.source_url {
+            insert_report_source_url(&mut report, source_url);
+        }
         let report_path = target_dir.join("report.md");
         write_text(
             &report,
@@ -5551,6 +5554,12 @@ fn validate_manifest_report_content_matches_summary(
             gate_failures.push(format!("report target line {line:?} is missing"));
         }
     }
+    if let Some(source_url) = &target.source_url {
+        let line = format!("- Source URL: <{}>", source_url);
+        if !markdown_line_exists(&markdown, &line) {
+            gate_failures.push(format!("report target line {line:?} is missing"));
+        }
+    }
     validate_optional_report_target_count(
         &markdown,
         "replay diff count",
@@ -5993,6 +6002,16 @@ fn schema_evidence_report_header() -> Vec<String> {
     .iter()
     .map(|header| header.to_string())
     .collect()
+}
+
+fn insert_report_source_url(report: &mut String, source_url: &str) {
+    let Some(address_line_end) = report.find("\n- Source transactions:") else {
+        return;
+    };
+    report.insert_str(
+        address_line_end,
+        &format!("\n- Source URL: <{}>", source_url),
+    );
 }
 
 fn validate_report_schema_deliverables(
@@ -10070,6 +10089,38 @@ mod tests {
                 failure.contains("target-a: report target line \"- Address: `addr`\" is missing")
             }),
             "expected report target mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_missing_source_url() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        summary.targets[0].source_url = Some("https://tonviewer.com/addr".to_owned());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "summary.json",
+            &serde_json::to_string(&summary).expect("summary should serialize"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report target line \"- Source URL: <https://tonviewer.com/addr>\" is missing",
+                )
+            }),
+            "expected missing report source URL failure, got {:?}",
             validation.gate_failures
         );
     }
