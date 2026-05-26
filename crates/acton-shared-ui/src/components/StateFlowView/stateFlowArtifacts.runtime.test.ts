@@ -292,11 +292,37 @@ const replay = {
     codeHashChanged: false,
     dataHashChanged: true,
     balanceDeltaDiff: 4,
-    exitCodeChanged: false,
+    exitCodeChanged: true,
     outboundCountDelta: 1,
     actionCountDelta: 0,
-    c5Changed: false,
+    c5Changed: true,
   },
+  riskSignals: [
+    {
+      kind: "replay-state-change",
+      severity: "high",
+      description: "Mutation changed state",
+      evidence: ["tx-hash"],
+    },
+    {
+      kind: "replay-outbound-or-action-change",
+      severity: "medium",
+      description: "Mutation changed outbound/action counts",
+      evidence: ["tx-hash"],
+    },
+    {
+      kind: "replay-exit-code-change",
+      severity: "medium",
+      description: "Mutation changed exit code",
+      evidence: ["tx-hash"],
+    },
+    {
+      kind: "replay-c5-change",
+      severity: "medium",
+      description: "Mutation changed c5/action register",
+      evidence: ["tx-hash"],
+    },
+  ],
 }
 
 const setBodyUintReplay = {
@@ -702,6 +728,14 @@ assert(
 assert(
   replayRiskRows.some(row => row.value === "Mutation changed outbound/action counts"),
   "expected replay outbound/action risk point",
+)
+assert(
+  replayRiskRows.some(row => row.value === "Mutation changed exit code"),
+  "expected replay exit-code risk point",
+)
+assert(
+  replayRiskRows.some(row => row.value === "Mutation changed c5/action register"),
+  "expected replay c5 risk point",
 )
 const setBodyUintReplaySummary = summarizeStateFlowArtifact(
   parseStateFlowArtifact(JSON.stringify(setBodyUintReplay)),

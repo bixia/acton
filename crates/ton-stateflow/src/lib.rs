@@ -113,6 +113,8 @@ pub struct StateFlowReplayDiff {
     pub baseline: ReplayObservation,
     pub replay: ReplayObservation,
     pub diff: ReplayDiffSummary,
+    #[serde(default)]
+    pub risk_signals: Vec<AuditSignal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -571,8 +573,7 @@ pub fn replay_state_flow_tx(
         },
     };
     let diff = ReplayDiffSummary::compare(&baseline, &replay);
-
-    Ok(StateFlowReplayDiff {
+    let mut replay_diff = StateFlowReplayDiff {
         schema_version: STATE_FLOW_SCHEMA_VERSION,
         source_query_hash: flow.query_hash.clone(),
         mutation,
@@ -580,7 +581,11 @@ pub fn replay_state_flow_tx(
         baseline,
         replay,
         diff,
-    })
+        risk_signals: Vec::new(),
+    };
+    replay_diff.risk_signals = replay_audit_signals(&replay_diff);
+
+    Ok(replay_diff)
 }
 
 fn replay_args_from_flow(
@@ -1066,28 +1071,11 @@ fn infer_risk_points(
         .collect();
 
     for replay in replays {
-        let mutation = markdown_escape(&mutation_label(&replay.mutation));
-        if replay.diff.input_changed && replay.diff.replay_accepted {
-            if replay.diff.state_changed == Some(true) {
-                risks.push(format!(
-                    "Mutation `{mutation}` changed state for `{}`.",
-                    replay.source_query_hash
-                ));
-            }
-            if replay.diff.outbound_count_delta.unwrap_or_default() != 0
-                || replay.diff.action_count_delta.unwrap_or_default() != 0
-            {
-                risks.push(format!(
-                    "Mutation `{mutation}` changed outbound/action counts for `{}`.",
-                    replay.source_query_hash
-                ));
-            }
-        } else if replay.diff.input_changed && !replay.diff.replay_accepted {
-            risks.push(format!(
-                "Mutation `{mutation}` was rejected for `{}`.",
-                replay.source_query_hash
-            ));
-        }
+        risks.extend(
+            effective_replay_audit_signals(replay)
+                .iter()
+                .map(format_audit_signal_risk),
+        );
     }
 
     risks.sort();
@@ -1221,6 +1209,100 @@ fn infer_schema_audit_signals(
             && left.evidence == right.evidence
     });
     signals
+}
+
+pub fn replay_audit_signals(replay: &StateFlowReplayDiff) -> Vec<AuditSignal> {
+    let mut signals = Vec::new();
+    if !replay.diff.input_changed {
+        return signals;
+    }
+
+    let tx_hash = replay.source_query_hash.clone();
+    let mutation = mutation_label(&replay.mutation);
+    if !replay.diff.replay_accepted {
+        signals.push(replay_audit_signal(
+            "replay-rejected",
+            "info",
+            format!("Mutation {mutation} was rejected for {tx_hash}."),
+            &tx_hash,
+        ));
+        return signals;
+    }
+
+    if replay.diff.state_changed == Some(true) {
+        signals.push(replay_audit_signal(
+            "replay-state-change",
+            "high",
+            format!("Mutation {mutation} changed state for {tx_hash}."),
+            &tx_hash,
+        ));
+    }
+    if replay.diff.code_hash_changed == Some(true) {
+        signals.push(replay_audit_signal(
+            "replay-code-hash-change",
+            "high",
+            format!("Mutation {mutation} changed code hash for {tx_hash}."),
+            &tx_hash,
+        ));
+    }
+    if replay.diff.data_hash_changed == Some(true) {
+        signals.push(replay_audit_signal(
+            "replay-data-hash-change",
+            "medium",
+            format!("Mutation {mutation} changed data hash for {tx_hash}."),
+            &tx_hash,
+        ));
+    }
+    if replay.diff.outbound_count_delta.unwrap_or_default() != 0
+        || replay.diff.action_count_delta.unwrap_or_default() != 0
+    {
+        signals.push(replay_audit_signal(
+            "replay-outbound-or-action-change",
+            "medium",
+            format!("Mutation {mutation} changed outbound/action counts for {tx_hash}."),
+            &tx_hash,
+        ));
+    }
+    if replay.diff.exit_code_changed == Some(true) {
+        signals.push(replay_audit_signal(
+            "replay-exit-code-change",
+            "medium",
+            format!("Mutation {mutation} changed exit code for {tx_hash}."),
+            &tx_hash,
+        ));
+    }
+    if replay.diff.c5_changed == Some(true) {
+        signals.push(replay_audit_signal(
+            "replay-c5-change",
+            "medium",
+            format!("Mutation {mutation} changed c5/action register for {tx_hash}."),
+            &tx_hash,
+        ));
+    }
+
+    signals
+}
+
+fn effective_replay_audit_signals(replay: &StateFlowReplayDiff) -> Vec<AuditSignal> {
+    if replay.risk_signals.is_empty() {
+        replay_audit_signals(replay)
+    } else {
+        replay.risk_signals.clone()
+    }
+}
+
+fn replay_audit_signal(
+    kind: &str,
+    severity: &str,
+    description: String,
+    tx_hash: &str,
+) -> AuditSignal {
+    AuditSignal {
+        kind: kind.to_owned(),
+        severity: severity.to_owned(),
+        description,
+        evidence: vec![tx_hash.to_owned()],
+    }
 }
 
 fn format_audit_signal_risk(signal: &AuditSignal) -> String {
@@ -3524,7 +3606,36 @@ mod tests {
         assert!(report.contains("## Risk Points"));
         assert!(report.contains("Unknown fields remain for opcode 0x00000001"));
         assert!(report.contains("Evidence: `tx-a`."));
-        assert!(report.contains("Mutation `flip body bit 32` changed state for `tx-a`"));
+        assert!(
+            report.contains("Mutation flip body bit 32 changed state for tx-a. Evidence: `tx-a`.")
+        );
+    }
+
+    #[test]
+    fn replay_audit_signals_include_exit_and_c5_evidence() {
+        let mut replay = sample_replay_diff(
+            "tx-a",
+            ReplayMutation::FlipBodyBit { bit: 32 },
+            true,
+            Some(false),
+        );
+        replay.diff.exit_code_changed = Some(true);
+        replay.diff.c5_changed = Some(true);
+
+        let signals = super::replay_audit_signals(&replay);
+
+        assert!(signals.iter().any(|signal| {
+            signal.kind == "replay-exit-code-change"
+                && signal.severity == "medium"
+                && signal.evidence == vec!["tx-a".to_owned()]
+                && signal.description.contains("changed exit code")
+        }));
+        assert!(signals.iter().any(|signal| {
+            signal.kind == "replay-c5-change"
+                && signal.severity == "medium"
+                && signal.evidence == vec!["tx-a".to_owned()]
+                && signal.description.contains("changed c5/action register")
+        }));
     }
 
     #[test]
@@ -3766,7 +3877,7 @@ mod tests {
         replay_accepted: bool,
         state_changed: Option<bool>,
     ) -> StateFlowReplayDiff {
-        StateFlowReplayDiff {
+        let mut replay = StateFlowReplayDiff {
             schema_version: 1,
             source_query_hash: source_query_hash.to_owned(),
             mutation,
@@ -3809,6 +3920,9 @@ mod tests {
                 action_count_delta: Some(0),
                 c5_changed: Some(false),
             },
-        }
+            risk_signals: Vec::new(),
+        };
+        replay.risk_signals = super::replay_audit_signals(&replay);
+        replay
     }
 }

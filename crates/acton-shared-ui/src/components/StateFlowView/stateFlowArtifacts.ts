@@ -121,6 +121,7 @@ export interface StateFlowReplayDiff {
   readonly baseline: ReplayObservation
   readonly replay: ReplayObservation
   readonly diff: ReplayDiffSummary
+  readonly riskSignals?: readonly AuditSignal[] | null
 }
 
 export interface StateFlowRunSummary {
@@ -2113,6 +2114,19 @@ function replayDiffRows(diff: ReplayDiffSummary): readonly SummaryRow[] {
 }
 
 function replayRiskRows(replay: StateFlowReplayDiff): readonly SummaryRow[] {
+  if (replay.riskSignals && replay.riskSignals.length > 0) {
+    return replay.riskSignals.map(signal => ({
+      label: signal.kind,
+      value: signal.description,
+      detail: [
+        tableValueLabel("severity", signal.severity),
+        tableValueLabel("evidence", signal.evidence.map(hash => shortHash(hash)).join(", ")),
+      ]
+        .filter((value): value is string => value !== undefined)
+        .join(" · "),
+    }))
+  }
+
   const mutation = mutationLabel(replay.mutation)
   const rows: SummaryRow[] = []
 

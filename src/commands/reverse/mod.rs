@@ -3381,6 +3381,7 @@ fn validate_state_flow_replay_evidence_keys(
         ),
         ("diff action count delta", &["diff", "actionCountDelta"][..]),
         ("diff c5 changed", &["diff", "c5Changed"][..]),
+        ("risk signals", &["riskSignals"][..]),
     ] {
         if !json_path_exists(value, path) {
             gate_failures.push(format!(
@@ -3392,6 +3393,31 @@ fn validate_state_flow_replay_evidence_keys(
     validate_replay_mutation_evidence_keys(value, artifact, gate_failures);
     validate_replay_observation_evidence_keys(value, "baseline", artifact, gate_failures);
     validate_replay_observation_evidence_keys(value, "replay", artifact, gate_failures);
+    validate_replay_risk_signal_evidence_keys(value, artifact, gate_failures);
+}
+
+fn validate_replay_risk_signal_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(risk_signals) = value.get("riskSignals").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, signal) in risk_signals.iter().enumerate() {
+        let prefix = format!("replay artifact {} riskSignals[{index}]", artifact.path);
+        for (label, path) in [
+            ("kind", &["kind"][..]),
+            ("severity", &["severity"][..]),
+            ("description", &["description"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(signal, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_audit_signal_severity_label(signal, &prefix, gate_failures);
+    }
 }
 
 fn validate_replay_mutation_evidence_keys(
@@ -5806,7 +5832,7 @@ fn validate_manifest_report_content_matches_summary(
             validate_report_replay_diff_header(section, gate_failures);
         }
     }
-    for replay in replay_diffs {
+    for replay in &replay_diffs {
         let replay_row =
             replay_diff_section.and_then(|section| report_replay_diff_row(section, &replay));
         if replay_row.is_none() {
@@ -5824,6 +5850,22 @@ fn validate_manifest_report_content_matches_summary(
         }
         if let Some(row) = replay_row {
             validate_report_replay_diff_values(&replay, &row, gate_failures);
+        }
+    }
+    if let Some(section) = markdown_section(&markdown, "## Risk Points") {
+        for replay in &replay_diffs {
+            for signal in ton_stateflow::replay_audit_signals(replay) {
+                let risk_line = report_risk_line(section, &signal);
+                if risk_line.is_none() {
+                    gate_failures.push(format!(
+                        "report replay risk {:?} is missing",
+                        signal.description
+                    ));
+                }
+                if let Some(line) = risk_line {
+                    validate_report_risk_values(&signal, line, gate_failures);
+                }
+            }
         }
     }
 }
@@ -7710,6 +7752,7 @@ fn validate_manifest_replay_membership(
         }
         validate_replay_mutation_matches_observations(&replay, gate_failures);
         validate_replay_diff_matches_observations(&replay, gate_failures);
+        validate_replay_risk_signals(&replay, gate_failures);
         let corpus_flow = corpus
             .transactions
             .iter()
@@ -7723,6 +7766,53 @@ fn validate_manifest_replay_membership(
             validate_replay_baseline_matches_corpus(&replay, corpus_flow, gate_failures);
         }
     }
+}
+
+fn validate_replay_risk_signals(replay: &StateFlowReplayDiff, gate_failures: &mut Vec<String>) {
+    let expected = ton_stateflow::replay_audit_signals(replay);
+    for signal in &replay.risk_signals {
+        for evidence in &signal.evidence {
+            if evidence != &replay.source_query_hash {
+                gate_failures.push(format!(
+                    "replay risk signal evidence {evidence} does not match source query hash {}",
+                    replay.source_query_hash
+                ));
+            }
+        }
+    }
+    for expected_signal in &expected {
+        if !replay
+            .risk_signals
+            .iter()
+            .any(|signal| replay_risk_signal_matches(signal, expected_signal))
+        {
+            gate_failures.push(format!(
+                "replay risk signal {} for {} is missing",
+                expected_signal.kind, replay.source_query_hash
+            ));
+        }
+    }
+    for signal in &replay.risk_signals {
+        if !expected
+            .iter()
+            .any(|expected_signal| replay_risk_signal_matches(signal, expected_signal))
+        {
+            gate_failures.push(format!(
+                "replay risk signal {} for {} is stale or unsupported",
+                signal.kind, replay.source_query_hash
+            ));
+        }
+    }
+}
+
+fn replay_risk_signal_matches(
+    left: &ton_stateflow::AuditSignal,
+    right: &ton_stateflow::AuditSignal,
+) -> bool {
+    left.kind == right.kind
+        && left.severity == right.severity
+        && left.description == right.description
+        && left.evidence == right.evidence
 }
 
 fn validate_replay_mutation_matches_observations(
@@ -13018,7 +13108,13 @@ mod tests {
                     "outboundCountDelta": 0,
                     "actionCountDelta": 0,
                     "c5Changed": true
-                }
+                },
+                "riskSignals": [{
+                    "kind": "replay-c5-change",
+                    "severity": "medium",
+                    "description": "Mutation set body uint 42 at 32:64 changed c5/action register for tx-a.",
+                    "evidence": ["tx-a"]
+                }]
             })
             .to_string(),
         );
@@ -13779,6 +13875,80 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_risk_signals_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay
+            .as_object_mut()
+            .expect("replay should be an object")
+            .remove("riskSignals");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json missing risk signals evidence key",
+                )
+            }),
+            "expected missing replay risk signals key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_stale_risk_signals() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["riskSignals"] = serde_json::json!([]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("target-a: replay risk signal replay-c5-change for tx-a is missing")
+            }),
+            "expected stale replay risk signal failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_replay_missing_mutation_type_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -14093,7 +14263,13 @@ mod tests {
                     "outboundCountDelta": 0,
                     "actionCountDelta": 0,
                     "c5Changed": true
-                }
+                },
+                "riskSignals": [{
+                    "kind": "replay-c5-change",
+                    "severity": "medium",
+                    "description": "Mutation none changed c5/action register for tx-a.",
+                    "evidence": ["tx-a"]
+                }]
             })
             .to_string(),
         );
@@ -14583,7 +14759,13 @@ mod tests {
                     "outboundCountDelta": 0,
                     "actionCountDelta": 0,
                     "c5Changed": true
-                }
+                },
+                "riskSignals": [{
+                    "kind": "replay-c5-change",
+                    "severity": "medium",
+                    "description": "Mutation flip body bit 0 changed c5/action register for tx-a.",
+                    "evidence": ["tx-a"]
+                }]
             })
             .to_string(),
         );
@@ -14907,7 +15089,7 @@ mod tests {
             ""
         };
         let risk_point = if include_risk_point {
-            "- Unknown fields remain. Evidence: `tx-a`.\n"
+            "- Unknown fields remain. Evidence: `tx-a`.\n- Mutation flip body bit 0 changed c5/action register for tx-a. Evidence: `tx-a`.\n"
         } else {
             "- No risk points were inferred from the provided artifacts.\n"
         };
