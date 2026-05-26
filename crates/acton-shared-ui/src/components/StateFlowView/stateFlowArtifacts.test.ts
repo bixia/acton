@@ -185,6 +185,13 @@ const schema = {
       outActions: [],
       confidence: "medium",
       unknownFields: ["message body field names require TL-B recovery"],
+      unknownFieldEvidence: [
+        {
+          marker: "message body field names require TL-B recovery",
+          confidence: "high",
+          evidence: ["tx-hash"],
+        },
+      ],
     },
   ],
 }

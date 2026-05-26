@@ -2377,6 +2377,7 @@ fn validate_schema_opcode_candidate_evidence_keys(
         ("out actions", &["outActions"][..]),
         ("confidence", &["confidence"][..]),
         ("unknown fields", &["unknownFields"][..]),
+        ("unknown field evidence", &["unknownFieldEvidence"][..]),
     ] {
         if !json_path_exists(value, path) {
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
@@ -2699,6 +2700,94 @@ fn validate_schema_unknown_field_evidence_keys(
         if !seen_fields.insert(marker.to_owned()) {
             gate_failures.push(format!(
                 "{field_prefix} duplicates unknownFields marker {marker}"
+            ));
+        }
+    }
+
+    let Some(evidence_entries) = value
+        .get("unknownFieldEvidence")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    let mut seen_evidence_markers = HashSet::<String>::new();
+    for (index, evidence_entry) in evidence_entries.iter().enumerate() {
+        let evidence_prefix = format!("{prefix} unknownFieldEvidence[{index}]");
+        for (label, path) in [
+            ("marker", &["marker"][..]),
+            ("confidence", &["confidence"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(evidence_entry, path) {
+                gate_failures.push(format!("{evidence_prefix} missing {label} evidence key"));
+            }
+        }
+        let Some(marker) = evidence_entry
+            .get("marker")
+            .and_then(|value| value.as_str())
+        else {
+            continue;
+        };
+        let marker = marker.trim();
+        if marker.is_empty() {
+            gate_failures.push(format!(
+                "{evidence_prefix} marker must be a non-empty string"
+            ));
+            continue;
+        }
+        if !seen_fields.contains(marker) {
+            gate_failures.push(format!(
+                "{evidence_prefix} marker {marker} is not present in unknownFields"
+            ));
+        }
+        if !seen_evidence_markers.insert(marker.to_owned()) {
+            gate_failures.push(format!(
+                "{evidence_prefix} duplicates unknownFieldEvidence marker {marker}"
+            ));
+        }
+        validate_schema_confidence_label(evidence_entry, &evidence_prefix, gate_failures);
+        validate_schema_unknown_field_evidence_hashes(
+            evidence_entry,
+            &evidence_prefix,
+            gate_failures,
+        );
+    }
+    for marker in seen_fields {
+        if !seen_evidence_markers.contains(&marker) {
+            gate_failures.push(format!(
+                "{prefix} unknownFields marker {marker} has no unknownFieldEvidence entry"
+            ));
+        }
+    }
+}
+
+fn validate_schema_unknown_field_evidence_hashes(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(evidence) = value.get("evidence").and_then(|value| value.as_array()) else {
+        return;
+    };
+    if evidence.is_empty() {
+        gate_failures.push(format!("{prefix} evidence must not be empty"));
+    }
+    let mut seen = HashSet::<String>::new();
+    for (index, hash) in evidence.iter().enumerate() {
+        let Some(hash) = hash.as_str() else {
+            gate_failures.push(format!("{prefix} evidence[{index}] must be a string"));
+            continue;
+        };
+        let hash = hash.trim();
+        if hash.is_empty() {
+            gate_failures.push(format!(
+                "{prefix} evidence[{index}] must be a non-empty string"
+            ));
+            continue;
+        }
+        if !seen.insert(hash.to_owned()) {
+            gate_failures.push(format!(
+                "{prefix} evidence[{index}] duplicates evidence hash {hash}"
             ));
         }
     }
@@ -4270,6 +4359,16 @@ fn validate_schema_corpus_membership(
             for evidence in &probe.evidence {
                 validate_corpus_hash_membership(
                     "schema replay probe evidence",
+                    evidence,
+                    &corpus_hashes,
+                    gate_failures,
+                );
+            }
+        }
+        for unknown_field in &candidate.unknown_field_evidence {
+            for evidence in &unknown_field.evidence {
+                validate_corpus_hash_membership(
+                    "schema unknown-field evidence",
                     evidence,
                     &corpus_hashes,
                     gate_failures,
@@ -9220,6 +9319,14 @@ mod tests {
             "target-a/schema.json",
             &schema.to_string(),
         );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown("addr").replace(
+                "             - `0x00000001`:",
+                "- `0x00000001`:\n  - message body field names require TL-B recovery (confidence: medium; evidence: `foreign-tx`)",
+            ),
+        );
         let manifest = sample_validation_manifest();
 
         let validation = super::validate_artifact_manifest_bundle(
@@ -9916,6 +10023,85 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_unknown_field_evidence_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]
+            .as_object_mut()
+            .expect("schema candidate should be an object")
+            .remove("unknownFieldEvidence");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] missing unknown field evidence evidence key",
+                )
+            }),
+            "expected missing schema unknown field evidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_unknown_field_evidence_outside_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["unknownFields"] =
+            serde_json::json!(["message body field names require TL-B recovery"]);
+        schema["opcodeCandidates"][0]["unknownFieldEvidence"] = serde_json::json!([{
+            "marker": "message body field names require TL-B recovery",
+            "confidence": "medium",
+            "evidence": ["foreign-tx"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema unknown-field evidence foreign-tx is not present in corpus transactions",
+                )
+            }),
+            "expected schema unknown-field evidence membership failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_evidence_outside_corpus() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -9969,7 +10155,8 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": []
+                    "unknownFields": [],
+                    "unknownFieldEvidence": []
                 }]
             })
             .to_string(),
@@ -12701,7 +12888,8 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": []
+                    "unknownFields": [],
+                    "unknownFieldEvidence": []
                 }]
             })
             .to_string(),
@@ -12798,7 +12986,8 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": []
+                    "unknownFields": [],
+                    "unknownFieldEvidence": []
                 }]
             })
             .to_string(),
@@ -14362,7 +14551,8 @@ mod tests {
                     "outboundEffects": [],
                     "outActions": [],
                     "confidence": "medium",
-                    "unknownFields": []
+                    "unknownFields": [],
+                    "unknownFieldEvidence": []
                 }]
             })
             .to_string(),

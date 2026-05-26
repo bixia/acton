@@ -327,6 +327,13 @@ export interface OpcodeSchemaCandidate {
   readonly outActions: readonly EffectCandidate[]
   readonly confidence: string
   readonly unknownFields: readonly string[]
+  readonly unknownFieldEvidence?: readonly UnknownFieldEvidence[] | null
+}
+
+export interface UnknownFieldEvidence {
+  readonly marker: string
+  readonly confidence: string
+  readonly evidence: readonly string[]
 }
 
 export interface ReplayProbeCandidate {
@@ -1917,17 +1924,31 @@ function schemaReplayProbeRows(schema: StateFlowSchemaReport): readonly SummaryR
 function schemaUnknownFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
   return schema.opcodeCandidates.flatMap(candidate => {
     const opcode = candidate.opcode ?? "<none>"
-    return candidate.unknownFields.map(field => ({
+    return candidateUnknownFieldEvidence(candidate).map(field => ({
       label: opcode,
-      value: field,
+      value: field.marker,
       detail: [
-        tableValueLabel("confidence", candidate.confidence),
-        tableValueLabel("evidence", candidate.examples.map(hash => shortHash(hash)).join(", ")),
+        tableValueLabel("confidence", field.confidence),
+        tableValueLabel("evidence", field.evidence.map(hash => shortHash(hash)).join(", ")),
       ]
         .filter((value): value is string => value !== undefined)
         .join(" · "),
     }))
   })
+}
+
+function candidateUnknownFieldEvidence(
+  candidate: OpcodeSchemaCandidate,
+): readonly UnknownFieldEvidence[] {
+  if (candidate.unknownFieldEvidence && candidate.unknownFieldEvidence.length > 0) {
+    return candidate.unknownFieldEvidence
+  }
+
+  return candidate.unknownFields.map(marker => ({
+    marker,
+    confidence: candidate.confidence,
+    evidence: candidate.examples,
+  }))
 }
 
 function effectRow(

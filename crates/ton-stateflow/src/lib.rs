@@ -191,6 +191,16 @@ pub struct OpcodeSchemaCandidate {
     pub out_actions: Vec<EffectCandidate>,
     pub confidence: String,
     pub unknown_fields: Vec<String>,
+    #[serde(default)]
+    pub unknown_field_evidence: Vec<UnknownFieldEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnknownFieldEvidence {
+    pub marker: String,
+    pub confidence: String,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -910,13 +920,14 @@ pub fn render_state_flow_report(
             markdown_code_opt(candidate.opcode.as_deref())
         )
         .ok();
-        for field in &candidate.unknown_fields {
+        let unknown_fields = candidate_unknown_field_evidence(candidate);
+        for field in unknown_fields {
             writeln!(
                 report,
                 "  - {} (confidence: {}; evidence: {})",
-                field,
-                markdown_escape(&candidate.confidence),
-                markdown_code_list(&candidate.examples)
+                field.marker,
+                markdown_escape(&field.confidence),
+                markdown_code_list(&field.evidence)
             )
             .ok();
         }
@@ -1680,6 +1691,14 @@ fn opcode_candidate(
         .take(5)
         .map(|tx| tx.query_hash.clone())
         .collect::<Vec<_>>();
+    let unknown_field_evidence = unknown_fields
+        .iter()
+        .map(|marker| UnknownFieldEvidence {
+            marker: marker.clone(),
+            confidence: confidence.clone(),
+            evidence: examples.clone(),
+        })
+        .collect::<Vec<_>>();
     let replay_probes = replay_probe_candidates(&inbound_body, &examples);
 
     OpcodeSchemaCandidate {
@@ -1695,7 +1714,26 @@ fn opcode_candidate(
         out_actions,
         confidence,
         unknown_fields,
+        unknown_field_evidence,
     }
+}
+
+fn candidate_unknown_field_evidence(
+    candidate: &OpcodeSchemaCandidate,
+) -> Vec<UnknownFieldEvidence> {
+    if !candidate.unknown_field_evidence.is_empty() {
+        return candidate.unknown_field_evidence.clone();
+    }
+
+    candidate
+        .unknown_fields
+        .iter()
+        .map(|marker| UnknownFieldEvidence {
+            marker: marker.clone(),
+            confidence: candidate.confidence.clone(),
+            evidence: candidate.examples.clone(),
+        })
+        .collect()
 }
 
 fn schema_evidence(transactions: &[&StateFlowTx]) -> Vec<SchemaEvidence> {
@@ -2870,6 +2908,14 @@ mod tests {
         );
 
         let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            json["opcodeCandidates"][0]["unknownFieldEvidence"][0],
+            serde_json::json!({
+                "marker": "message body field names require TL-B recovery",
+                "confidence": "medium",
+                "evidence": ["tx-a", "tx-b"]
+            })
+        );
         assert_eq!(json["stateMachine"]["edges"][0]["fromStatus"], "none");
         assert_eq!(json["stateMachine"]["edges"][0]["toStatus"], "active");
         assert_eq!(json["stateMachine"]["edges"][0]["opcode"], "0x00000001");

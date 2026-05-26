@@ -229,6 +229,13 @@ const schema = {
       ],
       confidence: "low",
       unknownFields: ["message body field names require TL-B recovery"],
+      unknownFieldEvidence: [
+        {
+          marker: "message body field names require TL-B recovery",
+          confidence: "medium",
+          evidence: ["tx-a"],
+        },
+      ],
     },
   ],
 }
@@ -639,7 +646,7 @@ assert(
   "expected schema unknown field text",
 )
 assert(
-  schemaUnknownRows[0]?.detail === "confidence low · evidence tx-a, tx-b",
+  schemaUnknownRows[0]?.detail === "confidence medium · evidence tx-a",
   "expected schema unknown field confidence and evidence",
 )
 
