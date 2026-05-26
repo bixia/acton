@@ -2595,6 +2595,7 @@ fn validate_schema_effect_evidence_keys(
     let Some(effects) = value.get(effect_key).and_then(|value| value.as_array()) else {
         return;
     };
+    let mut seen_kinds = HashSet::<String>::new();
     for (index, effect) in effects.iter().enumerate() {
         let effect_prefix = format!("{prefix} {effect_key}[{index}]");
         for (label, path) in [
@@ -2625,6 +2626,14 @@ fn validate_schema_effect_evidence_keys(
             &format!("{effect_prefix} codeShape"),
             gate_failures,
         );
+        let Some(kind) = effect.get("kind").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !seen_kinds.insert(kind.to_owned()) {
+            gate_failures.push(format!(
+                "{effect_prefix} duplicates {effect_key} kind {kind}"
+            ));
+        }
     }
 }
 
@@ -9331,6 +9340,101 @@ mod tests {
                 )
             }),
             "expected duplicate schema state transition failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_duplicate_effect_kinds() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["outboundEffects"] = serde_json::json!([
+            {
+                "kind": "internal",
+                "count": 0,
+                "txHashes": [],
+                "modes": [],
+                "destinations": [],
+                "valueNanotonsMin": null,
+                "valueNanotonsMax": null,
+                "bodyShape": null,
+                "codeShape": null,
+                "libraryHashes": []
+            },
+            {
+                "kind": "internal",
+                "count": 0,
+                "txHashes": [],
+                "modes": [],
+                "destinations": [],
+                "valueNanotonsMin": null,
+                "valueNanotonsMax": null,
+                "bodyShape": null,
+                "codeShape": null,
+                "libraryHashes": []
+            }
+        ]);
+        schema["opcodeCandidates"][0]["outActions"] = serde_json::json!([
+            {
+                "kind": "send-message",
+                "count": 0,
+                "txHashes": [],
+                "modes": [],
+                "destinations": [],
+                "valueNanotonsMin": null,
+                "valueNanotonsMax": null,
+                "bodyShape": null,
+                "codeShape": null,
+                "libraryHashes": []
+            },
+            {
+                "kind": "send-message",
+                "count": 0,
+                "txHashes": [],
+                "modes": [],
+                "destinations": [],
+                "valueNanotonsMin": null,
+                "valueNanotonsMax": null,
+                "bodyShape": null,
+                "codeShape": null,
+                "libraryHashes": []
+            }
+        ]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] outboundEffects[1] duplicates outboundEffects kind internal",
+                )
+            }),
+            "expected duplicate schema outbound effect kind failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] outActions[1] duplicates outActions kind send-message",
+                )
+            }),
+            "expected duplicate schema out-action kind failure, got {:?}",
             validation.gate_failures
         );
     }
