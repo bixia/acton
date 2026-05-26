@@ -278,7 +278,27 @@ pub struct StateFlowReplayDiff {
     pub replay: ReplayObservation,
     pub diff: ReplayDiffSummary,
     #[serde(default)]
+    pub diff_surface: ReplayDiffSurface,
+    #[serde(default)]
     pub risk_signals: Vec<AuditSignal>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayDiffSurface {
+    pub changes: Vec<ReplayDiffChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayDiffChange {
+    pub kind: String,
+    pub label: String,
+    pub baseline: String,
+    pub replay: String,
+    pub delta: Option<String>,
+    pub severity: String,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -783,8 +803,10 @@ pub fn replay_state_flow_tx(
         baseline,
         replay,
         diff,
+        diff_surface: ReplayDiffSurface::default(),
         risk_signals: Vec::new(),
     };
+    replay_diff.diff_surface = replay_diff_surface(&replay_diff);
     replay_diff.risk_signals = replay_audit_signals(&replay_diff);
 
     Ok(replay_diff)
@@ -1402,6 +1424,51 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## Replay Diff Surface").ok();
+    if replays.is_empty() {
+        writeln!(report, "- No replay diff artifacts were provided.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |"
+        )
+        .ok();
+        writeln!(
+            report,
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        )
+        .ok();
+        let mut change_count = 0usize;
+        for replay in replays {
+            let surface = replay_diff_surface(replay);
+            for change in surface.changes {
+                change_count += 1;
+                writeln!(
+                    report,
+                    "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} |",
+                    replay.source_query_hash,
+                    markdown_escape(&mutation_label(&replay.mutation)),
+                    markdown_escape(&change.kind),
+                    markdown_escape(&change.label),
+                    markdown_escape(&change.baseline),
+                    markdown_escape(&change.replay),
+                    change
+                        .delta
+                        .as_deref()
+                        .map(markdown_escape)
+                        .unwrap_or_else(|| "n/a".to_owned()),
+                    markdown_escape(&change.severity),
+                    markdown_code_list(&change.evidence),
+                )
+                .ok();
+            }
+        }
+        if change_count == 0 {
+            writeln!(report, "- No replay diff surface changes were inferred.").ok();
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## Risk Points").ok();
     let risk_points = infer_risk_points(corpus, schema, replays);
     if risk_points.is_empty() {
@@ -1730,6 +1797,190 @@ pub fn replay_audit_signals(replay: &StateFlowReplayDiff) -> Vec<AuditSignal> {
     }
 
     signals
+}
+
+pub fn replay_diff_surface(replay: &StateFlowReplayDiff) -> ReplayDiffSurface {
+    let mut changes = Vec::new();
+    if !replay.diff.input_changed {
+        return ReplayDiffSurface { changes };
+    }
+
+    let source = &replay.source_query_hash;
+    if !replay.diff.replay_accepted {
+        changes.push(replay_diff_change(
+            "accepted",
+            "Replay accepted",
+            "true".to_owned(),
+            "false".to_owned(),
+            None,
+            "info",
+            source,
+        ));
+        return ReplayDiffSurface { changes };
+    }
+
+    if replay.diff.state_changed == Some(true) {
+        changes.push(replay_diff_change(
+            "state",
+            "Shard account state",
+            replay_state_label(replay.baseline.state.as_ref()),
+            replay_state_label(replay.replay.state.as_ref()),
+            None,
+            "high",
+            source,
+        ));
+    }
+    if replay.diff.code_hash_changed == Some(true) {
+        changes.push(replay_diff_change(
+            "codeHash",
+            "Code hash",
+            replay_state_code_hash(replay.baseline.state.as_ref()),
+            replay_state_code_hash(replay.replay.state.as_ref()),
+            None,
+            "high",
+            source,
+        ));
+    }
+    if replay.diff.data_hash_changed == Some(true) {
+        changes.push(replay_diff_change(
+            "dataHash",
+            "Data hash",
+            replay_state_data_hash(replay.baseline.state.as_ref()),
+            replay_state_data_hash(replay.replay.state.as_ref()),
+            None,
+            "medium",
+            source,
+        ));
+    }
+    if replay.diff.balance_delta_diff.unwrap_or_default() != 0 {
+        changes.push(replay_diff_change(
+            "balanceDelta",
+            "Balance delta",
+            replay_balance_delta_label(&replay.baseline),
+            replay_balance_delta_label(&replay.replay),
+            replay
+                .diff
+                .balance_delta_diff
+                .map(|delta| delta.to_string()),
+            "medium",
+            source,
+        ));
+    }
+    if replay.diff.exit_code_changed == Some(true) {
+        changes.push(replay_diff_change(
+            "exitCode",
+            "Exit code",
+            replay_exit_code_label(&replay.baseline),
+            replay_exit_code_label(&replay.replay),
+            None,
+            "medium",
+            source,
+        ));
+    }
+    if replay.diff.outbound_count_delta.unwrap_or_default() != 0 {
+        changes.push(replay_diff_change(
+            "outboundCount",
+            "Outbound messages",
+            replay.baseline.outbound.len().to_string(),
+            replay.replay.outbound.len().to_string(),
+            replay
+                .diff
+                .outbound_count_delta
+                .map(|delta| delta.to_string()),
+            "medium",
+            source,
+        ));
+    }
+    if replay.diff.action_count_delta.unwrap_or_default() != 0 {
+        changes.push(replay_diff_change(
+            "actionCount",
+            "Out actions",
+            replay.baseline.out_actions.len().to_string(),
+            replay.replay.out_actions.len().to_string(),
+            replay
+                .diff
+                .action_count_delta
+                .map(|delta| delta.to_string()),
+            "medium",
+            source,
+        ));
+    }
+    if replay.diff.c5_changed == Some(true) {
+        changes.push(replay_diff_change(
+            "c5",
+            "C5/action register",
+            replay_c5_label(&replay.baseline),
+            replay_c5_label(&replay.replay),
+            None,
+            "medium",
+            source,
+        ));
+    }
+
+    ReplayDiffSurface { changes }
+}
+
+fn replay_diff_change(
+    kind: &str,
+    label: &str,
+    baseline: String,
+    replay: String,
+    delta: Option<String>,
+    severity: &str,
+    source: &str,
+) -> ReplayDiffChange {
+    ReplayDiffChange {
+        kind: kind.to_owned(),
+        label: label.to_owned(),
+        baseline,
+        replay,
+        delta,
+        severity: severity.to_owned(),
+        evidence: vec![source.to_owned()],
+    }
+}
+
+fn replay_state_label(state: Option<&ShardAccountSnapshot>) -> String {
+    state
+        .map(|state| state.status.clone())
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn replay_state_code_hash(state: Option<&ShardAccountSnapshot>) -> String {
+    state
+        .and_then(|state| state.code_hash.clone())
+        .unwrap_or_else(|| "<none>".to_owned())
+}
+
+fn replay_state_data_hash(state: Option<&ShardAccountSnapshot>) -> String {
+    state
+        .and_then(|state| state.data_hash.clone())
+        .unwrap_or_else(|| "<none>".to_owned())
+}
+
+fn replay_balance_delta_label(observation: &ReplayObservation) -> String {
+    observation
+        .money
+        .as_ref()
+        .map(|money| (money.balance_after as i128 - money.balance_before as i128).to_string())
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn replay_exit_code_label(observation: &ReplayObservation) -> String {
+    observation
+        .compute
+        .as_ref()
+        .and_then(|compute| compute.exit_code)
+        .map(|exit| exit.to_string())
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn replay_c5_label(observation: &ReplayObservation) -> String {
+    observation
+        .c5
+        .as_ref()
+        .map(|c5| c5.hash.clone())
+        .unwrap_or_else(|| "none".to_owned())
 }
 
 fn effective_replay_audit_signals(replay: &StateFlowReplayDiff) -> Vec<AuditSignal> {
@@ -4849,6 +5100,54 @@ mod tests {
     }
 
     #[test]
+    fn replay_diff_persists_diff_surface() {
+        let mut replay = sample_replay_diff(
+            "tx-a",
+            ReplayMutation::FlipBodyBit { bit: 0 },
+            true,
+            Some(true),
+        );
+        let flow = sample_flow("tx-a", Some("0x00000001"));
+        replay.baseline.state = Some(flow.state.pre);
+        replay.replay.state = Some(flow.state.post);
+        replay.diff_surface = super::replay_diff_surface(&replay);
+
+        let json = serde_json::to_value(&replay).unwrap();
+
+        assert_eq!(
+            json["diffSurface"]["changes"][0],
+            serde_json::json!({
+                "kind": "state",
+                "label": "Shard account state",
+                "baseline": "none",
+                "replay": "active",
+                "delta": null,
+                "severity": "high",
+                "evidence": ["tx-a"]
+            })
+        );
+
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![sample_flow("tx-a", Some("0x00000001"))],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+        let report = super::render_state_flow_report(&corpus, &schema, &[replay]);
+
+        assert!(report.contains("## Replay Diff Surface"));
+        assert!(report.contains("| Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |"));
+        assert!(report.contains("| `tx-a` | flip body bit 0 | state | Shard account state | none | active | n/a | high | `tx-a` |"));
+    }
+
+    #[test]
     fn schema_report_deserializes_without_storage_for_old_artifacts() {
         let json = r#"{
             "schemaVersion": 1,
@@ -5141,8 +5440,10 @@ mod tests {
                 action_count_delta: Some(0),
                 c5_changed: Some(false),
             },
+            diff_surface: super::ReplayDiffSurface::default(),
             risk_signals: Vec::new(),
         };
+        replay.diff_surface = super::replay_diff_surface(&replay);
         replay.risk_signals = super::replay_audit_signals(&replay);
         replay
     }

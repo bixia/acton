@@ -3754,6 +3754,8 @@ fn validate_state_flow_replay_evidence_keys(
         ),
         ("diff action count delta", &["diff", "actionCountDelta"][..]),
         ("diff c5 changed", &["diff", "c5Changed"][..]),
+        ("diff surface", &["diffSurface"][..]),
+        ("diff surface changes", &["diffSurface", "changes"][..]),
         ("risk signals", &["riskSignals"][..]),
     ] {
         if !json_path_exists(value, path) {
@@ -3766,7 +3768,42 @@ fn validate_state_flow_replay_evidence_keys(
     validate_replay_mutation_evidence_keys(value, artifact, gate_failures);
     validate_replay_observation_evidence_keys(value, "baseline", artifact, gate_failures);
     validate_replay_observation_evidence_keys(value, "replay", artifact, gate_failures);
+    validate_replay_diff_surface_evidence_keys(value, artifact, gate_failures);
     validate_replay_risk_signal_evidence_keys(value, artifact, gate_failures);
+}
+
+fn validate_replay_diff_surface_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(changes) = value
+        .get("diffSurface")
+        .and_then(|value| value.get("changes"))
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for (index, change) in changes.iter().enumerate() {
+        let prefix = format!(
+            "replay artifact {} diffSurface.changes[{index}]",
+            artifact.path
+        );
+        for (label, path) in [
+            ("kind", &["kind"][..]),
+            ("label", &["label"][..]),
+            ("baseline", &["baseline"][..]),
+            ("replay", &["replay"][..]),
+            ("delta", &["delta"][..]),
+            ("severity", &["severity"][..]),
+            ("evidence", &["evidence"][..]),
+        ] {
+            if !json_path_exists(change, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_audit_signal_severity_label(change, &prefix, gate_failures);
+    }
 }
 
 fn validate_replay_risk_signal_evidence_keys(
@@ -7000,6 +7037,7 @@ fn validate_manifest_report_content_matches_summary(
         "## State Machine Evidence",
         "## Unknown Fields",
         "## Replay Diffs",
+        "## Replay Diff Surface",
         "## Risk Points",
     ] {
         if !markdown_line_exists(&markdown, section) {
@@ -7087,6 +7125,27 @@ fn validate_manifest_report_content_matches_summary(
             validate_report_replay_diff_values(&replay, &row, gate_failures);
         }
     }
+    let replay_diff_surface_section = markdown_section(&markdown, "## Replay Diff Surface");
+    if !replay_diffs.is_empty() {
+        if let Some(section) = replay_diff_surface_section {
+            validate_report_replay_diff_surface_header(section, gate_failures);
+        }
+    }
+    for replay in &replay_diffs {
+        for change in &replay.diff_surface.changes {
+            let change_row = replay_diff_surface_section
+                .and_then(|section| report_replay_diff_surface_row(section, replay, change));
+            if change_row.is_none() {
+                gate_failures.push(format!(
+                    "report replay diff surface {} for tx {} is missing",
+                    change.kind, replay.source_query_hash
+                ));
+            }
+            if let Some(row) = change_row {
+                validate_report_replay_diff_surface_values(replay, change, &row, gate_failures);
+            }
+        }
+    }
     if let Some(section) = markdown_section(&markdown, "## Risk Points") {
         for replay in &replay_diffs {
             for signal in ton_stateflow::replay_audit_signals(replay) {
@@ -7102,6 +7161,19 @@ fn validate_manifest_report_content_matches_summary(
                 }
             }
         }
+    }
+}
+
+fn validate_report_replay_diff_surface_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = replay_diff_surface_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report replay diff surface header {expected:?} is missing"
+        ));
     }
 }
 
@@ -7272,6 +7344,23 @@ fn replay_diff_report_header() -> Vec<String> {
     .collect()
 }
 
+fn replay_diff_surface_report_header() -> Vec<String> {
+    [
+        "Source tx",
+        "Mutation",
+        "Kind",
+        "Label",
+        "Baseline",
+        "Replay",
+        "Delta",
+        "Severity",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_optional_report_target_count(
     markdown: &str,
     label: &str,
@@ -7300,6 +7389,88 @@ fn report_replay_diff_row(section: &str, replay: &StateFlowReplayDiff) -> Option
             && cells.get(1).is_some_and(|cell| cell == &mutation_label))
         .then_some(cells)
     })
+}
+
+fn report_replay_diff_surface_row(
+    section: &str,
+    replay: &StateFlowReplayDiff,
+    change: &ton_stateflow::ReplayDiffChange,
+) -> Option<Vec<String>> {
+    let mutation_label = report_replay_mutation_label(&replay.mutation);
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells
+            .get(0)
+            .is_some_and(|cell| cell == &replay.source_query_hash)
+            && cells.get(1).is_some_and(|cell| cell == &mutation_label)
+            && cells.get(2).is_some_and(|cell| cell == &change.kind)
+            && cells.get(3).is_some_and(|cell| cell == &change.label))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_replay_diff_surface_values(
+    replay: &StateFlowReplayDiff,
+    change: &ton_stateflow::ReplayDiffChange,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_replay_diff_surface_cell(
+        "baseline",
+        change.baseline.clone(),
+        replay,
+        &change.kind,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_replay_diff_surface_cell(
+        "replay",
+        change.replay.clone(),
+        replay,
+        &change.kind,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_replay_diff_surface_cell(
+        "delta",
+        change.delta.clone().unwrap_or_else(|| "n/a".to_owned()),
+        replay,
+        &change.kind,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_replay_diff_surface_cell(
+        "severity",
+        change.severity.clone(),
+        replay,
+        &change.kind,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_replay_diff_surface_cell(
+        "evidence",
+        report_sample_list(&change.evidence),
+        replay,
+        &change.kind,
+        row.get(8),
+        gate_failures,
+    );
+}
+
+fn validate_report_replay_diff_surface_cell(
+    label: &str,
+    expected: String,
+    replay: &StateFlowReplayDiff,
+    kind: &str,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report replay diff surface {label} {expected} for {kind} tx {} is missing",
+            replay.source_query_hash
+        ));
+    }
 }
 
 fn validate_report_replay_diff_values(
@@ -10022,6 +10193,7 @@ fn validate_manifest_replay_membership(
         }
         validate_replay_mutation_matches_observations(&replay, gate_failures);
         validate_replay_diff_matches_observations(&replay, gate_failures);
+        validate_replay_diff_surface(&replay, gate_failures);
         validate_replay_risk_signals(&replay, gate_failures);
         let corpus_flow = corpus
             .transactions
@@ -10036,6 +10208,58 @@ fn validate_manifest_replay_membership(
             validate_replay_baseline_matches_corpus(&replay, corpus_flow, gate_failures);
         }
     }
+}
+
+fn validate_replay_diff_surface(replay: &StateFlowReplayDiff, gate_failures: &mut Vec<String>) {
+    let expected = ton_stateflow::replay_diff_surface(replay);
+    for change in &replay.diff_surface.changes {
+        for evidence in &change.evidence {
+            if evidence != &replay.source_query_hash {
+                gate_failures.push(format!(
+                    "replay diff surface evidence {evidence} does not match source query hash {}",
+                    replay.source_query_hash
+                ));
+            }
+        }
+    }
+    for expected_change in &expected.changes {
+        if !replay
+            .diff_surface
+            .changes
+            .iter()
+            .any(|change| replay_diff_change_matches(change, expected_change))
+        {
+            gate_failures.push(format!(
+                "replay diff surface {} for {} is missing",
+                expected_change.kind, replay.source_query_hash
+            ));
+        }
+    }
+    for change in &replay.diff_surface.changes {
+        if !expected
+            .changes
+            .iter()
+            .any(|expected_change| replay_diff_change_matches(change, expected_change))
+        {
+            gate_failures.push(format!(
+                "replay diff surface {} for {} is stale or unsupported",
+                change.kind, replay.source_query_hash
+            ));
+        }
+    }
+}
+
+fn replay_diff_change_matches(
+    left: &ton_stateflow::ReplayDiffChange,
+    right: &ton_stateflow::ReplayDiffChange,
+) -> bool {
+    left.kind == right.kind
+        && left.label == right.label
+        && left.baseline == right.baseline
+        && left.replay == right.replay
+        && left.delta == right.delta
+        && left.severity == right.severity
+        && left.evidence == right.evidence
 }
 
 fn validate_replay_risk_signals(replay: &StateFlowReplayDiff, gate_failures: &mut Vec<String>) {
@@ -15650,6 +15874,65 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_replay_diff_surface_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_diff_surface("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation
+                .gate_failures
+                .iter()
+                .any(|failure| failure.contains(
+                    "target-a: report replay diff surface replay c5-hash for c5 tx tx-a is missing"
+                )),
+            "expected report replay diff surface failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_replay_diff_surface_header_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_diff_surface_header("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "target-a: report replay diff surface header [\"Source tx\", \"Mutation\", \"Kind\", \"Label\", \"Baseline\", \"Replay\", \"Delta\", \"Severity\", \"Evidence\"] is missing"
+            )),
+            "expected report replay diff surface header failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_missing_schema_deliverables() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -16207,6 +16490,17 @@ mod tests {
                     "outboundCountDelta": 0,
                     "actionCountDelta": 0,
                     "c5Changed": true
+                },
+                "diffSurface": {
+                    "changes": [{
+                        "kind": "c5",
+                        "label": "C5/action register",
+                        "baseline": "none",
+                        "replay": "none",
+                        "delta": null,
+                        "severity": "medium",
+                        "evidence": ["tx-a"]
+                    }]
                 },
                 "riskSignals": [{
                     "kind": "replay-c5-change",
@@ -17013,6 +17307,45 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_replay_missing_diff_surface_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay
+            .as_object_mut()
+            .expect("replay should be an object")
+            .remove("diffSurface");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json missing diff surface evidence key",
+                )
+            }),
+            "expected missing replay diff surface key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_replay_stale_risk_signals() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -17043,6 +17376,41 @@ mod tests {
                     .contains("target-a: replay risk signal replay-c5-change for tx-a is missing")
             }),
             "expected stale replay risk signal failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_stale_diff_surface() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["diffSurface"]["changes"][0]["severity"] = serde_json::json!("low");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("target-a: replay diff surface c5 for tx-a is stale or unsupported")
+            }),
+            "expected stale replay diff surface failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -17952,6 +18320,17 @@ mod tests {
                     "actionCountDelta": 0,
                     "c5Changed": true
                 },
+                "diffSurface": {
+                    "changes": [{
+                        "kind": "c5",
+                        "label": "C5/action register",
+                        "baseline": "none",
+                        "replay": "c5-hash",
+                        "delta": null,
+                        "severity": "medium",
+                        "evidence": ["tx-a"]
+                    }]
+                },
                 "riskSignals": [{
                     "kind": "replay-c5-change",
                     "severity": "medium",
@@ -18258,6 +18637,20 @@ mod tests {
         )
     }
 
+    fn sample_report_markdown_with_wrong_replay_diff_surface(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `tx-a` | flip body bit 0 | c5 | C5/action register | none | c5-hash | n/a | medium | `tx-a` |",
+            "| `tx-a` | flip body bit 0 | c5 | C5/action register | none | stale-c5 | n/a | medium | `tx-a` |",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_replay_diff_surface_header(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |",
+            "| Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence stale |",
+        )
+    }
+
     fn sample_report_markdown_without_schema_deliverables(address: &str) -> String {
         sample_report_markdown_inner(address, true, "flip body bit 0", false, false)
     }
@@ -18403,6 +18796,11 @@ mod tests {
              | Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |\n\
              | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |\n\
              | `tx-a` | {replay_mutation} | true | true | false | false | false | 0 | false | 0 | 0 | true |\n\
+             \n\
+             ## Replay Diff Surface\n\
+             | Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | `tx-a` | {replay_mutation} | c5 | C5/action register | none | c5-hash | n/a | medium | `tx-a` |\n\
              \n\
              ## Risk Points\n\
              {risk_point}"

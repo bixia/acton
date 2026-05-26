@@ -253,7 +253,22 @@ export interface StateFlowReplayDiff {
   readonly baseline: ReplayObservation
   readonly replay: ReplayObservation
   readonly diff: ReplayDiffSummary
+  readonly diffSurface?: ReplayDiffSurface | null
   readonly riskSignals?: readonly AuditSignal[] | null
+}
+
+export interface ReplayDiffSurface {
+  readonly changes: readonly ReplayDiffChange[]
+}
+
+export interface ReplayDiffChange {
+  readonly kind: string
+  readonly label: string
+  readonly baseline: string
+  readonly replay: string
+  readonly delta?: string | null
+  readonly severity: string
+  readonly evidence: readonly string[]
 }
 
 export interface StateFlowRunSummary {
@@ -1016,6 +1031,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
 }
 
 function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
+  const diffSurfaceRows = replayDiffSurfaceRows(replay)
   return {
     title: "State Flow Replay Diff",
     subtitle: shortHash(replay.sourceQueryHash),
@@ -1025,6 +1041,7 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
       {label: "Input", value: changedLabel(replay.diff.inputChanged)},
       {label: "State", value: optionalChangedLabel(replay.diff.stateChanged)},
       {label: "Exit", value: optionalChangedLabel(replay.diff.exitCodeChanged)},
+      {label: "Diff Surface", value: diffSurfaceRows.length.toString()},
     ],
     sections: [
       {
@@ -1038,6 +1055,14 @@ function summarizeReplay(replay: StateFlowReplayDiff): ArtifactSummary {
         title: "Replay Diff",
         rows: replayDiffRows(replay.diff),
       },
+      ...(diffSurfaceRows.length > 0
+        ? [
+            {
+              title: "Replay Diff Surface",
+              rows: diffSurfaceRows,
+            },
+          ]
+        : []),
       {
         title: "Risk Points",
         rows: replayRiskRows(replay),
@@ -1221,6 +1246,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const stateMachineNodeRows = reportStateMachineNodeRows(report)
   const stateMachineEvidenceRows = reportStateMachineEvidenceRows(report)
   const replayDiffRows = reportReplayDiffRows(report)
+  const replayDiffSurfaceRows = reportReplayDiffSurfaceRows(report)
   const unknownFieldRows = reportUnknownFieldRows(report)
   const riskPointRows = reportRiskPointRows(report)
   return {
@@ -1363,6 +1389,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Replay Diffs",
               rows: replayDiffRows,
+            },
+          ]
+        : []),
+      ...(replayDiffSurfaceRows.length > 0
+        ? [
+            {
+              title: "Replay Diff Surface",
+              rows: replayDiffSurfaceRows,
             },
           ]
         : []),
@@ -1824,6 +1858,24 @@ function reportReplayDiffRows(report: StateFlowReport): readonly SummaryRow[] {
       tableValueLabel("outbound delta", rowValue(row, "Outbound delta")),
       tableValueLabel("action delta", rowValue(row, "Action delta")),
       tableValueLabel("c5", rowValue(row, "C5 changed")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportReplayDiffSurfaceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Replay Diff Surface").map(row => ({
+    label: rowValue(row, "Kind") || "n/a",
+    value: rowValue(row, "Label") || "n/a",
+    detail: [
+      tableValueLabel("source", rowValue(row, "Source tx")),
+      tableValueLabel("mutation", rowValue(row, "Mutation")),
+      tableValueLabel("baseline", rowValue(row, "Baseline")),
+      tableValueLabel("replay", rowValue(row, "Replay")),
+      tableValueLabel("delta", rowValue(row, "Delta")),
+      tableValueLabel("severity", rowValue(row, "Severity")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
     ]
       .filter((value): value is string => value !== undefined)
       .join(" · "),
@@ -2986,6 +3038,192 @@ function replayDiffRows(diff: ReplayDiffSummary): readonly SummaryRow[] {
     {label: "Action Delta", value: formatNullable(diff.actionCountDelta)},
     {label: "c5", value: optionalChangedLabel(diff.c5Changed)},
   ]
+}
+
+function replayDiffSurfaceRows(replay: StateFlowReplayDiff): readonly SummaryRow[] {
+  const changes =
+    replay.diffSurface && replay.diffSurface.changes.length > 0
+      ? replay.diffSurface.changes
+      : replayDiffSurfaceFromReplay(replay).changes
+
+  return changes.map(change => ({
+    label: change.kind,
+    value: change.label,
+    detail: [
+      tableValueLabel("baseline", change.baseline),
+      tableValueLabel("replay", change.replay),
+      change.delta !== null && change.delta !== undefined
+        ? tableValueLabel("delta", change.delta)
+        : undefined,
+      tableValueLabel("severity", change.severity),
+      tableValueLabel("evidence", change.evidence.join(", ")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function replayDiffSurfaceFromReplay(replay: StateFlowReplayDiff): ReplayDiffSurface {
+  const changes: ReplayDiffChange[] = []
+  if (!replay.diff.inputChanged) {
+    return {changes}
+  }
+
+  if (!replay.diff.replayAccepted) {
+    changes.push(
+      replayDiffChange("accepted", "Replay accepted", "true", "false", null, "info", replay),
+    )
+    return {changes}
+  }
+
+  if (replay.diff.stateChanged === true) {
+    changes.push(
+      replayDiffChange(
+        "state",
+        "Shard account state",
+        replay.baseline.state?.status ?? "n/a",
+        replay.replay.state?.status ?? "n/a",
+        null,
+        "high",
+        replay,
+      ),
+    )
+  }
+  if (replay.diff.codeHashChanged === true) {
+    changes.push(
+      replayDiffChange(
+        "codeHash",
+        "Code hash",
+        replay.baseline.state?.codeHash ?? "<none>",
+        replay.replay.state?.codeHash ?? "<none>",
+        null,
+        "high",
+        replay,
+      ),
+    )
+  }
+  if (replay.diff.dataHashChanged === true) {
+    changes.push(
+      replayDiffChange(
+        "dataHash",
+        "Data hash",
+        replay.baseline.state?.dataHash ?? "<none>",
+        replay.replay.state?.dataHash ?? "<none>",
+        null,
+        "medium",
+        replay,
+      ),
+    )
+  }
+  if (
+    replay.diff.balanceDeltaDiff !== undefined &&
+    replay.diff.balanceDeltaDiff !== null &&
+    replay.diff.balanceDeltaDiff !== 0
+  ) {
+    changes.push(
+      replayDiffChange(
+        "balanceDelta",
+        "Balance delta",
+        replayBalanceDeltaLabel(replay.baseline),
+        replayBalanceDeltaLabel(replay.replay),
+        replay.diff.balanceDeltaDiff.toString(),
+        "medium",
+        replay,
+      ),
+    )
+  }
+  if (replay.diff.exitCodeChanged === true) {
+    changes.push(
+      replayDiffChange(
+        "exitCode",
+        "Exit code",
+        replayExitCodeLabel(replay.baseline),
+        replayExitCodeLabel(replay.replay),
+        null,
+        "medium",
+        replay,
+      ),
+    )
+  }
+  if (
+    replay.diff.outboundCountDelta !== undefined &&
+    replay.diff.outboundCountDelta !== null &&
+    replay.diff.outboundCountDelta !== 0
+  ) {
+    changes.push(
+      replayDiffChange(
+        "outboundCount",
+        "Outbound messages",
+        replay.baseline.outbound.length.toString(),
+        replay.replay.outbound.length.toString(),
+        replay.diff.outboundCountDelta.toString(),
+        "medium",
+        replay,
+      ),
+    )
+  }
+  if (
+    replay.diff.actionCountDelta !== undefined &&
+    replay.diff.actionCountDelta !== null &&
+    replay.diff.actionCountDelta !== 0
+  ) {
+    changes.push(
+      replayDiffChange(
+        "actionCount",
+        "Out actions",
+        replay.baseline.outActions.length.toString(),
+        replay.replay.outActions.length.toString(),
+        replay.diff.actionCountDelta.toString(),
+        "medium",
+        replay,
+      ),
+    )
+  }
+  if (replay.diff.c5Changed === true) {
+    changes.push(
+      replayDiffChange(
+        "c5",
+        "C5/action register",
+        replay.baseline.c5?.hash ?? "none",
+        replay.replay.c5?.hash ?? "none",
+        null,
+        "medium",
+        replay,
+      ),
+    )
+  }
+
+  return {changes}
+}
+
+function replayDiffChange(
+  kind: string,
+  label: string,
+  baseline: string,
+  replayValue: string,
+  delta: string | null,
+  severity: string,
+  replay: StateFlowReplayDiff,
+): ReplayDiffChange {
+  return {
+    kind,
+    label,
+    baseline,
+    replay: replayValue,
+    delta,
+    severity,
+    evidence: [replay.sourceQueryHash],
+  }
+}
+
+function replayBalanceDeltaLabel(observation: ReplayObservation): string {
+  return observation.money
+    ? (observation.money.balanceAfter - observation.money.balanceBefore).toString()
+    : "n/a"
+}
+
+function replayExitCodeLabel(observation: ReplayObservation): string {
+  return formatNullable(observation.compute?.exitCode)
 }
 
 function replayRiskRows(replay: StateFlowReplayDiff): readonly SummaryRow[] {

@@ -504,6 +504,28 @@ const replay = {
     actionCountDelta: 0,
     c5Changed: true,
   },
+  diffSurface: {
+    changes: [
+      {
+        kind: "state",
+        label: "Shard account state",
+        baseline: "active",
+        replay: "frozen",
+        delta: null,
+        severity: "high",
+        evidence: ["tx-hash"],
+      },
+      {
+        kind: "balanceDelta",
+        label: "Balance delta",
+        baseline: "-2",
+        replay: "2",
+        delta: "4",
+        severity: "medium",
+        evidence: ["tx-hash"],
+      },
+    ],
+  },
   riskSignals: [
     {
       kind: "replay-state-change",
@@ -762,6 +784,11 @@ stateDiagram-v2
 | Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |
 | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |
 | \`tx-a\` | flip body bit 32 | true | true | true | false | true | 4 | false | 0 | 1 | true |
+
+## Replay Diff Surface
+| Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| \`tx-a\` | flip body bit 32 | state | Shard account state | active | frozen | n/a | high | \`tx-a\` |
 
 ## Unknown Fields
 - \`0x00000001\`:
@@ -1027,6 +1054,17 @@ assert(
   replayDiffRows.some(row => row.label === "Balance Delta" && row.value === "4"),
   "expected replay diff balance delta row",
 )
+const replayDiffSurfaceRows = sectionRows(replaySummary, "Replay Diff Surface")
+assert(replayDiffSurfaceRows[0]?.label === "state", "expected replay diff surface state row")
+assert(
+  replayDiffSurfaceRows[0]?.value === "Shard account state",
+  "expected replay diff surface label",
+)
+assert(
+  replayDiffSurfaceRows[0]?.detail ===
+    "baseline active · replay frozen · severity high · evidence tx-hash",
+  "expected replay diff surface detail",
+)
 const replayRiskRows = sectionRows(replaySummary, "Risk Points")
 assert(
   replayRiskRows.some(row => row.value === "Mutation changed state"),
@@ -1207,7 +1245,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "19"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "20"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1387,6 +1425,20 @@ assert(
 assert(
   reportReplayDiffRows[0]?.detail?.includes("c5 true") === true,
   "expected report replay c5 detail",
+)
+const reportReplayDiffSurfaceRows = sectionRows(reportSummary, "Replay Diff Surface")
+assert(
+  reportReplayDiffSurfaceRows[0]?.label === "state",
+  "expected report replay diff surface kind",
+)
+assert(
+  reportReplayDiffSurfaceRows[0]?.value === "Shard account state",
+  "expected report replay diff surface label",
+)
+assert(
+  reportReplayDiffSurfaceRows[0]?.detail ===
+    "source tx-a · mutation flip body bit 32 · baseline active · replay frozen · delta n/a · severity high · evidence tx-a",
+  "expected report replay diff surface detail",
 )
 const reportUnknownRows = sectionRows(reportSummary, "Unknown Fields")
 assert(reportUnknownRows[0]?.label === "0x00000001", "expected report unknown opcode")
