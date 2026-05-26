@@ -702,6 +702,30 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## Runtime Evidence").ok();
+    if corpus.transactions.is_empty() {
+        writeln!(
+            report,
+            "- No retraced transaction runtime evidence was provided."
+        )
+        .ok();
+    } else {
+        writeln!(
+            report,
+            "| Tx | Opcode | Exit | VM steps | VM trace lines | Executor trace lines | C5 | Out actions | Outbound messages | State |"
+        )
+        .ok();
+        writeln!(
+            report,
+            "| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |"
+        )
+        .ok();
+        for tx in &corpus.transactions {
+            write_runtime_evidence_row(&mut report, tx);
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## Message Body Fields").ok();
     let mut body_field_rows = 0;
     for candidate in &schema.opcode_candidates {
@@ -1304,6 +1328,38 @@ fn write_effect_row(
         markdown_code_list_or_none(&effect.tx_hashes),
     )
     .ok();
+}
+
+fn write_runtime_evidence_row(report: &mut String, tx: &StateFlowTx) {
+    writeln!(
+        report,
+        "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} -> {} |",
+        markdown_escape(&tx.query_hash),
+        markdown_code_opt(tx.inbound.opcode.as_deref()),
+        format_optional_i32(tx.compute.exit_code),
+        format_optional_u32(tx.compute.vm_steps),
+        tx.vm_trace.line_count,
+        tx.executor_trace.line_count,
+        format_runtime_c5_shape(tx.c5.as_ref()),
+        tx.out_actions.len(),
+        tx.outbound.len(),
+        markdown_escape(&tx.state.pre.status),
+        markdown_escape(&tx.state.post.status),
+    )
+    .ok();
+}
+
+fn format_runtime_c5_shape(c5: Option<&CellArtifact>) -> String {
+    c5.map(|cell| format!("{}/{}", cell.bits, cell.refs))
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn format_optional_i32(value: Option<i32>) -> String {
+    value.map_or("n/a".to_owned(), |value| value.to_string())
+}
+
+fn format_optional_u32(value: Option<u32>) -> String {
+    value.map_or("n/a".to_owned(), |value| value.to_string())
 }
 
 fn format_effect_value(effect: &EffectCandidate) -> String {
@@ -3243,6 +3299,43 @@ mod tests {
         assert!(report.contains("## State Machine Evidence"));
         assert!(report.contains("| From | To | Opcode | Count | Confidence | Evidence |"));
         assert!(report.contains("| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |"));
+    }
+
+    #[test]
+    fn report_renderer_includes_runtime_evidence_rows() {
+        let mut flow = sample_flow_with_effects("tx-a");
+        flow.c5 = Some(sample_cell_artifact("c5", 40, 2));
+        flow.vm_trace = LogArtifact {
+            line_count: 2,
+            text: "execute PUSHINT 1\nexecute SENDRAWMSG".to_owned(),
+        };
+        flow.executor_trace = LogArtifact {
+            line_count: 1,
+            text: "execute transaction".to_owned(),
+        };
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 1,
+            source_tx_count: 1,
+            retraced_count: 1,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![flow],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+
+        assert!(report.contains("## Runtime Evidence"));
+        assert!(report.contains("| Tx | Opcode | Exit | VM steps | VM trace lines | Executor trace lines | C5 | Out actions | Outbound messages | State |"));
+        assert!(
+            report.contains(
+                "| `tx-a` | `0x00000001` | 0 | 1 | 2 | 1 | 40/2 | 1 | 1 | none -> active |"
+            )
+        );
     }
 
     #[test]

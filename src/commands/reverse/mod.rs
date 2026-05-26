@@ -5631,6 +5631,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Target",
         "## Opcode Candidates",
         "## Schema Evidence",
+        "## Runtime Evidence",
         "## Message Body Fields",
         "## Replay Probes",
         "## Storage Fields",
@@ -5674,6 +5675,30 @@ fn validate_manifest_report_content_matches_summary(
         }
     }
 
+    let runtime_evidence_section = markdown_section(&markdown, "## Runtime Evidence");
+    if let Some(corpus) =
+        read_single_target_json_artifact::<StateFlowCorpus>(manifest_path, artifacts, "corpus")
+    {
+        if !corpus.transactions.is_empty() {
+            if let Some(section) = runtime_evidence_section {
+                validate_report_runtime_evidence_header(section, gate_failures);
+            }
+        }
+        for tx in &corpus.transactions {
+            let runtime_row = runtime_evidence_section
+                .and_then(|section| report_runtime_evidence_row(section, tx));
+            if runtime_row.is_none() {
+                gate_failures.push(format!(
+                    "report runtime evidence tx hash {} is missing",
+                    tx.query_hash
+                ));
+            }
+            if let Some(row) = runtime_row {
+                validate_report_runtime_evidence_values(tx, &row, gate_failures);
+            }
+        }
+    }
+
     let replay_diff_section = markdown_section(&markdown, "## Replay Diffs");
     let replay_diffs =
         read_target_json_artifacts::<StateFlowReplayDiff>(manifest_path, artifacts, "replay");
@@ -5713,6 +5738,142 @@ fn validate_report_replay_diff_header(section: &str, gate_failures: &mut Vec<Str
     if header != expected {
         gate_failures.push(format!("report replay diff header {expected:?} is missing"));
     }
+}
+
+fn validate_report_runtime_evidence_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = runtime_evidence_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report runtime evidence header {expected:?} is missing"
+        ));
+    }
+}
+
+fn runtime_evidence_report_header() -> Vec<String> {
+    [
+        "Tx",
+        "Opcode",
+        "Exit",
+        "VM steps",
+        "VM trace lines",
+        "Executor trace lines",
+        "C5",
+        "Out actions",
+        "Outbound messages",
+        "State",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
+fn report_runtime_evidence_row(section: &str, tx: &StateFlowTx) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        cells
+            .first()
+            .is_some_and(|cell| cell == &tx.query_hash)
+            .then_some(cells)
+    })
+}
+
+fn validate_report_runtime_evidence_values(
+    tx: &StateFlowTx,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_runtime_evidence_cell(
+        "opcode",
+        tx.inbound
+            .opcode
+            .clone()
+            .unwrap_or_else(|| "<none>".to_owned()),
+        tx,
+        row.get(1),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "exit",
+        report_optional_i32(tx.compute.exit_code),
+        tx,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "VM steps",
+        report_optional_u32(tx.compute.vm_steps),
+        tx,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "VM trace lines",
+        tx.vm_trace.line_count.to_string(),
+        tx,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "executor trace lines",
+        tx.executor_trace.line_count.to_string(),
+        tx,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "c5",
+        report_runtime_c5_shape(tx),
+        tx,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "out actions",
+        tx.out_actions.len().to_string(),
+        tx,
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "outbound messages",
+        tx.outbound.len().to_string(),
+        tx,
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_runtime_evidence_cell(
+        "state",
+        format!("{} -> {}", tx.state.pre.status, tx.state.post.status),
+        tx,
+        row.get(9),
+        gate_failures,
+    );
+}
+
+fn validate_report_runtime_evidence_cell(
+    label: &str,
+    expected: String,
+    tx: &StateFlowTx,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report runtime evidence {label} {expected} for tx {} is missing",
+            tx.query_hash
+        ));
+    }
+}
+
+fn report_runtime_c5_shape(tx: &StateFlowTx) -> String {
+    tx.c5
+        .as_ref()
+        .map(|cell| format!("{}/{}", cell.bits, cell.refs))
+        .unwrap_or_else(|| "none".to_owned())
 }
 
 fn replay_diff_report_header() -> Vec<String> {
@@ -5868,6 +6029,14 @@ fn report_optional_bool(value: Option<bool>) -> String {
 }
 
 fn report_optional_i128(value: Option<i128>) -> String {
+    value.map_or("n/a".to_owned(), |value| value.to_string())
+}
+
+fn report_optional_i32(value: Option<i32>) -> String {
+    value.map_or("n/a".to_owned(), |value| value.to_string())
+}
+
+fn report_optional_u32(value: Option<u32>) -> String {
     value.map_or("n/a".to_owned(), |value| value.to_string())
 }
 
@@ -10163,6 +10332,71 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_runtime_evidence() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_runtime_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report section \"## Runtime Evidence\" is missing")
+            }),
+            "expected missing runtime evidence section failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_runtime_evidence_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_runtime_evidence("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report runtime evidence VM trace lines 1 for tx tx-a is missing",
+                )
+            }),
+            "expected runtime VM trace mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report runtime evidence c5 none for tx tx-a is missing")
+            }),
+            "expected runtime c5 mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_missing_summary_transaction_artifact() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -14184,6 +14418,25 @@ mod tests {
         sample_report_markdown_inner(address, false, "flip body bit 0", true, true)
     }
 
+    fn sample_report_markdown_without_runtime_evidence(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "## Runtime Evidence\n\
+             | Tx | Opcode | Exit | VM steps | VM trace lines | Executor trace lines | C5 | Out actions | Outbound messages | State |\n\
+             | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |\n\
+             | `tx-a` | `0x00000001` | 0 | 1 | 1 | 1 | none | 0 | 0 | none -> active |\n\
+             | `tx-b` | `0x00000001` | 0 | 1 | 1 | 1 | none | 0 | 0 | none -> active |\n\
+             \n",
+            "",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_runtime_evidence(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `tx-a` | `0x00000001` | 0 | 1 | 1 | 1 | none | 0 | 0 | none -> active |",
+            "| `tx-a` | `0x00000001` | 0 | 1 | 9 | 9 | stale | 9 | 9 | active -> frozen |",
+        )
+    }
+
     fn sample_report_markdown_with_wrong_opcode_candidate(address: &str) -> String {
         sample_report_markdown(address).replace(
             "| `0x00000001` | 2 | medium | 32 | 0 | balance -3; data hash changes 0; code hash changes 0 | none | none | none | tx-a, tx-b |",
@@ -14491,6 +14744,12 @@ mod tests {
              | Opcode | Tx | Body hash | Body bits/refs | State | Data hash | Code hash | Outbound | Actions |\n\
              | --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n\
              {schema_evidence_row}\
+             \n\
+             ## Runtime Evidence\n\
+             | Tx | Opcode | Exit | VM steps | VM trace lines | Executor trace lines | C5 | Out actions | Outbound messages | State |\n\
+             | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |\n\
+             | `tx-a` | `0x00000001` | 0 | 1 | 1 | 1 | none | 0 | 0 | none -> active |\n\
+             | `tx-b` | `0x00000001` | 0 | 1 | 1 | 1 | none | 0 | 0 | none -> active |\n\
              \n\
              ## Message Body Fields\n\
              - No message body field candidates were inferred.\n\
