@@ -5,6 +5,7 @@
       "id": "mainnet-stateflow-baseline",
       "network": "mainnet",
       "address": "UQDDu8CeRPbV2YRuwVE6eubWs0SPynt9O0iDtdf-0uTFx8mo",
+      "sourceUrl": "https://tonviewer.com/UQDDu8CeRPbV2YRuwVE6eubWs0SPynt9O0iDtdf-0uTFx8mo",
       "collectLimit": 2,
       "replayMutation": {
         "type": "flipBodyBit",

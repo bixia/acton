@@ -8153,6 +8153,27 @@ mod tests {
     }
 
     #[test]
+    fn smoke_manifest_checked_in_targets_are_source_traceable() {
+        let manifest = super::SmokeManifest::from_json(include_str!(
+            "../../../crates/ton-stateflow/smoke-targets.json"
+        ))
+        .expect("checked-in smoke targets should deserialize");
+
+        let missing_source_urls = manifest
+            .targets
+            .iter()
+            .filter(|target| target.source_url.as_deref().unwrap_or_default().is_empty())
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing_source_urls.is_empty(),
+            "checked-in smoke targets should link to real-chain source pages: {:?}",
+            missing_source_urls
+        );
+    }
+
+    #[test]
     fn smoke_summary_gate_rejects_weak_artifacts() {
         let mut summary = sample_smoke_summary();
         summary.targets[0].failure_count = 1;
