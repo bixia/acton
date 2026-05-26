@@ -12388,7 +12388,9 @@ fn validate_replay_mutation_matches_observations(
             }
         }
         ReplayMutation::SetBodyUint {
-            bit_offset, bits, ..
+            bit_offset,
+            bits,
+            value,
         } => {
             let mutation_end = bit_offset.checked_add(*bits);
             if *bits == 0 || mutation_end.is_none_or(|end| end > baseline_body_bits) {
@@ -12396,6 +12398,12 @@ fn validate_replay_mutation_matches_observations(
                     "replay setBodyUint {bit_offset}:{bits} for {tx_hash} exceeds baseline body bits {baseline_body_bits}"
                 ));
             }
+            if *bits == 0 || *bits > 64 {
+                gate_failures.push(format!(
+                    "replay setBodyUint {bit_offset}:{bits} for {tx_hash} uses unsupported bit length {bits}"
+                ));
+            }
+            validate_replay_set_body_uint_value(value, *bits, tx_hash, gate_failures);
         }
         ReplayMutation::ReplaceBody { body_boc64 } => {
             validate_evidence_text_field(
@@ -12409,6 +12417,25 @@ fn validate_replay_mutation_matches_observations(
         }
     }
     validate_replay_mutated_inbound_matches_mutation(replay, gate_failures);
+}
+
+fn validate_replay_set_body_uint_value(
+    value: &str,
+    bits: u16,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Ok(parsed) = parse_uint_value(value) else {
+        gate_failures.push(format!(
+            "replay setBodyUint value {value} for {tx_hash} is not a valid uint"
+        ));
+        return;
+    };
+    if bits < 64 && parsed >= (1u64 << bits) {
+        gate_failures.push(format!(
+            "replay setBodyUint value {value} for {tx_hash} does not fit in {bits} bit(s)"
+        ));
+    }
 }
 
 fn validate_replay_mutated_inbound_matches_mutation(
@@ -21380,6 +21407,139 @@ mod tests {
             }),
             "expected replay setBodyUint bounds failure, got {:?}",
             validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_set_body_uint_invalid_value() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"] = serde_json::json!({
+            "type": "setBodyUint",
+            "bitOffset": 0,
+            "bits": 32,
+            "value": "not-a-uint"
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay setBodyUint value not-a-uint for tx-a is not a valid uint",
+                )
+            }),
+            "expected replay setBodyUint invalid value failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_replay_set_body_uint_value_overflow() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["mutation"] = serde_json::json!({
+            "type": "setBodyUint",
+            "bitOffset": 0,
+            "bits": 8,
+            "value": "256"
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay setBodyUint value 256 for tx-a does not fit in 8 bit(s)",
+                )
+            }),
+            "expected replay setBodyUint value overflow failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn replay_mutation_validation_rejects_replay_set_body_uint_unsupported_bit_length() {
+        let mut wide_inbound = test_internal_message_artifact_json(0x0000_0001);
+        wide_inbound["body"]["bits"] = serde_json::json!(128);
+        let replay: StateFlowReplayDiff = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "sourceQueryHash": "tx-a",
+            "mutation": {
+                "type": "setBodyUint",
+                "bitOffset": 0,
+                "bits": 65,
+                "value": "1"
+            },
+            "ignoreChksig": false,
+            "baseline": sample_replay_observation_with_inbound_json(
+                true,
+                wide_inbound.clone(),
+            ),
+            "replay": sample_replay_observation_with_inbound_json(
+                true,
+                wide_inbound,
+            ),
+            "diff": {
+                "replayAccepted": true,
+                "inputChanged": true,
+                "stateChanged": false,
+                "codeHashChanged": false,
+                "dataHashChanged": false,
+                "balanceDeltaDiff": 0,
+                "exitCodeChanged": false,
+                "outboundCountDelta": 0,
+                "actionCountDelta": 0,
+                "c5Changed": false
+            },
+            "diffSurface": {"changes": []},
+            "riskSignals": []
+        }))
+        .expect("replay diff should parse");
+        let mut gate_failures = Vec::new();
+
+        super::validate_replay_mutation_matches_observations(&replay, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay setBodyUint 0:65 for tx-a uses unsupported bit length 65")
+            }),
+            "expected replay setBodyUint unsupported bit length failure, got {:?}",
+            gate_failures
         );
     }
 
