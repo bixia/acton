@@ -1,0 +1,731 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-26",
+  "network": "mainnet",
+  "purpose": "Real TON mainnet reverse-validation target candidates for Acton state-flow collection, inference, replay, retrace, and reporting.",
+  "sourcePriority": [
+    "official protocol docs",
+    "official protocol API or indexer",
+    "verified SDK/source constants",
+    "Tonviewer/TonAPI explorer evidence",
+    "derived address from official getter"
+  ],
+  "sourceQualityNotes": [
+    "Verified deployed contract source is best for semantics when code hash and deployment match.",
+    "Official docs and SDKs are best for canonical addresses and intended flows but can lag live contracts.",
+    "Protocol indexers are good for discovery and liquidity, but not ground truth for failed traces or ABI semantics.",
+    "Explorer labels and decoders are secondary evidence unless backed by verified source.",
+    "Prefer hub.dedust.io over older docs.dedust.io when DeDust pages disagree.",
+    "Reject USDt lookalikes by master address, not by symbol/name/image."
+  ],
+  "canonicalAssets": {
+    "tonPseudoAsset": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+    "usdtMaster": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+    "usdtMasterRaw": "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe",
+    "usdtMetadataUri": "https://tether.to/usdt-ton.json",
+    "usdtDecimals": 6,
+    "nativeTonRepresentations": {
+      "stonfiV2PtonMaster": "EQBnGWMCf3-FZZq1W4IWcWiGAc3PHuZ0_H-7sad2oY00o83S",
+      "stonfiV1PtonMaster": "EQCM3B12QK1e4yZSf8GtBRT0aLMNyEsBc_DhVfRRtOEffLez",
+      "stonfiDeprecatedWton": "EQDQoc5M3Bh8eWFephi9bClhevelbZZvWhkqdo80XuY_0qXv",
+      "dedustNativeVault": "EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
+      "swapcoffeeNativeVault": "EQDbLqT_zhxpERj0EnXG2iqr1g71ODb_Xoc74R8RzUSElKGD",
+      "toncoPtonMinter": "EQCUnExmdgwAKADi-j2KPKThyQqTc7U650cgM0g78UzZXn9J",
+      "toncoRouterPtonWallet": "EQCHHakhWxSQIWbw6ioW21YnjVKBCDd_gVjF9Mz9_dIuFy23"
+    }
+  },
+  "candidates": [
+    {
+      "id": "tonviewer-requested-target",
+      "priority": "p0",
+      "protocol": "user-requested",
+      "category": "account",
+      "contractType": "Tonviewer requested live state-flow target",
+      "address": "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+      "sourceUrl": "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+      "sources": [
+        "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566",
+          "url": "https://tonviewer.com/transaction/bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566",
+          "op": "live state-flow retrace sample"
+        }
+      ],
+      "coverage": [
+        "user-requested live Tonviewer target",
+        "collect-infer-replay-report validation",
+        "retrace sample coverage"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "stonfi-v2-ton-usdt-pool",
+      "priority": "p0",
+      "protocol": "stonfi",
+      "category": "pool",
+      "contractType": "v2.2 constant-product pool",
+      "address": "EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
+      "related": {
+        "router": "EQCS4UEa5UaJLzOyyKieqQOQ2P9M-7kXpkO5HnP3Bv250cN3",
+        "ptonWallet": "EQCSIMGBps_qzRG3uPYhON8bucyCtu0mYdL1-u4gSz77IBa3",
+        "assets": [
+          "TON",
+          "USDt"
+        ]
+      },
+      "sourceUrl": "https://tonviewer.com/EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
+      "sources": [
+        "https://api.ston.fi/v1/pools/by_market/EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        "https://api.ston.fi/v1/routers/EQCS4UEa5UaJLzOyyKieqQOQ2P9M-7kXpkO5HnP3Bv250cN3",
+        "https://docs.ston.fi/developer-section/dex/smart-contracts/v2/pool"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "acfd9d1ee6eb9961408ed87ac776f18bf451cd60c8ff6843a2857e6959c12eb1",
+          "url": "https://tonviewer.com/transaction/acfd9d1ee6eb9961408ed87ac776f18bf451cd60c8ff6843a2857e6959c12eb1",
+          "op": "0x6664de2a stonfi_swap_v2"
+        }
+      ],
+      "coverage": [
+        "high-volume v2 pool swap",
+        "router-to-pool dispatch",
+        "native TON through pTON wallet",
+        "USDt jetton leg"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "stonfi-v2-router",
+      "priority": "p0",
+      "protocol": "stonfi",
+      "category": "router",
+      "contractType": "v2.2 constant-product router",
+      "address": "EQCS4UEa5UaJLzOyyKieqQOQ2P9M-7kXpkO5HnP3Bv250cN3",
+      "sourceUrl": "https://tonviewer.com/EQCS4UEa5UaJLzOyyKieqQOQ2P9M-7kXpkO5HnP3Bv250cN3",
+      "sources": [
+        "https://api.ston.fi/v1/routers/EQCS4UEa5UaJLzOyyKieqQOQ2P9M-7kXpkO5HnP3Bv250cN3",
+        "https://docs.ston.fi/developer-section/dex/smart-contracts/v2/router"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "5cc6946440447e0485cdbcf3df904ae1f333ffb70e6735631f1ab090775c4c71",
+          "url": "https://tonviewer.com/transaction/5cc6946440447e0485cdbcf3df904ae1f333ffb70e6735631f1ab090775c4c71",
+          "op": "stonfi_pay_to_v2 or related router traffic"
+        }
+      ],
+      "coverage": [
+        "router pay_to/pay_vault path",
+        "jetton transfer notification routing"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "stonfi-v1-ton-usdt-pool",
+      "priority": "p0",
+      "protocol": "stonfi",
+      "category": "pool",
+      "contractType": "v1 legacy constant-product pool",
+      "address": "EQD8TJ8xEWB1SpnRE4d89YO3jl0W0EiBnNS4IBaHaUmdfizE",
+      "related": {
+        "router": "EQB3ncyBUTjZUA5EnFKR5_EnOMI9V1tTEAAPaiU71gc4TiUt",
+        "assets": [
+          "TON",
+          "USDt"
+        ]
+      },
+      "sourceUrl": "https://tonviewer.com/EQD8TJ8xEWB1SpnRE4d89YO3jl0W0EiBnNS4IBaHaUmdfizE",
+      "sources": [
+        "https://api.ston.fi/v1/pools/EQD8TJ8xEWB1SpnRE4d89YO3jl0W0EiBnNS4IBaHaUmdfizE",
+        "https://api.ston.fi/v1/routers/EQB3ncyBUTjZUA5EnFKR5_EnOMI9V1tTEAAPaiU71gc4TiUt",
+        "https://docs.ston.fi/developer-section/dex/smart-contracts/v1/pool",
+        "https://docs.ston.fi/developer-section/dex/smart-contracts/v1/router"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "af1a08cee9364e83d4cc4300e8cab6bd92f3db3b9186cd4cbfb7b8fa26312f30",
+          "url": "https://tonviewer.com/transaction/af1a08cee9364e83d4cc4300e8cab6bd92f3db3b9186cd4cbfb7b8fa26312f30",
+          "op": "0x25938561 stonfi_swap"
+        }
+      ],
+      "coverage": [
+        "legacy v1 pool opcode",
+        "v1/v2 schema contrast",
+        "router-wallet-driven flow"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "stonfi-stableswap-usde-usdt-pool",
+      "priority": "p0",
+      "protocol": "stonfi",
+      "category": "pool",
+      "contractType": "v2.2 stable-swap pool",
+      "address": "EQBSUY4UWGJFAps0KwHY4tpOGqzU41DZhyrT8OuyAWWtnezy",
+      "related": {
+        "router": "EQBSNX_5mSikBVttWhIaIb0f8jJU7fL6kvyyFVppd7dWRO6M",
+        "assets": [
+          "USDe",
+          "USDt"
+        ]
+      },
+      "sourceUrl": "https://tonviewer.com/EQBSUY4UWGJFAps0KwHY4tpOGqzU41DZhyrT8OuyAWWtnezy",
+      "sources": [
+        "https://api.ston.fi/v1/pools/EQBSUY4UWGJFAps0KwHY4tpOGqzU41DZhyrT8OuyAWWtnezy",
+        "https://api.ston.fi/v1/routers/EQBSNX_5mSikBVttWhIaIb0f8jJU7fL6kvyyFVppd7dWRO6M"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "253f75f03cecc457511c2f8a4e5b7fe6673f15378307c649835c05e09d6b0473",
+          "url": "https://tonviewer.com/transaction/253f75f03cecc457511c2f8a4e5b7fe6673f15378307c649835c05e09d6b0473",
+          "op": "stable pool swap"
+        }
+      ],
+      "coverage": [
+        "stable invariant",
+        "stable pool typed data",
+        "USDt stable pair"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "stonfi-weightedstable-usde-tsusde-pool",
+      "priority": "p0",
+      "protocol": "stonfi",
+      "category": "pool",
+      "contractType": "v2.2 weighted-stable pool",
+      "address": "EQAF6mNbKhaMrfyhdNcrEnRKW1fXA3jmkS6KM7azm9PunYx5",
+      "related": {
+        "router": "EQAGV9vw11tKW2QOCYCXEmIdyufM3p5CfcgHcY9NiiBLfZGH",
+        "assets": [
+          "USDe",
+          "tsUSDe"
+        ]
+      },
+      "sourceUrl": "https://tonviewer.com/EQAF6mNbKhaMrfyhdNcrEnRKW1fXA3jmkS6KM7azm9PunYx5",
+      "sources": [
+        "https://api.ston.fi/v1/pools/EQAF6mNbKhaMrfyhdNcrEnRKW1fXA3jmkS6KM7azm9PunYx5",
+        "https://api.ston.fi/v1/routers/EQAGV9vw11tKW2QOCYCXEmIdyufM3p5CfcgHcY9NiiBLfZGH"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "97112586023f5202ba3f7baba322e3ffbffc5634fc405090f88cd958236a1c66",
+          "url": "https://tonviewer.com/transaction/97112586023f5202ba3f7baba322e3ffbffc5634fc405090f88cd958236a1c66",
+          "op": "weighted stable swap"
+        }
+      ],
+      "coverage": [
+        "weighted-stable invariant",
+        "amp/rate/weight fields"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "dedust-factory",
+      "priority": "p0",
+      "protocol": "dedust",
+      "category": "factory",
+      "contractType": "DeDust factory",
+      "address": "EQBfBWT7X2BHg9tXAxzhz2aKiNTU1tpt5NsiK0uSDW_YAJ67",
+      "sourceUrl": "https://tonviewer.com/EQBfBWT7X2BHg9tXAxzhz2aKiNTU1tpt5NsiK0uSDW_YAJ67",
+      "sources": [
+        "https://docs.dedust.io/reference/factory.md",
+        "https://raw.githubusercontent.com/dedust-io/sdk/main/src/constants.ts"
+      ],
+      "coverage": [
+        "factory get-method address derivation",
+        "vault and pool address roots"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "dedust-native-vault",
+      "priority": "p0",
+      "protocol": "dedust",
+      "category": "vault",
+      "contractType": "native TON vault",
+      "address": "EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
+      "sourceUrl": "https://tonviewer.com/EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
+      "sources": [
+        "https://docs.dedust.io/reference/factory.md",
+        "https://docs.dedust.io/reference/tlb-schemes.md"
+      ],
+      "derivedBy": "Factory.get_vault_address(Asset.native())",
+      "coverage": [
+        "native vault recv_internal surface",
+        "TON asset handling"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "dedust-usdt-vault",
+      "priority": "p0",
+      "protocol": "dedust",
+      "category": "vault",
+      "contractType": "USDt jetton vault",
+      "address": "EQAYqo4u7VF0fa4DPAebk4g9lBytj2VFny7pzXR0trjtXQaO",
+      "sourceUrl": "https://tonviewer.com/EQAYqo4u7VF0fa4DPAebk4g9lBytj2VFny7pzXR0trjtXQaO",
+      "sources": [
+        "https://docs.dedust.io/reference/factory.md",
+        "https://docs.dedust.io/reference/tlb-schemes.md"
+      ],
+      "derivedBy": "Factory.get_vault_address(Asset.jetton(USDt master))",
+      "coverage": [
+        "jetton vault recv_internal surface",
+        "USDt transfer notification path"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "dedust-ton-usdt-volatile-pool",
+      "priority": "p0",
+      "protocol": "dedust",
+      "category": "pool",
+      "contractType": "volatile pool",
+      "address": "EQA-X_yo3fzzbDbJ_0bzFWKqtRuZFIRa1sJsveZJ1YpViO3r",
+      "sourceUrl": "https://tonviewer.com/EQA-X_yo3fzzbDbJ_0bzFWKqtRuZFIRa1sJsveZJ1YpViO3r",
+      "sources": [
+        "https://api.dedust.io/v2/pools",
+        "https://docs.dedust.io/reference/tlb-schemes.md"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "0bc31d92633431f2e7229dd32be05f1386003027dcc9c0d7bd6dc2f85732ddb2",
+          "url": "https://tonviewer.com/transaction/0bc31d92633431f2e7229dd32be05f1386003027dcc9c0d7bd6dc2f85732ddb2",
+          "op": "dedust_swap_external"
+        },
+        {
+          "hash": "84002563921d7572238839444df2fb840e7c9ad8a830a66f958a07d74fcabecf",
+          "url": "https://tonviewer.com/transaction/84002563921d7572238839444df2fb840e7c9ad8a830a66f958a07d74fcabecf",
+          "op": "dedust_swap_external"
+        },
+        {
+          "hash": "21da1ac68c7dbf1ef0b9517554340d45136cda3aa892ba70bef173aca43b8c1b",
+          "url": "https://tonviewer.com/transaction/21da1ac68c7dbf1ef0b9517554340d45136cda3aa892ba70bef173aca43b8c1b",
+          "op": "0x61ee542d dedust_swap_external"
+        }
+      ],
+      "coverage": [
+        "DeDust pool swap",
+        "native/jetton pair"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "dedust-tgusd-usdt-stable-pool",
+      "priority": "p1",
+      "protocol": "dedust",
+      "category": "pool",
+      "contractType": "stable pool",
+      "address": "EQDoBbJWXOJUPXEvf8qWpAk7B9p1gYTSVJJVE7wzDofzb52n",
+      "sourceUrl": "https://tonviewer.com/EQDoBbJWXOJUPXEvf8qWpAk7B9p1gYTSVJJVE7wzDofzb52n",
+      "sources": [
+        "https://api.dedust.io/v2/pools"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "1ef02d387035c87d3cc41608a743c4bc2b59a3e9a7e254372d6a3e2211b8f554",
+          "url": "https://tonviewer.com/transaction/1ef02d387035c87d3cc41608a743c4bc2b59a3e9a7e254372d6a3e2211b8f554",
+          "op": "stable-pair activity"
+        }
+      ],
+      "coverage": [
+        "stable-pool shape",
+        "USDt/tgUSD stable pair"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "dedust-jusdt-usdt-stable-pool",
+      "priority": "p1",
+      "protocol": "dedust",
+      "category": "pool",
+      "contractType": "stable pool",
+      "address": "EQC6Ckm9EFlZGgQqip3IlvZFkCh8fY_-P39V9puQwe4T_fp7",
+      "sourceUrl": "https://tonviewer.com/EQC6Ckm9EFlZGgQqip3IlvZFkCh8fY_-P39V9puQwe4T_fp7",
+      "sources": [
+        "https://api.dedust.io/v2/pools",
+        "https://docs.dedust.io/reference/tlb-schemes"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "bd243030aa7bfc1ba277c6782d779ea8172c5a8e942e9c0f24277732d67ae0a1",
+          "url": "https://tonviewer.com/transaction/bd243030aa7bfc1ba277c6782d779ea8172c5a8e942e9c0f24277732d67ae0a1",
+          "op": "0x61ee542d dedust_swap_external"
+        }
+      ],
+      "coverage": [
+        "pure jetton/jetton stable pool",
+        "multi-hop SwapStep.next path",
+        "dedust_swap_peer"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "dedust-ustr-ton-cpmm-v2-pool",
+      "priority": "p1",
+      "protocol": "dedust",
+      "category": "pool",
+      "contractType": "CPMM v2 pool",
+      "address": "EQAUZK5lYL02pG_EWPdSml-uMfnKkdkDhOb2ewbJ37PyVjau",
+      "sourceUrl": "https://tonviewer.com/EQAUZK5lYL02pG_EWPdSml-uMfnKkdkDhOb2ewbJ37PyVjau",
+      "sources": [
+        "https://dedust.io/pools/EQAUZK5lYL02pG_EWPdSml-uMfnKkdkDhOb2ewbJ37PyVjau",
+        "https://api.dedust.io/v2/pools"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "8a53d12b597f55efe1fbd7be0b6904cae425569e20a0366fa557d02d98226971",
+          "url": "https://tonviewer.com/transaction/8a53d12b597f55efe1fbd7be0b6904cae425569e20a0366fa557d02d98226971",
+          "op": "0x29ff1bcf"
+        }
+      ],
+      "coverage": [
+        "current DeDust UI CPMM v2 family",
+        "different inbound opcode/state layout from classic PoolType"
+      ],
+      "confidence": "medium-high"
+    },
+    {
+      "id": "tonco-router",
+      "priority": "p0",
+      "protocol": "tonco",
+      "category": "router",
+      "contractType": "RouterV3",
+      "address": "EQC_-t0nCnOFMdp7E7qPxAOCbCWGFz-e3pwxb6tTvFmshjt5",
+      "rawAddress": "0:bffadd270a738531da7b13ba8fc403826c2586173f9ede9c316fab53bc59ac86",
+      "sourceUrl": "https://tonviewer.com/EQC_-t0nCnOFMdp7E7qPxAOCbCWGFz-e3pwxb6tTvFmshjt5",
+      "sources": [
+        "https://docs.tonco.io/technical-reference/indexer",
+        "https://raw.githubusercontent.com/cryptoalgebra/tonco-sdk/main/.env.local",
+        "https://github.com/cryptoalgebra/tonco-sdk/blob/main/src/contracts/RouterV3Contract.ts"
+      ],
+      "coverage": [
+        "PoolV3 routing",
+        "router-owned jetton wallet forwarding",
+        "pTON/wtPTon path"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "tonco-pool-factory",
+      "priority": "p1",
+      "protocol": "tonco",
+      "category": "factory",
+      "contractType": "PoolFactory",
+      "address": "EQCXrVg3we6FKI4NKjBe9vlJKM5aGcDQB61LdfI_KmN_2Kj2",
+      "rawAddress": "0:97ad5837c1ee85288e0d2a305ef6f94928ce5a19c0d007ad4b75f23f2a637fd8",
+      "sourceUrl": "https://tonviewer.com/EQCXrVg3we6FKI4NKjBe9vlJKM5aGcDQB61LdfI_KmN_2Kj2",
+      "sources": [
+        "https://raw.githubusercontent.com/cryptoalgebra/tonco-sdk/main/.env.local",
+        "https://github.com/cryptoalgebra/tonco-sdk/blob/main/src/contracts/PoolFactoryContract.ts"
+      ],
+      "coverage": [
+        "PoolV3 provenance",
+        "factory-derived pool validation"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "tonco-wtton-usdt-pool",
+      "priority": "p0",
+      "protocol": "tonco",
+      "category": "pool",
+      "contractType": "PoolV3",
+      "address": "EQD25vStEwc-h1QT1qlsYPQwqU5IiOhox5II0C_xsDNpMVo7",
+      "sourceUrl": "https://tonviewer.com/EQD25vStEwc-h1QT1qlsYPQwqU5IiOhox5II0C_xsDNpMVo7",
+      "sources": [
+        "https://docs.tonco.io/technical-reference/indexer",
+        "https://indexer.tonco.io/"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "f05901f42ba52c77b5ee2dff99273d14a85ecfe52a009677d398e30fdf6df05d",
+          "rootHash": "4f534b155cae6c97d118d87406b61d4015376bb1c73fc20f29293206534d06fc",
+          "url": "https://tonviewer.com/transaction/f05901f42ba52c77b5ee2dff99273d14a85ecfe52a009677d398e30fdf6df05d",
+          "op": "poolv3_swap"
+        }
+      ],
+      "coverage": [
+        "PoolV3 swap",
+        "USDt pool leg",
+        "root hash versus pool tx hash distinction"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "tonco-tston-usdt-pool",
+      "priority": "p0",
+      "protocol": "tonco",
+      "category": "pool",
+      "contractType": "PoolV3",
+      "address": "EQCVGqssxQurxuQ0_62pXVXPt10-6bDZrSpnmASdfomSbr3t",
+      "sourceUrl": "https://tonviewer.com/EQCVGqssxQurxuQ0_62pXVXPt10-6bDZrSpnmASdfomSbr3t",
+      "sources": [
+        "https://docs.tonco.io/technical-reference/indexer",
+        "https://indexer.tonco.io/"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "70d7a2681ae02ab3abc4b14d09372bc17ef0c2c4e6b9758dccbd7d7696612727",
+          "rootHash": "fa20aa1a3fc10412fc55588304a888bf09d26482332f184782eaccdc6f4e74a3",
+          "url": "https://tonviewer.com/transaction/70d7a2681ae02ab3abc4b14d09372bc17ef0c2c4e6b9758dccbd7d7696612727",
+          "op": "poolv3_swap"
+        }
+      ],
+      "coverage": [
+        "PoolV3 swap",
+        "TON derivative/USDt pair"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "tonco-usdc-usdt-pool",
+      "priority": "p1",
+      "protocol": "tonco",
+      "category": "pool",
+      "contractType": "PoolV3",
+      "address": "EQBPBipfCEeh146V65qnugmDVqsnw_7t9W1KREynMA9BzT7V",
+      "rawAddress": "0:4f062a5f0847a1d78e95eb9aa7ba098356ab27c3feedf56d4a444ca7300f41cd",
+      "sourceUrl": "https://tonviewer.com/EQBPBipfCEeh146V65qnugmDVqsnw_7t9W1KREynMA9BzT7V",
+      "sources": [
+        "https://docs.tonco.io/technical-reference/indexer",
+        "https://indexer.tonco.io/"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "2956eff160c478b6c56a4ccb366e8e111ffefd8f6d81ec301ce779980cbf2eec",
+          "url": "https://tonviewer.com/transaction/2956eff160c478b6c56a4ccb366e8e111ffefd8f6d81ec301ce779980cbf2eec",
+          "op": "poolv3_swap"
+        }
+      ],
+      "coverage": [
+        "stable-to-stable PoolV3 path",
+        "stable decimals/spoof-adjacent validation"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "tonco-aquausd-usdt-pool",
+      "priority": "p1",
+      "protocol": "tonco",
+      "category": "pool",
+      "contractType": "PoolV3",
+      "address": "EQBfAq2ed5QzmXZ9x12rOCzM1PXxCvsysUZtpURu6g4JxsM5",
+      "sourceUrl": "https://tonviewer.com/EQBfAq2ed5QzmXZ9x12rOCzM1PXxCvsysUZtpURu6g4JxsM5",
+      "sources": [
+        "https://docs.tonco.io/technical-reference/indexer",
+        "https://indexer.tonco.io/"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "68fc78b4627aa46346f665c0f1b117ca53b30fcb6605e3085ac5e4e6443d0abf",
+          "rootHash": "3f39f08cc2a82d75be6ac337cee7817d056e3c2852efea603b2552fe37e10941",
+          "url": "https://tonviewer.com/transaction/68fc78b4627aa46346f665c0f1b117ca53b30fcb6605e3085ac5e4e6443d0abf",
+          "op": "poolv3_swap"
+        }
+      ],
+      "coverage": [
+        "stable-to-stable PoolV3 path",
+        "cross-protocol trace includes stonfi_swap_v2"
+      ],
+      "confidence": "medium-high"
+    },
+    {
+      "id": "tonco-fake-usdt-negative-pool",
+      "priority": "p1",
+      "protocol": "tonco",
+      "category": "negative-case",
+      "contractType": "PoolV3",
+      "address": "0:c7614ce3ebaca7a64be3a974ff4cf27f7a9d87e4c8816958386df65fb40fbc1e",
+      "sourceUrl": "https://tonviewer.com/0:c7614ce3ebaca7a64be3a974ff4cf27f7a9d87e4c8816958386df65fb40fbc1e",
+      "sources": [
+        "https://indexer.tonco.io/"
+      ],
+      "coverage": [
+        "metadata spoof negative case",
+        "symbol USDT but non-canonical master"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "swapcoffee-factory",
+      "priority": "p1",
+      "protocol": "swapcoffee",
+      "category": "factory",
+      "contractType": "Coffee DEX factory",
+      "address": "EQD2meA5GQW27NXA6e9F5svOzUHXVtX4eQv04OEKymT-GRCT",
+      "sourceUrl": "https://tonviewer.com/EQD2meA5GQW27NXA6e9F5svOzUHXVtX4eQv04OEKymT-GRCT",
+      "sources": [
+        "https://docs.swap.coffee/technical-guides/dex/code-snippets.md",
+        "https://docs.swap.coffee/technical-guides/dex/get-methods.md",
+        "https://docs.swap.coffee/technical-guides/dex/tlb-schemes.md"
+      ],
+      "coverage": [
+        "Coffee factory get-methods",
+        "vault and pool address derivation"
+      ],
+      "confidence": "medium-high"
+    },
+    {
+      "id": "swapcoffee-ton-usdt-pool",
+      "priority": "p0",
+      "protocol": "swapcoffee",
+      "category": "pool",
+      "contractType": "Coffee DEX constant-product pool",
+      "address": "EQDETPC2Trne37AQx7JKUIFA2G9uB3ifk4O7myFB6pwI6u8M",
+      "sourceUrl": "https://tonviewer.com/EQDETPC2Trne37AQx7JKUIFA2G9uB3ifk4O7myFB6pwI6u8M",
+      "sources": [
+        "https://backend.swap.coffee/v1/dex/pools?assets=EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        "https://docs.swap.coffee/technical-guides/aggregator-api-openapi/dex/get-dex-pools-by-filter.md"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "ed7db5f7a4cfc0f478a4ceb1ff93d45842cb6615f9a37ac546abe5a1428e0e8a",
+          "url": "https://tonapi.io/v2/events/ed7db5f7a4cfc0f478a4ceb1ff93d45842cb6615f9a37ac546abe5a1428e0e8a",
+          "op": "TonAPI event sample"
+        }
+      ],
+      "coverage": [
+        "Coffee DEX pool",
+        "native TON/USDt pair",
+        "constant-product AMM"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "swapcoffee-storm-usdt-pool",
+      "priority": "p0",
+      "protocol": "swapcoffee",
+      "category": "pool",
+      "contractType": "Coffee DEX constant-product pool",
+      "address": "EQC5mSmcTwao3ZxxAzKZJ-Cl2XYMEgAYw3DToE3vdqARv3ff",
+      "sourceUrl": "https://tonviewer.com/EQC5mSmcTwao3ZxxAzKZJ-Cl2XYMEgAYw3DToE3vdqARv3ff",
+      "sources": [
+        "https://backend.swap.coffee/v1/pools?blockchains=ton&dexes=coffee&search_text=USDT&size=20",
+        "https://docs.swap.coffee/technical-guides/aggregator-api-openapi/entity/returns-list-of-pools-which-correspond-to-the-given-params.md"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "a43ec38d9dc6dc993096d0301ade9c3b303d7c8f1cb8f2ebbb0f787270f03745",
+          "url": "https://tonapi.io/v2/events/a43ec38d9dc6dc993096d0301ade9c3b303d7c8f1cb8f2ebbb0f787270f03745",
+          "op": "TonAPI event sample"
+        }
+      ],
+      "coverage": [
+        "Coffee DEX jetton/jetton pool",
+        "higher-liquidity USDt pool"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "swapcoffee-usde-usdt-pool",
+      "priority": "p1",
+      "protocol": "swapcoffee",
+      "category": "pool",
+      "contractType": "Coffee DEX constant-product pool",
+      "address": "EQAqFapnKVNDRKnhleqaxGpA4SAAW_NTGoZhNdgoraaciWRv",
+      "sourceUrl": "https://tonviewer.com/EQAqFapnKVNDRKnhleqaxGpA4SAAW_NTGoZhNdgoraaciWRv",
+      "sources": [
+        "https://backend.swap.coffee/v1/pools?blockchains=ton&dexes=coffee&search_text=USDT&size=20"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "f6b078354491eb24b192b94926039480e6b4c4251693d75d51256c6fb35c8b96",
+          "url": "https://tonapi.io/v2/events/f6b078354491eb24b192b94926039480e6b4c4251693d75d51256c6fb35c8b96",
+          "op": "TonAPI event sample"
+        }
+      ],
+      "coverage": [
+        "Coffee DEX stable asset pair",
+        "clean USDt/USDe case"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "swapcoffee-tonnel-usdt-pool",
+      "priority": "p1",
+      "protocol": "swapcoffee",
+      "category": "pool",
+      "contractType": "Coffee DEX constant-product pool",
+      "address": "EQBjj5LzN3L1PvFvH5mzbTc8zp3Sp_vSWmSI3nWKM-Fr3W_g",
+      "sourceUrl": "https://tonviewer.com/EQBjj5LzN3L1PvFvH5mzbTc8zp3Sp_vSWmSI3nWKM-Fr3W_g",
+      "sources": [
+        "https://backend.swap.coffee/v1/dex/pools?assets=EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+      ],
+      "sampleTransactions": [
+        {
+          "hash": "5252f8abe001ad0a6dbc7ad96d00619018c78fbc7d1d782d8bcd6aaa4fa09892",
+          "url": "https://tonapi.io/v2/events/5252f8abe001ad0a6dbc7ad96d00619018c78fbc7d1d782d8bcd6aaa4fa09892",
+          "op": "TonAPI event sample"
+        }
+      ],
+      "coverage": [
+        "Coffee DEX active USDt jetton/jetton pool",
+        "recent event sample"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "usdt-jetton-master",
+      "priority": "p0",
+      "protocol": "usdt",
+      "category": "jetton-master",
+      "contractType": "canonical USDt jetton master",
+      "address": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+      "rawAddress": "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe",
+      "sourceUrl": "https://tonviewer.com/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+      "sources": [
+        "https://tether.io/news/tether-tokens-usdt-and-xaut-launch-on-the-open-network-ton/",
+        "https://docs.ton.org/llms.mdx/applications/appkit/howto/send-jettons.md",
+        "https://tether.to/usdt-ton.json",
+        "https://tonapi.io/v2/jettons/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+      ],
+      "coverage": [
+        "jetton master identity",
+        "metadata and decimals",
+        "wallet code hash anchor"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "usdt-binance-hot-wallet",
+      "priority": "p1",
+      "protocol": "usdt",
+      "category": "jetton-wallet",
+      "contractType": "high-volume USDt jetton wallet",
+      "address": "EQC7aZ-_G_tWeSn0GZ0HclwZvGIBp-CRrSsbMibTHN6l4kr7",
+      "related": {
+        "owner": "EQDKHZ7e70CzqdvZCC83Z4WVR8POC_ZB0J1Y4zo88G-zCXmC",
+        "master": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+      },
+      "sourceUrl": "https://tonviewer.com/EQC7aZ-_G_tWeSn0GZ0HclwZvGIBp-CRrSsbMibTHN6l4kr7",
+      "sampleTransactions": [
+        {
+          "hash": "130c7666889475bfa1fa4f116b77b020b97aa30afc9feea0592d411d337ef2e2",
+          "url": "https://tonviewer.com/transaction/130c7666889475bfa1fa4f116b77b020b97aa30afc9feea0592d411d337ef2e2",
+          "op": "0x178d4519 internal transfer"
+        }
+      ],
+      "coverage": [
+        "jetton wallet internal transfer",
+        "transfer_notification",
+        "excess"
+      ],
+      "confidence": "high"
+    }
+  ],
+  "negativeCases": [
+    {
+      "id": "tonco-symbol-usdt-not-canonical",
+      "address": "0:c7614ce3ebaca7a64be3a974ff4cf27f7a9d87e4c8816958386df65fb40fbc1e",
+      "reason": "Pool symbol includes USDT but token0 master is 0:f927d93134f64db01f093b12df42ba54b4e1968576e4a53ddbabce92208e6512, not canonical USDt."
+    },
+    {
+      "id": "tonco-symbol-u-dollar-dt-not-canonical",
+      "address": "0:817d82fa2d52dad480b3ccd0b73f45e8a73019b1f241d99b6e3489b5e0e0c90e",
+      "reason": "Confusable symbol resembles USDt but token master differs from canonical USDt."
+    }
+  ]
+}

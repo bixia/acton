@@ -11683,6 +11683,46 @@ mod tests {
     }
 
     #[test]
+    fn high_confidence_validation_targets_are_smoke_ready_and_keep_tonviewer_target() {
+        let manifest = super::SmokeManifest::from_json(include_str!(
+            "../../../crates/ton-stateflow/validation-targets/smoke-targets.high-confidence.json"
+        ))
+        .expect("high-confidence validation targets should deserialize");
+
+        assert!(manifest.targets.len() >= 3);
+        assert!(manifest.targets.iter().any(|target| {
+            target.id == "tonviewer-requested-target"
+                && target.network == "mainnet"
+                && target.address == "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+                && target.source_url.as_deref()
+                    == Some(
+                        "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+                    )
+                && target
+                    .replay_mutation
+                    .as_ref()
+                    .is_some_and(|plan| plan.ignore_chksig)
+        }));
+
+        let incomplete_targets = manifest
+            .targets
+            .iter()
+            .filter(|target| {
+                target.source_url.as_deref().unwrap_or_default().is_empty()
+                    || target.notes.as_deref().unwrap_or_default().is_empty()
+                    || target.replay_mutation.is_none()
+            })
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            incomplete_targets.is_empty(),
+            "high-confidence validation targets should be source-linked, annotated, and replayable: {:?}",
+            incomplete_targets
+        );
+    }
+
+    #[test]
     fn smoke_summary_gate_rejects_weak_artifacts() {
         let mut summary = sample_smoke_summary();
         summary.targets[0].failure_count = 1;

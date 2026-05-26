@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "tonviewer-requested-target",
+      "network": "mainnet",
+      "address": "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+      "sourceUrl": "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+      "collectLimit": 2,
+      "retraceTxHash": "bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "User-requested Tonviewer account that must remain in live state-flow validation coverage."
+    },
+    {
+      "id": "stonfi-v2-ton-usdt-pool",
+      "network": "mainnet",
+      "address": "EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
+      "sourceUrl": "https://tonviewer.com/EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
+      "collectLimit": 2,
+      "retraceTxHash": "acfd9d1ee6eb9961408ed87ac776f18bf451cd60c8ff6843a2857e6959c12eb1",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "STON.fi v2.2 ConstantProduct TON/USDt pool. High-liquidity pool from STON API; sample op is stonfi_swap_v2."
+    },
+    {
+      "id": "stonfi-v1-ton-usdt-pool",
+      "network": "mainnet",
+      "address": "EQD8TJ8xEWB1SpnRE4d89YO3jl0W0EiBnNS4IBaHaUmdfizE",
+      "sourceUrl": "https://tonviewer.com/EQD8TJ8xEWB1SpnRE4d89YO3jl0W0EiBnNS4IBaHaUmdfizE",
+      "collectLimit": 2,
+      "retraceTxHash": "af1a08cee9364e83d4cc4300e8cab6bd92f3db3b9186cd4cbfb7b8fa26312f30",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "STON.fi v1 legacy TON/USDt pool. Useful contrast target for v1 stonfi_swap opcode and router-wallet-driven flow."
+    },
+    {
+      "id": "stonfi-stableswap-usde-usdt-pool",
+      "network": "mainnet",
+      "address": "EQBSUY4UWGJFAps0KwHY4tpOGqzU41DZhyrT8OuyAWWtnezy",
+      "sourceUrl": "https://tonviewer.com/EQBSUY4UWGJFAps0KwHY4tpOGqzU41DZhyrT8OuyAWWtnezy",
+      "collectLimit": 2,
+      "retraceTxHash": "253f75f03cecc457511c2f8a4e5b7fe6673f15378307c649835c05e09d6b0473",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "STON.fi StableSwap USDe/USDt pool. Covers stable invariant params and non-constant-product pool state."
+    },
+    {
+      "id": "stonfi-weightedstable-usde-tsusde-pool",
+      "network": "mainnet",
+      "address": "EQAF6mNbKhaMrfyhdNcrEnRKW1fXA3jmkS6KM7azm9PunYx5",
+      "sourceUrl": "https://tonviewer.com/EQAF6mNbKhaMrfyhdNcrEnRKW1fXA3jmkS6KM7azm9PunYx5",
+      "collectLimit": 2,
+      "retraceTxHash": "97112586023f5202ba3f7baba322e3ffbffc5634fc405090f88cd958236a1c66",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "STON.fi WeightedStableSwap USDe/tsUSDe pool. Covers weighted stable fields such as amp, rate, and weight."
+    },
+    {
+      "id": "dedust-native-vault",
+      "network": "mainnet",
+      "address": "EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
+      "sourceUrl": "https://tonviewer.com/EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "DeDust native TON vault, derived from the official factory getter. Best native-vault surface target."
+    },
+    {
+      "id": "dedust-usdt-vault",
+      "network": "mainnet",
+      "address": "EQAYqo4u7VF0fa4DPAebk4g9lBytj2VFny7pzXR0trjtXQaO",
+      "sourceUrl": "https://tonviewer.com/EQAYqo4u7VF0fa4DPAebk4g9lBytj2VFny7pzXR0trjtXQaO",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "DeDust USDt jetton vault, derived from the official factory getter for the canonical USDt master."
+    },
+    {
+      "id": "dedust-ton-usdt-volatile-pool",
+      "network": "mainnet",
+      "address": "EQA-X_yo3fzzbDbJ_0bzFWKqtRuZFIRa1sJsveZJ1YpViO3r",
+      "sourceUrl": "https://tonviewer.com/EQA-X_yo3fzzbDbJ_0bzFWKqtRuZFIRa1sJsveZJ1YpViO3r",
+      "collectLimit": 2,
+      "retraceTxHash": "0bc31d92633431f2e7229dd32be05f1386003027dcc9c0d7bd6dc2f85732ddb2",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "DeDust volatile TON/USDt pool. Recent sample is a direct pool swap: 93 USDt to 47.581342548 TON."
+    },
+    {
+      "id": "tonco-wtton-usdt-pool",
+      "network": "mainnet",
+      "address": "EQD25vStEwc-h1QT1qlsYPQwqU5IiOhox5II0C_xsDNpMVo7",
+      "sourceUrl": "https://tonviewer.com/EQD25vStEwc-h1QT1qlsYPQwqU5IiOhox5II0C_xsDNpMVo7",
+      "collectLimit": 2,
+      "retraceTxHash": "f05901f42ba52c77b5ee2dff99273d14a85ecfe52a009677d398e30fdf6df05d",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "TONCO wTTon/USDt pool. Recent PoolV3 sample covers poolv3_swap plus jetton notify/pay_to/excess."
+    },
+    {
+      "id": "tonco-tston-usdt-pool",
+      "network": "mainnet",
+      "address": "EQCVGqssxQurxuQ0_62pXVXPt10-6bDZrSpnmASdfomSbr3t",
+      "sourceUrl": "https://tonviewer.com/EQCVGqssxQurxuQ0_62pXVXPt10-6bDZrSpnmASdfomSbr3t",
+      "collectLimit": 2,
+      "retraceTxHash": "70d7a2681ae02ab3abc4b14d09372bc17ef0c2c4e6b9758dccbd7d7696612727",
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "TONCO tsTON/USDt pool. Recent PoolV3 sample covers concentrated pool swap with USDt leg."
+    },
+    {
+      "id": "swapcoffee-ton-usdt-pool",
+      "network": "mainnet",
+      "address": "EQDETPC2Trne37AQx7JKUIFA2G9uB3ifk4O7myFB6pwI6u8M",
+      "sourceUrl": "https://tonviewer.com/EQDETPC2Trne37AQx7JKUIFA2G9uB3ifk4O7myFB6pwI6u8M",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "swap.coffee Coffee DEX constant-product TON/USDt pool from official backend API."
+    },
+    {
+      "id": "swapcoffee-storm-usdt-pool",
+      "network": "mainnet",
+      "address": "EQC5mSmcTwao3ZxxAzKZJ-Cl2XYMEgAYw3DToE3vdqARv3ff",
+      "sourceUrl": "https://tonviewer.com/EQC5mSmcTwao3ZxxAzKZJ-Cl2XYMEgAYw3DToE3vdqARv3ff",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "swap.coffee Coffee DEX STORM/USDt pool. Higher TVL than Coffee TON/USDt and useful jetton/jetton pool target."
+    },
+    {
+      "id": "usdt-jetton-master",
+      "network": "mainnet",
+      "address": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+      "sourceUrl": "https://tonviewer.com/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+      "collectLimit": 2,
+      "replayMutation": {
+        "type": "flipBodyBit",
+        "bit": 0,
+        "ignoreChksig": true
+      },
+      "notes": "Canonical Tether USDt jetton master on TON. Use as identity anchor; do not authenticate USDt by symbol or image."
+    }
+  ]
+}
