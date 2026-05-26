@@ -2803,6 +2803,9 @@ fn validate_c5_action_list_matches_decoded(
         return;
     };
     let Some(decoded) = decoded_c5_action_effects(c5) else {
+        gate_failures.push(format!(
+            "{label} c5 for {tx_hash} is not a decodable action list"
+        ));
         return;
     };
     validate_action_list_matches_corpus(
@@ -17032,6 +17035,37 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_tx_validation_rejects_malformed_c5_action_list() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["c5"] = serde_json::json!({
+            "boc64": "not-a-boc",
+            "hash": "hash",
+            "bits": 0,
+            "refs": 0
+        });
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json c5")
+                    && failure.contains("is not a decodable action list")
+            }),
+            "expected malformed c5 action-list failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_tx_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let tx_path = temp_dir.path().join("transaction.json");
@@ -18759,12 +18793,12 @@ mod tests {
 
         assert!(!validation.passed);
         assert!(
-            validation
-                .gate_failures
-                .iter()
-                .any(|failure| failure.contains(
-                    "target-a: report replay diff surface replay c5-hash for c5 tx tx-a is missing"
-                )),
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(&format!(
+                    "target-a: report replay diff surface replay {} for c5 tx tx-a is missing",
+                    test_empty_out_actions_cell_hash(),
+                ))
+            }),
             "expected report replay diff surface failure, got {:?}",
             validation.gate_failures
         );
@@ -21070,6 +21104,63 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_replay_validation_rejects_malformed_c5_action_list() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["c5"] = serde_json::json!({
+            "boc64": "not-a-boc",
+            "hash": "hash",
+            "bits": 0,
+            "refs": 0
+        });
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline c5")
+                    && failure.contains("is not a decodable action list")
+            }),
+            "expected replay malformed c5 action-list failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_replay_validation_rejects_decodable_state_cell_shape_hash_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let replay_path = temp_dir.path().join("replay.json");
@@ -22059,7 +22150,7 @@ mod tests {
                         "kind": "c5",
                         "label": "C5/action register",
                         "baseline": "none",
-                        "replay": "c5-hash",
+                        "replay": test_empty_out_actions_cell_hash(),
                         "delta": null,
                         "severity": "medium",
                         "evidence": ["tx-a"]
@@ -22380,8 +22471,11 @@ mod tests {
     }
 
     fn sample_report_markdown_with_wrong_replay_diff_surface(address: &str) -> String {
+        let replay_c5 = test_empty_out_actions_cell_hash();
         sample_report_markdown(address).replace(
-            "| `tx-a` | flip body bit 0 | c5 | C5/action register | none | c5-hash | n/a | medium | `tx-a` |",
+            &format!(
+                "| `tx-a` | flip body bit 0 | c5 | C5/action register | none | {replay_c5} | n/a | medium | `tx-a` |"
+            ),
             "| `tx-a` | flip body bit 0 | c5 | C5/action register | none | stale-c5 | n/a | medium | `tx-a` |",
         )
     }
@@ -22454,6 +22548,7 @@ mod tests {
         } else {
             "- No risk points were inferred from the provided artifacts.\n"
         };
+        let replay_c5 = test_empty_out_actions_cell_hash();
         format!(
             "# TON State Flow Reverse Report\n\
              \n\
@@ -22551,7 +22646,7 @@ mod tests {
              ## Replay Diff Surface\n\
              | Source tx | Mutation | Kind | Label | Baseline | Replay | Delta | Severity | Evidence |\n\
              | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\
-             | `tx-a` | {replay_mutation} | c5 | C5/action register | none | c5-hash | n/a | medium | `tx-a` |\n\
+             | `tx-a` | {replay_mutation} | c5 | C5/action register | none | {replay_c5} | n/a | medium | `tx-a` |\n\
              \n\
              ## Risk Points\n\
              {risk_point}"
@@ -22588,8 +22683,7 @@ mod tests {
         let mut observation = sample_replay_observation_json(accepted);
         observation["inbound"]["messageBoc64"] = serde_json::json!("mutated-msg");
         observation["inbound"]["body"] = serde_json::json!({"boc64": "mutated-body", "hash": "mutated-hash", "bits": 32, "refs": 0});
-        observation["c5"] =
-            serde_json::json!({"boc64": "c5", "hash": "c5-hash", "bits": 0, "refs": 0});
+        observation["c5"] = test_out_actions_cell_json(&[]);
         observation
     }
 
@@ -22685,6 +22779,10 @@ mod tests {
             "bits": slice.size_bits(),
             "refs": slice.size_refs()
         })
+    }
+
+    fn test_empty_out_actions_cell_hash() -> String {
+        hex::encode(test_out_actions_cell(&[]).hash(0))
     }
 
     fn test_out_actions_cell(actions: &[OutAction]) -> Cell {
