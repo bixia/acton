@@ -1,5 +1,5 @@
 import * as React from "react"
-import {FileUp, Trash2} from "lucide-react"
+import {FileUp, FolderOpen, Trash2} from "lucide-react"
 
 import {Button} from "../ui/Button"
 
@@ -7,6 +7,7 @@ import {StateFlowArtifactView} from "./StateFlowArtifactView"
 import {
   parseStateFlowArtifactBundleFromSources,
   parseStateFlowArtifactFromSource,
+  STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS,
   STATE_FLOW_ARTIFACT_FILE_ACCEPT,
   type StateFlowArtifact,
   type StateFlowArtifactSource,
@@ -25,6 +26,7 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
   storageKey,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const directoryInputRef = React.useRef<HTMLInputElement>(null)
   const [raw, setRaw] = React.useState(() => initialRaw ?? readStoredArtifact(storageKey))
   const [artifact, setArtifact] = React.useState<StateFlowArtifact | undefined>(() =>
     parseInitialArtifact(initialRaw ?? readStoredArtifact(storageKey)),
@@ -127,12 +129,27 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
           accept={STATE_FLOW_ARTIFACT_FILE_ACCEPT}
           onChange={handleFileChange}
         />
+        <input
+          ref={directoryInputRef}
+          className={styles.fileInput}
+          type="file"
+          {...STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS}
+          onChange={handleFileChange}
+        />
         {error ? <div className={styles.error}>{error}</div> : undefined}
         <div className={styles.toolbar}>
           <Button type="submit">Load</Button>
           <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()}>
             <FileUp size={16} />
             File
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => directoryInputRef.current?.click()}
+          >
+            <FolderOpen size={16} />
+            Directory
           </Button>
           <Button type="button" variant="ghost" onClick={handleClear}>
             <Trash2 size={16} />

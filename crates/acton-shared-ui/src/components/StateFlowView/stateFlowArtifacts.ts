@@ -15,6 +15,13 @@ export type StateFlowArtifact =
 export const STATE_FLOW_ARTIFACT_FILE_ACCEPT =
   "application/json,text/markdown,text/plain,.json,.md,.txt"
 
+export const STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS = {
+  accept: STATE_FLOW_ARTIFACT_FILE_ACCEPT,
+  multiple: true,
+  directory: "",
+  webkitdirectory: "",
+} as const
+
 export interface ArtifactSummary {
   readonly title: string
   readonly subtitle?: string

@@ -2,6 +2,7 @@ import {
   parseStateFlowArtifact,
   parseStateFlowArtifactBundleFromSources,
   parseStateFlowArtifactFromSource,
+  STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS,
   summarizeStateFlowArtifact,
   type StateFlowArtifact,
 } from "./stateFlowArtifacts.ts"
@@ -903,6 +904,20 @@ assert(
     .find(section => section.title === "Risk Points")
     ?.rows.some(row => row.value === "Unknown fields remain for opcode 0x00000001.") === true,
   "expected report risk point rows",
+)
+assert(
+  STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS.accept ===
+    "application/json,text/markdown,text/plain,.json,.md,.txt",
+  "expected directory upload to accept all state-flow artifact file types",
+)
+assert(
+  STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS.multiple === true,
+  "expected directory upload to read every bundle file",
+)
+assert(
+  STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS.webkitdirectory === "" &&
+    STATE_FLOW_ARTIFACT_DIRECTORY_INPUT_PROPS.directory === "",
+  "expected directory upload to preserve bundle-relative paths via browser directory selection",
 )
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
