@@ -3514,6 +3514,7 @@ fn artifact_capability_checks(
             "stateFlowTx",
             "StateFlowTx evidence JSON",
             &["transaction"],
+            &["retrace"],
             artifacts,
             gate_failures,
             "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
@@ -3522,6 +3523,7 @@ fn artifact_capability_checks(
             "corpus",
             "Collect corpus",
             &["corpus"],
+            &[],
             artifacts,
             gate_failures,
             "history transactions and opcode summary validated",
@@ -3530,6 +3532,7 @@ fn artifact_capability_checks(
             "schema",
             "Schema candidates",
             &["schema"],
+            &[],
             artifacts,
             gate_failures,
             "opcode, message, storage, out-effect, unknown-field, and confidence evidence validated",
@@ -3538,6 +3541,7 @@ fn artifact_capability_checks(
             "replayDiff",
             "Replay diff",
             &["replay"],
+            &[],
             artifacts,
             gate_failures,
             "mutations, replay observations, and observable diffs validated",
@@ -3546,6 +3550,7 @@ fn artifact_capability_checks(
             "report",
             "State-flow report",
             &["report"],
+            &[],
             artifacts,
             gate_failures,
             "report tables checked against corpus, schema, and replay artifacts",
@@ -3557,11 +3562,17 @@ fn artifact_capability_check(
     id: &str,
     label: &str,
     required_kinds: &[&str],
+    related_kinds: &[&str],
     artifacts: &[&SmokeArtifactManifestEntry],
     gate_failures: &[String],
     success_evidence: &str,
 ) -> ArtifactCapabilityCheck {
-    let paths = required_kinds
+    let evidence_kinds = required_kinds
+        .iter()
+        .chain(related_kinds.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    let paths = evidence_kinds
         .iter()
         .flat_map(|kind| {
             artifacts
@@ -3577,7 +3588,7 @@ fn artifact_capability_check(
         .collect::<Vec<_>>();
     let scoped_failures = gate_failures
         .iter()
-        .filter(|failure| failure_matches_capability(failure, required_kinds))
+        .filter(|failure| failure_matches_capability(failure, &evidence_kinds))
         .cloned()
         .collect::<Vec<_>>();
     let unscoped_failures = gate_failures
@@ -3612,9 +3623,16 @@ fn extend_unique_strings(values: &mut Vec<String>, next_values: Vec<String>) {
 }
 
 fn failure_matches_any_capability(failure: &str) -> bool {
-    ["transaction", "corpus", "schema", "replay", "report"]
-        .iter()
-        .any(|kind| failure_matches_capability(failure, &[*kind]))
+    [
+        "transaction",
+        "retrace",
+        "corpus",
+        "schema",
+        "replay",
+        "report",
+    ]
+    .iter()
+    .any(|kind| failure_matches_capability(failure, &[*kind]))
 }
 
 fn failure_matches_capability(failure: &str, required_kinds: &[&str]) -> bool {
@@ -8593,6 +8611,58 @@ mod tests {
                 .all(|check| check.passed),
             "expected every capability to pass, got {:?}",
             validation.targets[0].capability_checks
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_lists_retrace_as_state_flow_evidence() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        summary.targets[0].retrace = Some("target-a/retrace.json".to_owned());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "summary.json",
+            &serde_json::to_string(&summary).expect("summary should serialize"),
+        );
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/retrace.json",
+            &sample_state_flow_json("tx-a").to_string(),
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest.artifacts.insert(
+            4,
+            super::SmokeArtifactManifestEntry::new(
+                "retrace",
+                "target-a/retrace.json",
+                Some("target-a".to_owned()),
+            ),
+        );
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(
+            validation.passed,
+            "expected retrace manifest to pass, got {:?}",
+            validation.gate_failures
+        );
+        let state_flow_check = validation.targets[0]
+            .capability_checks
+            .iter()
+            .find(|check| check.id == "stateFlowTx")
+            .expect("stateFlowTx capability check should exist");
+        assert!(
+            state_flow_check
+                .evidence
+                .contains(&"retrace:target-a/retrace.json".to_owned()),
+            "expected StateFlowTx evidence to include retrace artifact, got {:?}",
+            state_flow_check.evidence
         );
     }
 
