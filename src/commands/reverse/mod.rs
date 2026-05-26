@@ -2289,9 +2289,45 @@ fn validate_schema_state_machine_evidence_keys(
     artifact: &SmokeArtifactManifestEntry,
     gate_failures: &mut Vec<String>,
 ) {
-    let Some(edges) = value
-        .get("stateMachine")
-        .and_then(|value| value.get("edges"))
+    let Some(state_machine) = value.get("stateMachine") else {
+        return;
+    };
+    for (label, path) in [("nodes", &["nodes"][..]), ("edges", &["edges"][..])] {
+        if !json_path_exists(state_machine, path) {
+            gate_failures.push(format!(
+                "schema artifact {} stateMachine missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+
+    if let Some(nodes) = state_machine
+        .get("nodes")
+        .and_then(|value| value.as_array())
+    {
+        for (index, node) in nodes.iter().enumerate() {
+            let prefix = format!(
+                "schema artifact {} stateMachine.nodes[{index}]",
+                artifact.path
+            );
+            for (label, path) in [
+                ("status", &["status"][..]),
+                ("transaction count", &["transactionCount"][..]),
+                ("pre count", &["preCount"][..]),
+                ("post count", &["postCount"][..]),
+                ("confidence", &["confidence"][..]),
+                ("examples", &["examples"][..]),
+            ] {
+                if !json_path_exists(node, path) {
+                    gate_failures.push(format!("{prefix} missing {label} evidence key"));
+                }
+            }
+            validate_schema_confidence_label(node, &prefix, gate_failures);
+        }
+    }
+
+    let Some(edges) = state_machine
+        .get("edges")
         .and_then(|value| value.as_array())
     else {
         return;
@@ -4397,6 +4433,17 @@ fn validate_schema_corpus_membership(
         return;
     };
     let corpus_hashes = corpus_transaction_hashes(corpus);
+    for node in &schema.state_machine.nodes {
+        for example in &node.examples {
+            validate_corpus_hash_membership(
+                "schema state-machine node example",
+                example,
+                &corpus_hashes,
+                gate_failures,
+            );
+        }
+        validate_schema_state_machine_node_matches_corpus(node, corpus, gate_failures);
+    }
     for edge in &schema.state_machine.edges {
         for example in &edge.examples {
             validate_corpus_hash_membership(
@@ -5656,6 +5703,81 @@ fn validate_schema_state_machine_edge_matches_corpus(
     }
 }
 
+fn validate_schema_state_machine_node_matches_corpus(
+    node: &ton_stateflow::StateMachineNode,
+    corpus: &StateFlowCorpus,
+    gate_failures: &mut Vec<String>,
+) {
+    let mut matching_hashes = BTreeMap::<String, ()>::new();
+    let mut pre_count = 0usize;
+    let mut post_count = 0usize;
+    for tx in &corpus.transactions {
+        let mut matches_node = false;
+        if tx.state.pre.status == node.status {
+            pre_count += 1;
+            matches_node = true;
+        }
+        if tx.state.post.status == node.status {
+            post_count += 1;
+            matches_node = true;
+        }
+        if matches_node {
+            matching_hashes.insert(tx.query_hash.clone(), ());
+        }
+    }
+    let transaction_count = matching_hashes.len();
+    validate_evidence_value_field(
+        "schema state-machine node transaction count",
+        node.transaction_count,
+        "corpus matching transaction count",
+        transaction_count,
+        &node.status,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "schema state-machine node pre count",
+        node.pre_count,
+        "corpus matching pre count",
+        pre_count,
+        &node.status,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "schema state-machine node post count",
+        node.post_count,
+        "corpus matching post count",
+        post_count,
+        &node.status,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "schema state-machine node confidence",
+        &node.confidence,
+        "count-derived confidence",
+        report_state_machine_edge_confidence(transaction_count),
+        &node.status,
+        gate_failures,
+    );
+
+    for tx_hash in &node.examples {
+        let Some(corpus_flow) = corpus
+            .transactions
+            .iter()
+            .find(|tx| tx.query_hash == *tx_hash)
+        else {
+            continue;
+        };
+        if corpus_flow.state.pre.status != node.status
+            && corpus_flow.state.post.status != node.status
+        {
+            gate_failures.push(format!(
+                "schema state-machine node example {tx_hash} does not contain status {}",
+                node.status
+            ));
+        }
+    }
+}
+
 fn validate_schema_evidence_matches_corpus(
     evidence: &ton_stateflow::SchemaEvidence,
     corpus_flow: &StateFlowTx,
@@ -5916,6 +6038,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Storage Fields",
         "## Outbound Effects",
         "## State Machine",
+        "## State Machine Nodes",
         "## State Machine Evidence",
         "## Unknown Fields",
         "## Replay Diffs",
@@ -6712,6 +6835,24 @@ fn validate_report_schema_deliverables(
         }
     }
 
+    if let Some(section) = markdown_section(markdown, "## State Machine Nodes") {
+        if !schema.state_machine.nodes.is_empty() {
+            validate_report_state_machine_nodes_header(section, gate_failures);
+        }
+        for node in &schema.state_machine.nodes {
+            let node_row = report_state_machine_node_row(section, node);
+            if node_row.is_none() {
+                gate_failures.push(format!(
+                    "report state machine node {} is missing",
+                    node.status
+                ));
+            }
+            if let Some(row) = node_row {
+                validate_report_state_machine_node_values(node, &row, gate_failures);
+            }
+        }
+    }
+
     if let Some(section) = markdown_section(markdown, "## State Machine Evidence") {
         if !schema.state_machine.edges.is_empty() {
             validate_report_state_machine_evidence_header(section, gate_failures);
@@ -6842,6 +6983,33 @@ fn state_machine_evidence_report_header() -> Vec<String> {
         .collect()
 }
 
+fn validate_report_state_machine_nodes_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = state_machine_nodes_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report state machine nodes header {expected:?} is missing"
+        ));
+    }
+}
+
+fn state_machine_nodes_report_header() -> Vec<String> {
+    [
+        "Status",
+        "Transactions",
+        "Pre",
+        "Post",
+        "Confidence",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_report_outbound_effects_header(section: &str, gate_failures: &mut Vec<String>) {
     let expected = outbound_effects_report_header();
     let header = section
@@ -6886,6 +7054,76 @@ fn report_state_machine_evidence_row(
             && cells.get(2).is_some_and(|cell| cell == &opcode))
         .then_some(cells)
     })
+}
+
+fn report_state_machine_node_row(
+    section: &str,
+    node: &ton_stateflow::StateMachineNode,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        cells
+            .first()
+            .is_some_and(|cell| cell == &node.status)
+            .then_some(cells)
+    })
+}
+
+fn validate_report_state_machine_node_values(
+    node: &ton_stateflow::StateMachineNode,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_state_machine_node_cell(
+        "transaction count",
+        node.transaction_count.to_string(),
+        node,
+        row.get(1),
+        gate_failures,
+    );
+    validate_report_state_machine_node_cell(
+        "pre count",
+        node.pre_count.to_string(),
+        node,
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_state_machine_node_cell(
+        "post count",
+        node.post_count.to_string(),
+        node,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_state_machine_node_cell(
+        "confidence",
+        node.confidence.clone(),
+        node,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_state_machine_node_cell(
+        "evidence",
+        report_sample_list(&node.examples),
+        node,
+        row.get(5),
+        gate_failures,
+    );
+}
+
+fn validate_report_state_machine_node_cell(
+    label: &str,
+    expected: String,
+    node: &ton_stateflow::StateMachineNode,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report state machine node {label} {expected} for {} is missing",
+            node.status
+        ));
+    }
 }
 
 fn validate_report_state_machine_evidence_values(
@@ -9620,7 +9858,7 @@ mod tests {
                 "network": "mainnet",
                 "address": "other-addr",
                 "transactionCount": 2,
-                "stateMachine": {"edges": []},
+                "stateMachine": {"nodes": [], "edges": []},
                 "auditSignals": [],
                 "opcodeCandidates": []
             })
@@ -9659,7 +9897,7 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
-                "stateMachine": {"edges": []},
+                "stateMachine": {"nodes": [], "edges": []},
                 "auditSignals": [],
                 "opcodeCandidates": []
             })
@@ -9843,6 +10081,104 @@ mod tests {
                 )
             }),
             "expected schema state machine confidence mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_state_machine_missing_nodes_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["stateMachine"]
+            .as_object_mut()
+            .expect("schema state machine should be an object")
+            .remove("nodes");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json stateMachine missing nodes evidence key",
+                )
+            }),
+            "expected missing schema state machine nodes key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_state_machine_node_count_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["stateMachine"]["nodes"] = serde_json::json!([{
+            "status": "active",
+            "transactionCount": 9,
+            "preCount": 0,
+            "postCount": 2,
+            "confidence": "high",
+            "examples": ["tx-a", "tx-b"]
+        }, {
+            "status": "none",
+            "transactionCount": 2,
+            "preCount": 2,
+            "postCount": 0,
+            "confidence": "medium",
+            "examples": ["tx-a", "tx-b"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema state-machine node transaction count 9 for active does not match corpus matching transaction count 2",
+                )
+            }),
+            "expected schema state machine node count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema state-machine node confidence high for active does not match count-derived confidence medium",
+                )
+            }),
+            "expected schema state machine node confidence mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -13126,6 +13462,21 @@ mod tests {
                 "address": "addr",
                 "transactionCount": 2,
                 "stateMachine": {
+                    "nodes": [{
+                        "status": "active",
+                        "transactionCount": 2,
+                        "preCount": 0,
+                        "postCount": 2,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }, {
+                        "status": "none",
+                        "transactionCount": 2,
+                        "preCount": 2,
+                        "postCount": 0,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }],
                     "edges": [{
                         "fromStatus": "none",
                         "toStatus": "active",
@@ -13334,6 +13685,21 @@ mod tests {
                 "address": "addr",
                 "transactionCount": 2,
                 "stateMachine": {
+                    "nodes": [{
+                        "status": "active",
+                        "transactionCount": 2,
+                        "preCount": 0,
+                        "postCount": 2,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }, {
+                        "status": "none",
+                        "transactionCount": 2,
+                        "preCount": 2,
+                        "postCount": 0,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }],
                     "edges": [{
                         "fromStatus": "none",
                         "toStatus": "active",
@@ -13434,6 +13800,21 @@ mod tests {
                 "address": "addr",
                 "transactionCount": 2,
                 "stateMachine": {
+                    "nodes": [{
+                        "status": "active",
+                        "transactionCount": 2,
+                        "preCount": 0,
+                        "postCount": 2,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }, {
+                        "status": "none",
+                        "transactionCount": 2,
+                        "preCount": 2,
+                        "postCount": 0,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }],
                     "edges": [{
                         "fromStatus": "none",
                         "toStatus": "active",
@@ -15126,6 +15507,21 @@ mod tests {
                 "address": "addr",
                 "transactionCount": 2,
                 "stateMachine": {
+                    "nodes": [{
+                        "status": "active",
+                        "transactionCount": 2,
+                        "preCount": 0,
+                        "postCount": 2,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }, {
+                        "status": "none",
+                        "transactionCount": 2,
+                        "preCount": 2,
+                        "postCount": 0,
+                        "confidence": "medium",
+                        "examples": ["tx-a", "tx-b"]
+                    }],
                     "edges": [{
                         "fromStatus": "none",
                         "toStatus": "active",
@@ -15545,6 +15941,11 @@ mod tests {
         } else {
             ""
         };
+        let state_machine_node_rows = if include_schema_summary_rows {
+            "| active | 2 | 0 | 2 | medium | `tx-a`, `tx-b` |\n| none | 2 | 2 | 0 | medium | `tx-a`, `tx-b` |\n"
+        } else {
+            ""
+        };
         let state_machine_evidence_row = if include_schema_summary_rows {
             "| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |\n"
         } else {
@@ -15607,6 +16008,11 @@ mod tests {
              stateDiagram-v2\n\
              {state_edge}\
              ```\n\
+             \n\
+             ## State Machine Nodes\n\
+             | Status | Transactions | Pre | Post | Confidence | Evidence |\n\
+             | --- | ---: | ---: | ---: | --- | --- |\n\
+             {state_machine_node_rows}\
              \n\
              ## State Machine Evidence\n\
              | From | To | Opcode | Count | Confidence | Evidence |\n\

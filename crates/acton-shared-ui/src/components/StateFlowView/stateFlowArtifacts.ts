@@ -95,7 +95,17 @@ export interface StateFlowSchemaReport {
 }
 
 export interface StateMachineGraph {
+  readonly nodes?: readonly StateMachineNode[] | null
   readonly edges: readonly StateMachineEdge[]
+}
+
+export interface StateMachineNode {
+  readonly status: string
+  readonly transactionCount: number
+  readonly preCount: number
+  readonly postCount: number
+  readonly confidence?: string | null
+  readonly examples: readonly string[]
 }
 
 export interface StateMachineEdge {
@@ -695,6 +705,7 @@ function summarizeCorpus(corpus: StateFlowCorpus): ArtifactSummary {
 
 function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const stateEdges = stateMachineEdges(schema)
+  const stateNodes = stateMachineNodes(schema, stateEdges)
   const auditSignals = schemaAuditSignals(schema)
   const bodyFieldRows = schemaBodyFieldRows(schema)
   const methodSurfaceRows = schemaMethodSurfaceRows(schema)
@@ -714,6 +725,7 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
       {label: "Storage Fields", value: storageFieldRows.length.toString()},
       {label: "Effects", value: effectRows.length.toString()},
       {label: "Replay Probes", value: replayProbeRows.length.toString()},
+      {label: "State Nodes", value: stateNodes.length.toString()},
       {label: "State Edges", value: stateEdges.length.toString()},
       {label: "Audit Signals", value: auditSignals.length.toString()},
     ],
@@ -792,6 +804,18 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
                 label: edge.opcode ?? "<none>",
                 value: `${edge.fromStatus} -> ${edge.toStatus}`,
                 detail: stateMachineEdgeDetail(edge),
+              })),
+            },
+          ]
+        : []),
+      ...(stateNodes.length > 0
+        ? [
+            {
+              title: "State Machine Nodes",
+              rows: stateNodes.map(node => ({
+                label: node.status,
+                value: `${node.transactionCount} ${plural(node.transactionCount, "transaction")}`,
+                detail: stateMachineNodeDetail(node),
               })),
             },
           ]
@@ -1018,6 +1042,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const storageFieldRows = reportStorageFieldRows(report)
   const outboundEffectRows = reportOutboundEffectRows(report)
   const stateMachineRows = reportStateMachineRows(report)
+  const stateMachineNodeRows = reportStateMachineNodeRows(report)
   const stateMachineEvidenceRows = reportStateMachineEvidenceRows(report)
   const replayDiffRows = reportReplayDiffRows(report)
   const unknownFieldRows = reportUnknownFieldRows(report)
@@ -1098,6 +1123,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "State Machine",
               rows: stateMachineRows,
+            },
+          ]
+        : []),
+      ...(stateMachineNodeRows.length > 0
+        ? [
+            {
+              title: "State Machine Nodes",
+              rows: stateMachineNodeRows,
             },
           ]
         : []),
@@ -1442,6 +1475,21 @@ function reportStateMachineEvidenceRows(report: StateFlowReport): readonly Summa
     value: rowValue(row, "Opcode") || "<none>",
     detail: [
       tableCountLabel(rowValue(row, "Count"), "transition"),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportStateMachineNodeRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "State Machine Nodes").map(row => ({
+    label: rowValue(row, "Status") || "n/a",
+    value: tableCountLabel(rowValue(row, "Transactions"), "transaction"),
+    detail: [
+      tableValueLabel("pre", rowValue(row, "Pre")),
+      tableValueLabel("post", rowValue(row, "Post")),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
       tableValueLabel("evidence", rowValue(row, "Evidence")),
     ]
@@ -2076,12 +2124,68 @@ function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachine
   )
 }
 
+function stateMachineNodes(
+  schema: StateFlowSchemaReport,
+  edges: readonly StateMachineEdge[],
+): readonly StateMachineNode[] {
+  const structuredNodes = schema.stateMachine?.nodes ?? []
+  if (structuredNodes.length > 0) {
+    return structuredNodes
+  }
+
+  const byStatus = new Map<string, {preCount: number; postCount: number; examples: Set<string>}>()
+  const entryFor = (status: string) => {
+    const existing = byStatus.get(status)
+    if (existing) {
+      return existing
+    }
+    const created = {preCount: 0, postCount: 0, examples: new Set<string>()}
+    byStatus.set(status, created)
+    return created
+  }
+  for (const edge of edges) {
+    const from = entryFor(edge.fromStatus)
+    from.preCount += edge.count
+    edge.examples.forEach(hash => from.examples.add(hash))
+    const to = entryFor(edge.toStatus)
+    to.postCount += edge.count
+    edge.examples.forEach(hash => to.examples.add(hash))
+  }
+
+  return [...byStatus.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([status, node]) => {
+      const examples = [...node.examples].sort()
+      return {
+        status,
+        transactionCount: examples.length,
+        preCount: node.preCount,
+        postCount: node.postCount,
+        confidence: stateMachineConfidence(examples.length),
+        examples,
+      }
+    })
+}
+
 function stateMachineEdgeDetail(edge: StateMachineEdge): string {
   return [
     `${edge.count} ${plural(edge.count, "observed transition")}`,
     `confidence ${edge.confidence ?? stateMachineConfidence(edge.count)}`,
     edge.examples.length > 0
       ? `examples ${edge.examples.map(hash => shortHash(hash)).join(", ")}`
+      : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" · ")
+}
+
+function stateMachineNodeDetail(node: StateMachineNode): string {
+  return [
+    `pre ${node.preCount}`,
+    `post ${node.postCount}`,
+    `confidence ${node.confidence ?? stateMachineConfidence(node.transactionCount)}`,
+    node.examples.length > 0
+      ? `examples ${node.examples.map(hash => shortHash(hash)).join(", ")}`
       : undefined,
   ]
     .filter((value): value is string => value !== undefined)

@@ -81,7 +81,21 @@ pub struct StateFlowSchemaReport {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateMachineGraph {
+    #[serde(default)]
+    pub nodes: Vec<StateMachineNode>,
     pub edges: Vec<StateMachineEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateMachineNode {
+    pub status: String,
+    pub transaction_count: usize,
+    pub pre_count: usize,
+    pub post_count: usize,
+    #[serde(default = "default_state_machine_confidence")]
+    pub confidence: String,
+    pub examples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +105,7 @@ pub struct StateMachineEdge {
     pub to_status: String,
     pub opcode: Option<String>,
     pub count: usize,
-    #[serde(default = "default_state_machine_edge_confidence")]
+    #[serde(default = "default_state_machine_confidence")]
     pub confidence: String,
     pub examples: Vec<String>,
 }
@@ -946,6 +960,32 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## State Machine Nodes").ok();
+    if schema.state_machine.nodes.is_empty() {
+        writeln!(report, "- No state-machine node evidence was inferred.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Status | Transactions | Pre | Post | Confidence | Evidence |"
+        )
+        .ok();
+        writeln!(report, "| --- | ---: | ---: | ---: | --- | --- |").ok();
+        for node in &schema.state_machine.nodes {
+            writeln!(
+                report,
+                "| {} | {} | {} | {} | {} | {} |",
+                markdown_escape(&node.status),
+                node.transaction_count,
+                node.pre_count,
+                node.post_count,
+                markdown_escape(&node.confidence),
+                markdown_code_list(&node.examples),
+            )
+            .ok();
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## State Machine Evidence").ok();
     if schema.state_machine.edges.is_empty() {
         writeln!(report, "- No state-machine edge evidence was inferred.").ok();
@@ -1142,8 +1182,19 @@ fn infer_risk_points(
 }
 
 fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
+    let mut by_node = BTreeMap::<String, (usize, usize, BTreeSet<String>)>::new();
     let mut by_edge = BTreeMap::<(String, String, Option<String>), (usize, Vec<String>)>::new();
     for tx in transactions {
+        {
+            let entry = by_node.entry(tx.state.pre.status.clone()).or_default();
+            entry.0 += 1;
+            entry.2.insert(tx.query_hash.clone());
+        }
+        {
+            let entry = by_node.entry(tx.state.post.status.clone()).or_default();
+            entry.1 += 1;
+            entry.2.insert(tx.query_hash.clone());
+        }
         let key = (
             tx.state.pre.status.clone(),
             tx.state.post.status.clone(),
@@ -1155,6 +1206,21 @@ fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
     }
 
     StateMachineGraph {
+        nodes: by_node
+            .into_iter()
+            .map(|(status, (pre_count, post_count, examples))| {
+                let examples = examples.into_iter().collect::<Vec<_>>();
+                let transaction_count = examples.len();
+                StateMachineNode {
+                    status,
+                    transaction_count,
+                    pre_count,
+                    post_count,
+                    confidence: state_machine_edge_confidence(transaction_count).to_owned(),
+                    examples,
+                }
+            })
+            .collect(),
         edges: by_edge
             .into_iter()
             .map(
@@ -1171,7 +1237,7 @@ fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
     }
 }
 
-fn default_state_machine_edge_confidence() -> String {
+fn default_state_machine_confidence() -> String {
     "low".to_owned()
 }
 
@@ -3157,6 +3223,28 @@ mod tests {
             serde_json::json!(["tx-a", "tx-b"])
         );
         assert_eq!(
+            json["stateMachine"]["nodes"][0],
+            serde_json::json!({
+                "status": "active",
+                "transactionCount": 2,
+                "preCount": 0,
+                "postCount": 2,
+                "confidence": "medium",
+                "examples": ["tx-a", "tx-b"]
+            })
+        );
+        assert_eq!(
+            json["stateMachine"]["nodes"][1],
+            serde_json::json!({
+                "status": "none",
+                "transactionCount": 2,
+                "preCount": 2,
+                "postCount": 0,
+                "confidence": "medium",
+                "examples": ["tx-a", "tx-b"]
+            })
+        );
+        assert_eq!(
             json["opcodeCandidates"][0]["storage"]["postDataShape"],
             serde_json::json!({
                 "minBits": 16,
@@ -3575,6 +3663,10 @@ mod tests {
 
         let report = super::render_state_flow_report(&corpus, &schema, &[]);
 
+        assert!(report.contains("## State Machine Nodes"));
+        assert!(report.contains("| Status | Transactions | Pre | Post | Confidence | Evidence |"));
+        assert!(report.contains("| active | 2 | 0 | 2 | medium | `tx-a`, `tx-b` |"));
+        assert!(report.contains("| none | 2 | 2 | 0 | medium | `tx-a`, `tx-b` |"));
         assert!(report.contains("## State Machine Evidence"));
         assert!(report.contains("| From | To | Opcode | Count | Confidence | Evidence |"));
         assert!(report.contains("| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |"));

@@ -115,6 +115,16 @@ const schema = {
   address: "account",
   transactionCount: 1,
   stateMachine: {
+    nodes: [
+      {
+        status: "active",
+        transactionCount: 1,
+        preCount: 1,
+        postCount: 1,
+        confidence: "low",
+        examples: ["tx-hash"],
+      },
+    ],
     edges: [
       {
         fromStatus: "active",
@@ -490,6 +500,16 @@ assert(
 assert(
   schemaSummary.metrics.some(metric => metric.label === "State Edges" && metric.value === "1"),
   "expected schema summary to include state machine edge count",
+)
+assert(
+  schemaSummary.metrics.some(metric => metric.label === "State Nodes" && metric.value === "1"),
+  "expected schema summary to include state machine node count",
+)
+assert(
+  schemaSummary.sections
+    .find(section => section.title === "State Machine Nodes")
+    ?.rows[0]?.detail?.includes("pre 1 · post 1 · confidence low · examples tx-hash") === true,
+  "expected schema state machine node row to include counts, confidence, and examples",
 )
 assert(
   schemaSummary.sections

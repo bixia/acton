@@ -103,6 +103,24 @@ const schema = {
   address: "account",
   transactionCount: 2,
   stateMachine: {
+    nodes: [
+      {
+        status: "active",
+        transactionCount: 2,
+        preCount: 2,
+        postCount: 0,
+        confidence: "medium",
+        examples: ["tx-a", "tx-b"],
+      },
+      {
+        status: "frozen",
+        transactionCount: 2,
+        preCount: 0,
+        postCount: 2,
+        confidence: "medium",
+        examples: ["tx-a", "tx-b"],
+      },
+    ],
     edges: [
       {
         fromStatus: "active",
@@ -559,6 +577,12 @@ stateDiagram-v2
     active --> frozen: 0x00000001 (2)
 \`\`\`
 
+## State Machine Nodes
+| Status | Transactions | Pre | Post | Confidence | Evidence |
+| --- | ---: | ---: | ---: | --- | --- |
+| active | 2 | 2 | 0 | medium | \`tx-a\`, \`tx-b\` |
+| frozen | 2 | 0 | 2 | medium | \`tx-a\`, \`tx-b\` |
+
 ## State Machine Evidence
 | From | To | Opcode | Count | Confidence | Evidence |
 | --- | --- | --- | ---: | --- | --- |
@@ -666,6 +690,13 @@ assert(
   stateMachineRows[0]?.detail ===
     "2 observed transitions · confidence medium · examples tx-a, tx-b",
   "expected transition evidence count, confidence, and examples",
+)
+const stateMachineNodeRows = sectionRows(schemaSummary, "State Machine Nodes")
+assert(stateMachineNodeRows[0]?.label === "active", "expected active state node row")
+assert(stateMachineNodeRows[0]?.value === "2 transactions", "expected state node transaction count")
+assert(
+  stateMachineNodeRows[0]?.detail === "pre 2 · post 0 · confidence medium · examples tx-a, tx-b",
+  "expected state node counts, confidence, and examples",
 )
 const bodyFieldRows = sectionRows(schemaSummary, "Message Body Fields")
 assert(bodyFieldRows[1]?.label === "0x00000001 query_id", "expected query_id body field row")
@@ -952,7 +983,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "13"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "14"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1034,6 +1065,17 @@ assert(
   "expected report state transition row",
 )
 assert(reportStateMachineRows[0]?.value === "0x00000001 (2)", "expected report state transition")
+const reportStateMachineNodeRows = sectionRows(reportSummary, "State Machine Nodes")
+assert(reportStateMachineNodeRows[0]?.label === "active", "expected report state node row")
+assert(
+  reportStateMachineNodeRows[0]?.value === "2 transactions",
+  "expected report state node count",
+)
+assert(
+  reportStateMachineNodeRows[0]?.detail ===
+    "pre 2 · post 0 · confidence medium · evidence tx-a, tx-b",
+  "expected report state node counts, confidence, and evidence",
+)
 const reportStateMachineEvidenceRows = sectionRows(reportSummary, "State Machine Evidence")
 assert(
   reportStateMachineEvidenceRows[0]?.label === "active -> frozen",
