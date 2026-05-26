@@ -2587,11 +2587,20 @@ fn validate_state_flow_replay_artifact(
         Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
             Ok(value) => {
                 validate_state_flow_replay_evidence_keys(&value, artifact, gate_failures);
-                if let Err(err) = serde_json::from_value::<StateFlowReplayDiff>(value) {
-                    gate_failures.push(format!(
-                        "invalid {} artifact {}: {err}",
-                        artifact.kind, artifact.path
-                    ));
+                match serde_json::from_value::<StateFlowReplayDiff>(value) {
+                    Ok(replay) => {
+                        validate_state_flow_replay_cell_consistency(
+                            &replay,
+                            artifact,
+                            gate_failures,
+                        );
+                    }
+                    Err(err) => {
+                        gate_failures.push(format!(
+                            "invalid {} artifact {}: {err}",
+                            artifact.kind, artifact.path
+                        ));
+                    }
                 }
             }
             Err(err) => gate_failures.push(format!(
@@ -2603,6 +2612,86 @@ fn validate_state_flow_replay_artifact(
             "failed to read {} artifact {}: {err}",
             artifact.kind, artifact.path
         )),
+    }
+}
+
+fn validate_state_flow_replay_cell_consistency(
+    replay: &StateFlowReplayDiff,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let prefix = format!("{} artifact {}", artifact.kind, artifact.path);
+    validate_replay_observation_cell_consistency(
+        &format!("{prefix} baseline"),
+        &replay.baseline,
+        &replay.source_query_hash,
+        gate_failures,
+    );
+    validate_replay_observation_cell_consistency(
+        &format!("{prefix} replay"),
+        &replay.replay,
+        &replay.source_query_hash,
+        gate_failures,
+    );
+}
+
+fn validate_replay_observation_cell_consistency(
+    label: &str,
+    observation: &ton_stateflow::ReplayObservation,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    validate_message_artifact_cell_consistency(
+        &format!("{label} inbound"),
+        &observation.inbound,
+        tx_hash,
+        gate_failures,
+    );
+    for (index, message) in observation.outbound.iter().enumerate() {
+        validate_message_artifact_cell_consistency(
+            &format!("{label} outbound[{index}]"),
+            message,
+            tx_hash,
+            gate_failures,
+        );
+    }
+    if let Some(c5) = &observation.c5 {
+        validate_cell_artifact_decodable_consistency(
+            &format!("{label} c5"),
+            c5,
+            tx_hash,
+            gate_failures,
+        );
+    }
+    for action in &observation.out_actions {
+        if let Some(body) = &action.body {
+            validate_cell_artifact_decodable_consistency(
+                &format!("{label} outActions[{}] body", action.index),
+                body,
+                tx_hash,
+                gate_failures,
+            );
+        }
+        if let Some(code) = &action.code {
+            validate_cell_artifact_decodable_consistency(
+                &format!("{label} outActions[{}] code", action.index),
+                code,
+                tx_hash,
+                gate_failures,
+            );
+        }
+        if let Some(cell) = action
+            .library
+            .as_ref()
+            .and_then(|library| library.cell.as_ref())
+        {
+            validate_cell_artifact_decodable_consistency(
+                &format!("{label} outActions[{}] library cell", action.index),
+                cell,
+                tx_hash,
+                gate_failures,
+            );
+        }
     }
 }
 
@@ -20157,6 +20246,58 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_replay_validation_rejects_decodable_cell_artifact_hash_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut replay_observation = sample_mutated_replay_observation_json(true);
+        replay_observation["c5"] = test_cell_artifact_json(0x0000_0001, Some("wrong-hash"));
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": sample_replay_observation_json(true),
+                "replay": replay_observation,
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json replay c5 hash")
+                    && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
+            }),
+            "expected replay decodable cell hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_none_replay_with_input_change() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -21686,6 +21827,22 @@ mod tests {
                 "bits": 32,
                 "refs": 0
             }
+        })
+    }
+
+    fn test_cell_artifact_json(body_word: u32, hash: Option<&str>) -> serde_json::Value {
+        let mut builder = CellBuilder::new();
+        builder
+            .store_u32(body_word)
+            .expect("body word should store");
+        let cell = builder.build().expect("cell should build");
+        serde_json::json!({
+            "boc64": Boc::encode_base64(cell.clone()),
+            "hash": hash
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| hex::encode(cell.hash(0))),
+            "bits": 32,
+            "refs": 0
         })
     }
 
