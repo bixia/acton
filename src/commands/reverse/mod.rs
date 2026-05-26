@@ -226,11 +226,29 @@ pub enum ReverseCommand {
         net: String,
         #[arg(
             long,
+            default_value = "analysis",
+            help = "Target id to write into summary, manifest, validation, and output paths"
+        )]
+        target_id: String,
+        #[arg(long, value_name = "URL", help = "Source URL for the analyzed target")]
+        source_url: Option<String>,
+        #[arg(
+            long,
+            help = "Human notes to preserve in the generated target artifacts"
+        )]
+        notes: Option<String>,
+        #[arg(
+            long,
             default_value_t = 10,
             value_parser = clap::value_parser!(u32).range(1..),
             help = "Maximum number of recent account transactions to collect"
         )]
         limit: u32,
+        #[arg(
+            long,
+            help = "Transaction hash to retrace into retrace.json for this analysis target"
+        )]
+        retrace_tx_hash: Option<String>,
         #[arg(
             long,
             conflicts_with = "replay_tx_hash",
@@ -360,7 +378,11 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
         ReverseCommand::Analyze {
             address,
             net,
+            target_id,
+            source_url,
+            notes,
             limit,
+            retrace_tx_hash,
             replay_tx_index,
             replay_tx_hash,
             flip_body_bit,
@@ -373,12 +395,18 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             &address,
             &net,
             limit,
-            replay_tx_index,
-            replay_tx_hash,
-            flip_body_bit,
-            body_boc64,
-            set_body_uint,
-            ignore_chksig,
+            AnalysisTargetOptions {
+                target_id: Some(target_id),
+                source_url,
+                notes,
+                retrace_tx_hash,
+                replay_tx_index,
+                replay_tx_hash,
+                flip_body_bit,
+                body_boc64,
+                set_body_uint,
+                ignore_chksig,
+            },
             out_dir,
             pretty,
         ),
@@ -693,30 +721,29 @@ struct ReportArtifactInputs {
     replays: Vec<PathBuf>,
 }
 
-fn reverse_analyze_cmd(
-    address: &str,
-    net: &str,
-    limit: u32,
+#[derive(Debug, Clone, Default)]
+struct AnalysisTargetOptions {
+    target_id: Option<String>,
+    source_url: Option<String>,
+    notes: Option<String>,
+    retrace_tx_hash: Option<String>,
     replay_tx_index: Option<usize>,
     replay_tx_hash: Option<String>,
     flip_body_bit: Option<u16>,
     body_boc64: Option<String>,
     set_body_uint: Option<String>,
     ignore_chksig: bool,
+}
+
+fn reverse_analyze_cmd(
+    address: &str,
+    net: &str,
+    limit: u32,
+    options: AnalysisTargetOptions,
     out_dir: PathBuf,
     pretty: bool,
 ) -> anyhow::Result<()> {
-    let target = analysis_target_from_args(
-        address,
-        net,
-        limit,
-        replay_tx_index,
-        replay_tx_hash,
-        flip_body_bit,
-        body_boc64,
-        set_body_uint,
-        ignore_chksig,
-    )?;
+    let target = analysis_target_from_args(address, net, limit, options)?;
     run_state_flow_targets(vec![&target], out_dir, pretty)
 }
 
@@ -1111,32 +1138,30 @@ fn analysis_target_from_args(
     address: &str,
     net: &str,
     limit: u32,
-    replay_tx_index: Option<usize>,
-    replay_tx_hash: Option<String>,
-    flip_body_bit: Option<u16>,
-    body_boc64: Option<String>,
-    set_body_uint: Option<String>,
-    ignore_chksig: bool,
+    options: AnalysisTargetOptions,
 ) -> anyhow::Result<SmokeTarget> {
-    if replay_tx_index.is_some() && replay_tx_hash.is_some() {
+    if options.replay_tx_index.is_some() && options.replay_tx_hash.is_some() {
         anyhow::bail!("only one replay transaction selector can be provided");
     }
 
     Ok(SmokeTarget {
-        id: "analysis".to_owned(),
+        id: options
+            .target_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| "analysis".to_owned()),
         network: net.to_owned(),
         address: address.to_owned(),
-        source_url: None,
-        notes: None,
+        source_url: options.source_url,
+        notes: options.notes,
         collect_limit: limit,
-        replay_tx_index,
-        replay_tx_hash,
-        retrace_tx_hash: None,
+        replay_tx_index: options.replay_tx_index,
+        replay_tx_hash: options.replay_tx_hash,
+        retrace_tx_hash: options.retrace_tx_hash,
         replay_mutation: Some(SmokeReplayMutation::from_args(
-            flip_body_bit,
-            body_boc64,
-            set_body_uint,
-            ignore_chksig,
+            options.flip_body_bit,
+            options.body_boc64,
+            options.set_body_uint,
+            options.ignore_chksig,
         )?),
     })
 }
@@ -18561,7 +18586,10 @@ mod tests {
     #[test]
     fn analysis_target_defaults_to_baseline_replay() {
         let target = super::analysis_target_from_args(
-            "addr", "mainnet", 2, None, None, None, None, None, false,
+            "addr",
+            "mainnet",
+            2,
+            super::AnalysisTargetOptions::default(),
         )
         .expect("analysis target should build");
 
@@ -18579,17 +18607,44 @@ mod tests {
     }
 
     #[test]
+    fn analysis_target_preserves_source_context_and_retrace_hash() {
+        let target = super::analysis_target_from_args(
+            "addr",
+            "mainnet",
+            2,
+            super::AnalysisTargetOptions {
+                target_id: Some("tonviewer-requested-target".to_owned()),
+                source_url: Some("https://tonviewer.com/addr".to_owned()),
+                notes: Some("real-chain validation target".to_owned()),
+                retrace_tx_hash: Some("tx-hash".to_owned()),
+                ..Default::default()
+            },
+        )
+        .expect("analysis target should build");
+
+        assert_eq!(target.id, "tonviewer-requested-target");
+        assert_eq!(
+            target.source_url.as_deref(),
+            Some("https://tonviewer.com/addr")
+        );
+        assert_eq!(
+            target.notes.as_deref(),
+            Some("real-chain validation target")
+        );
+        assert_eq!(target.retrace_tx_hash.as_deref(), Some("tx-hash"));
+    }
+
+    #[test]
     fn set_body_uint_replay_mutation_parses_for_analysis() {
         let target = super::analysis_target_from_args(
             "addr",
             "mainnet",
             2,
-            None,
-            None,
-            None,
-            None,
-            Some("32:64:42".to_owned()),
-            true,
+            super::AnalysisTargetOptions {
+                set_body_uint: Some("32:64:42".to_owned()),
+                ignore_chksig: true,
+                ..Default::default()
+            },
         )
         .expect("analysis target should build");
 
