@@ -10806,6 +10806,7 @@ fn validate_transaction_artifact_matches_corpus(
         tx_hash,
         gate_failures,
     );
+    validate_transaction_replay_context_matches_corpus(flow, corpus_flow, gate_failures);
     validate_state_snapshot_matches_corpus(
         "transaction pre state",
         &flow.state.pre,
@@ -10893,6 +10894,78 @@ fn validate_transaction_artifact_matches_corpus(
     );
 }
 
+fn validate_transaction_replay_context_matches_corpus(
+    flow: &StateFlowTx,
+    corpus_flow: &StateFlowTx,
+    gate_failures: &mut Vec<String>,
+) {
+    let tx_hash = &flow.query_hash;
+    validate_evidence_value_field(
+        "transaction utime",
+        flow.transaction.utime,
+        "corpus utime",
+        corpus_flow.transaction.utime,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "transaction state update hash ok",
+        flow.transaction.state_update_hash_ok,
+        "corpus state update hash ok",
+        corpus_flow.transaction.state_update_hash_ok,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_blob_field(
+        "transaction boc64",
+        &flow.transaction.transaction_boc64,
+        "corpus transaction boc64",
+        &corpus_flow.transaction.transaction_boc64,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "transaction replay mc seqno",
+        flow.replay.mc_seqno,
+        "corpus replay mc seqno",
+        corpus_flow.replay.mc_seqno,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_text_field(
+        "transaction replay rand seed",
+        &flow.replay.rand_seed_hex,
+        "corpus replay rand seed",
+        &corpus_flow.replay.rand_seed_hex,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_value_field(
+        "transaction replayed previous transaction count",
+        flow.replay.replayed_prev_tx_count,
+        "corpus replayed previous transaction count",
+        corpus_flow.replay.replayed_prev_tx_count,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_blob_field(
+        "transaction replay block config",
+        &flow.replay.block_config_boc64,
+        "corpus replay block config",
+        &corpus_flow.replay.block_config_boc64,
+        tx_hash,
+        gate_failures,
+    );
+    validate_evidence_optional_blob_field(
+        "transaction replay libs",
+        flow.replay.libs_boc64.as_deref(),
+        "corpus replay libs",
+        corpus_flow.replay.libs_boc64.as_deref(),
+        tx_hash,
+        gate_failures,
+    );
+}
+
 fn validate_evidence_text_field(
     actual_label: &str,
     actual: &str,
@@ -10906,6 +10979,53 @@ fn validate_evidence_text_field(
             "{actual_label} {actual} for {tx_hash} does not match {expected_label} {expected}"
         ));
     }
+}
+
+fn validate_evidence_blob_field(
+    actual_label: &str,
+    actual: &str,
+    expected_label: &str,
+    expected: &str,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {} for {tx_hash} does not match {expected_label} {}",
+            evidence_blob_label(actual),
+            evidence_blob_label(expected)
+        ));
+    }
+}
+
+fn validate_evidence_optional_blob_field(
+    actual_label: &str,
+    actual: Option<&str>,
+    expected_label: &str,
+    expected: Option<&str>,
+    tx_hash: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual != expected {
+        gate_failures.push(format!(
+            "{actual_label} {} for {tx_hash} does not match {expected_label} {}",
+            optional_evidence_blob_label(actual),
+            optional_evidence_blob_label(expected)
+        ));
+    }
+}
+
+fn evidence_blob_label(value: &str) -> String {
+    const MAX_INLINE_CHARS: usize = 96;
+    if value.chars().count() <= MAX_INLINE_CHARS {
+        return value.to_owned();
+    }
+    let prefix = value.chars().take(MAX_INLINE_CHARS).collect::<String>();
+    format!("{prefix}...<{} chars>", value.chars().count())
+}
+
+fn optional_evidence_blob_label(value: Option<&str>) -> String {
+    value.map_or_else(|| "<none>".to_owned(), evidence_blob_label)
 }
 
 fn validate_evidence_value_field<T>(
@@ -15642,6 +15762,68 @@ mod tests {
                 )
             }),
             "expected transaction post state balance mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_transaction_replay_context_mismatch_with_corpus() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["transaction"]["stateUpdateHashOk"] = serde_json::json!(false);
+        tx["transaction"]["transactionBoc64"] = serde_json::json!("wrong-tx");
+        tx["replay"]["randSeedHex"] = serde_json::json!("ff");
+        tx["replay"]["blockConfigBoc64"] = serde_json::json!("wrong-config");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/transaction-0.json",
+            &tx.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction state update hash ok false for tx-a does not match corpus state update hash ok true",
+                )
+            }),
+            "expected transaction state update hash mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction boc64 wrong-tx for tx-a does not match corpus transaction boc64 tx",
+                )
+            }),
+            "expected transaction BoC mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction replay rand seed ff for tx-a does not match corpus replay rand seed 00",
+                )
+            }),
+            "expected transaction replay rand seed mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: transaction replay block config wrong-config for tx-a does not match corpus replay block config config",
+                )
+            }),
+            "expected transaction replay block config mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
