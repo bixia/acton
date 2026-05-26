@@ -13,6 +13,7 @@ use ton_stateflow::{
 };
 use tycho_types::boc::Boc;
 use tycho_types::cell::Cell;
+use tycho_types::models::{StdAddr, StdAddrFormat};
 
 const DEFAULT_SMOKE_TARGETS: &str = "crates/ton-stateflow/smoke-targets.json";
 const VALIDATION_ARTIFACT_PATH: &str = "validation.json";
@@ -5050,6 +5051,7 @@ fn validate_manifest_target_content_matches_summary(
         corpus.as_ref(),
         gate_failures,
     );
+    validate_manifest_retrace_target_context(manifest_path, artifacts, target, gate_failures);
     validate_manifest_replay_membership(manifest_path, artifacts, corpus.as_ref(), gate_failures);
 
     if let Some(schema) = read_single_target_json_artifact::<StateFlowSchemaReport>(
@@ -10727,6 +10729,53 @@ fn validate_manifest_transaction_membership(
     }
 }
 
+fn validate_manifest_retrace_target_context(
+    manifest_path: &Path,
+    artifacts: &[&SmokeArtifactManifestEntry],
+    target: &SmokeTargetRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    for flow in read_target_json_artifacts::<StateFlowTx>(manifest_path, artifacts, "retrace") {
+        validate_state_flow_target_context("retrace", &flow, target, gate_failures);
+    }
+}
+
+fn validate_state_flow_target_context(
+    kind: &str,
+    flow: &StateFlowTx,
+    target: &SmokeTargetRunSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    if flow.network != target.network {
+        gate_failures.push(format!(
+            "{kind} network {} for {} does not match summary network {}",
+            flow.network, flow.query_hash, target.network
+        ));
+    }
+    if !state_flow_addresses_match(&flow.transaction.account, &target.address) {
+        gate_failures.push(format!(
+            "{kind} account {} for {} does not match summary address {}",
+            flow.transaction.account, flow.query_hash, target.address
+        ));
+    }
+}
+
+fn state_flow_addresses_match(actual: &str, expected: &str) -> bool {
+    if actual == expected {
+        return true;
+    }
+    match (parse_std_addr(actual), parse_std_addr(expected)) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => false,
+    }
+}
+
+fn parse_std_addr(value: &str) -> Option<StdAddr> {
+    StdAddr::from_str_ext(value, StdAddrFormat::any())
+        .ok()
+        .map(|(address, _)| address)
+}
+
 fn validate_transaction_artifact_matches_corpus(
     flow: &StateFlowTx,
     corpus_flow: &StateFlowTx,
@@ -12637,6 +12686,71 @@ mod tests {
         );
         assert_eq!(validation.targets[0].capability_failed_count, 0);
         assert_eq!(validation.capability_failed_count, 0);
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_retrace_target_context_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        summary.targets[0].retrace = Some("target-a/retrace.json".to_owned());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "summary.json",
+            &serde_json::to_string(&summary).expect("summary should serialize"),
+        );
+        let mut retrace = sample_state_flow_json("tx-a");
+        retrace["network"] = serde_json::json!("testnet");
+        retrace["transaction"]["account"] = serde_json::json!("other-addr");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/retrace.json",
+            &retrace.to_string(),
+        );
+        let mut manifest = sample_validation_manifest();
+        manifest.artifacts.insert(
+            4,
+            super::SmokeArtifactManifestEntry::new(
+                "retrace",
+                "target-a/retrace.json",
+                Some("target-a".to_owned()),
+            ),
+        );
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: retrace network testnet for tx-a does not match summary network mainnet",
+                )
+            }),
+            "expected retrace network mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: retrace account other-addr for tx-a does not match summary address addr",
+                )
+            }),
+            "expected retrace account mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn retrace_target_context_accepts_equivalent_friendly_addresses() {
+        assert!(super::state_flow_addresses_match(
+            "UQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4Q9u",
+            "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
+        ));
     }
 
     #[test]
