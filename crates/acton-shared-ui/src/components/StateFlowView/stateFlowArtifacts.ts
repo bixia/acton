@@ -181,6 +181,14 @@ export interface StateFlowArtifactValidationTarget {
   readonly replayCount: number
   readonly passed: boolean
   readonly gateFailures: readonly string[]
+  readonly capabilityChecks?: readonly StateFlowArtifactCapabilityCheck[] | null
+}
+
+export interface StateFlowArtifactCapabilityCheck {
+  readonly id: string
+  readonly label: string
+  readonly passed: boolean
+  readonly evidence: readonly string[]
 }
 
 export interface StateFlowReport {
@@ -835,6 +843,7 @@ function summarizeArtifactManifest(manifest: StateFlowArtifactManifest): Artifac
 
 function summarizeArtifactValidation(validation: StateFlowArtifactValidation): ArtifactSummary {
   const targetGateFailureRows = validationTargetGateFailureRows(validation)
+  const capabilityRows = validationCapabilityRows(validation)
   return {
     title: "State Flow Artifact Validation",
     subtitle: validation.manifest,
@@ -843,6 +852,7 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
       {label: "Targets", value: validation.targetCount.toString()},
       {label: "Gate Failures", value: validation.gateFailures.length.toString()},
       {label: "Absolute Paths", value: validation.absolutePathCount.toString()},
+      {label: "Capability Checks", value: capabilityRows.length.toString()},
     ],
     sections: [
       {
@@ -856,6 +866,14 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
           ].join(" · "),
         })),
       },
+      ...(capabilityRows.length > 0
+        ? [
+            {
+              title: "Capability Checks",
+              rows: capabilityRows,
+            },
+          ]
+        : []),
       ...(targetGateFailureRows.length > 0
         ? [
             {
@@ -1024,6 +1042,16 @@ function validationTargetGateFailureRows(
         `${target.artifactCount} ${plural(target.artifactCount, "artifact")}`,
         `${target.replayCount} ${plural(target.replayCount, "replay")}`,
       ].join(" · "),
+    })),
+  )
+}
+
+function validationCapabilityRows(validation: StateFlowArtifactValidation): readonly SummaryRow[] {
+  return validation.targets.flatMap(target =>
+    (target.capabilityChecks ?? []).map(check => ({
+      label: `${target.id} ${check.label}`,
+      value: check.passed ? "passed" : "failed",
+      detail: check.evidence.join(" · "),
     })),
   )
 }

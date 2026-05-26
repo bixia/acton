@@ -1517,6 +1517,17 @@ struct ArtifactManifestTargetValidation {
     replay_count: usize,
     passed: bool,
     gate_failures: Vec<String>,
+    #[serde(default)]
+    capability_checks: Vec<ArtifactCapabilityCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtifactCapabilityCheck {
+    id: String,
+    label: String,
+    passed: bool,
+    evidence: Vec<String>,
 }
 
 fn validate_artifact_manifest_bundle(
@@ -1593,23 +1604,42 @@ fn validate_artifact_manifest_bundle_with_mode(
     if let Some(summary) = &summary {
         validate_manifest_summary_targets(manifest, &target_ids, summary, &mut gate_failures);
     }
+    let mut target_artifact_gate_failures = BTreeMap::<String, Vec<String>>::new();
     for artifact in manifest
         .artifacts
         .iter()
         .filter(|artifact| artifact_selected_for_validation(artifact, target_id))
     {
+        let mut artifact_gate_failures = Vec::new();
         let path = resolve_manifest_artifact_path(manifest_path, &artifact.path);
         if !path.exists() {
-            gate_failures.push(format!("missing artifact {}", artifact.path));
-            continue;
+            artifact_gate_failures.push(format!("missing artifact {}", artifact.path));
+        } else {
+            validate_manifest_artifact_content(&path, artifact, &mut artifact_gate_failures);
         }
-        validate_manifest_artifact_content(&path, artifact, &mut gate_failures);
+        if let Some(target_id) = &artifact.target_id {
+            target_artifact_gate_failures
+                .entry(target_id.clone())
+                .or_default()
+                .extend(artifact_gate_failures);
+        } else {
+            gate_failures.extend(artifact_gate_failures);
+        }
     }
 
     let targets = selected_target_ids
         .iter()
         .map(|target_id| {
-            validate_artifact_manifest_target(manifest, manifest_path, target_id, summary.as_ref())
+            validate_artifact_manifest_target(
+                manifest,
+                manifest_path,
+                target_id,
+                summary.as_ref(),
+                target_artifact_gate_failures
+                    .get(target_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
         })
         .collect::<Vec<_>>();
     gate_failures.extend(targets.iter().flat_map(|target| {
@@ -2142,12 +2172,44 @@ fn validate_schema_opcode_candidate_evidence_keys(
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
     }
+    validate_schema_candidate_evidence_entry_keys(value, &prefix, gate_failures);
     validate_schema_inbound_body_evidence_keys(value, &prefix, gate_failures);
     validate_schema_storage_evidence_keys(value, &prefix, gate_failures);
     validate_schema_state_transition_evidence_keys(value, &prefix, gate_failures);
     validate_schema_replay_probe_evidence_keys(value, &prefix, gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outboundEffects", gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outActions", gate_failures);
+}
+
+fn validate_schema_candidate_evidence_entry_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(evidence_entries) = value.get("evidence").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, evidence) in evidence_entries.iter().enumerate() {
+        let evidence_prefix = format!("{prefix} evidence[{index}]");
+        for (label, path) in [
+            ("tx hash", &["txHash"][..]),
+            ("inbound body hash", &["inboundBodyHash"][..]),
+            ("inbound body bits", &["inboundBodyBits"][..]),
+            ("inbound body refs", &["inboundBodyRefs"][..]),
+            ("from status", &["fromStatus"][..]),
+            ("to status", &["toStatus"][..]),
+            ("pre data hash", &["preDataHash"][..]),
+            ("post data hash", &["postDataHash"][..]),
+            ("pre code hash", &["preCodeHash"][..]),
+            ("post code hash", &["postCodeHash"][..]),
+            ("outbound kinds", &["outboundKinds"][..]),
+            ("out action kinds", &["outActionKinds"][..]),
+        ] {
+            if !json_path_exists(evidence, path) {
+                gate_failures.push(format!("{evidence_prefix} missing {label} evidence key"));
+            }
+        }
+    }
 }
 
 fn validate_schema_inbound_body_evidence_keys(
@@ -3055,13 +3117,14 @@ fn validate_artifact_manifest_target(
     manifest_path: &Path,
     target_id: &str,
     summary: Option<&SmokeRunSummary>,
+    artifact_content_gate_failures: Vec<String>,
 ) -> ArtifactManifestTargetValidation {
     let artifacts = manifest
         .artifacts
         .iter()
         .filter(|artifact| artifact.target_id.as_deref() == Some(target_id))
         .collect::<Vec<_>>();
-    let mut gate_failures = Vec::new();
+    let mut gate_failures = artifact_content_gate_failures;
     for kind in ["corpus", "schema", "replay", "report"] {
         if !artifacts.iter().any(|artifact| artifact.kind == kind) {
             gate_failures.push(format!("missing {kind} artifact"));
@@ -3077,6 +3140,8 @@ fn validate_artifact_manifest_target(
         );
     }
 
+    let capability_checks = artifact_capability_checks(&artifacts, &gate_failures);
+
     ArtifactManifestTargetValidation {
         id: target_id.to_owned(),
         artifact_count: artifacts.len(),
@@ -3086,6 +3151,94 @@ fn validate_artifact_manifest_target(
             .count(),
         passed: gate_failures.is_empty(),
         gate_failures,
+        capability_checks,
+    }
+}
+
+fn artifact_capability_checks(
+    artifacts: &[&SmokeArtifactManifestEntry],
+    gate_failures: &[String],
+) -> Vec<ArtifactCapabilityCheck> {
+    let target_passed = gate_failures.is_empty();
+    vec![
+        artifact_capability_check(
+            "stateFlowTx",
+            "StateFlowTx evidence JSON",
+            &["transaction"],
+            artifacts,
+            target_passed,
+            "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
+        ),
+        artifact_capability_check(
+            "corpus",
+            "Collect corpus",
+            &["corpus"],
+            artifacts,
+            target_passed,
+            "history transactions and opcode summary validated",
+        ),
+        artifact_capability_check(
+            "schema",
+            "Schema candidates",
+            &["schema"],
+            artifacts,
+            target_passed,
+            "opcode, message, storage, out-effect, unknown-field, and confidence evidence validated",
+        ),
+        artifact_capability_check(
+            "replayDiff",
+            "Replay diff",
+            &["replay"],
+            artifacts,
+            target_passed,
+            "mutations, replay observations, and observable diffs validated",
+        ),
+        artifact_capability_check(
+            "report",
+            "State-flow report",
+            &["report"],
+            artifacts,
+            target_passed,
+            "report tables checked against corpus, schema, and replay artifacts",
+        ),
+    ]
+}
+
+fn artifact_capability_check(
+    id: &str,
+    label: &str,
+    required_kinds: &[&str],
+    artifacts: &[&SmokeArtifactManifestEntry],
+    target_passed: bool,
+    success_evidence: &str,
+) -> ArtifactCapabilityCheck {
+    let paths = required_kinds
+        .iter()
+        .flat_map(|kind| {
+            artifacts
+                .iter()
+                .filter(move |artifact| artifact.kind == *kind)
+                .map(move |artifact| format!("{kind}:{}", artifact.path))
+        })
+        .collect::<Vec<_>>();
+    let missing = required_kinds
+        .iter()
+        .filter(|kind| !artifacts.iter().any(|artifact| artifact.kind == **kind))
+        .map(|kind| format!("missing {kind} artifact"))
+        .collect::<Vec<_>>();
+    let passed = target_passed && missing.is_empty();
+    let mut evidence = if paths.is_empty() { missing } else { paths };
+    if passed {
+        evidence.push(success_evidence.to_owned());
+    } else if !target_passed {
+        evidence.push("target validation has gate failures".to_owned());
+    }
+
+    ArtifactCapabilityCheck {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        passed,
+        evidence,
     }
 }
 
@@ -7991,6 +8144,23 @@ mod tests {
         assert_eq!(validation.gate_failures, Vec::<String>::new());
         assert_eq!(validation.targets[0].id, "target-a");
         assert!(validation.targets[0].passed);
+        let capability_ids = validation.targets[0]
+            .capability_checks
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            capability_ids,
+            vec!["stateFlowTx", "corpus", "schema", "replayDiff", "report",]
+        );
+        assert!(
+            validation.targets[0]
+                .capability_checks
+                .iter()
+                .all(|check| check.passed),
+            "expected every capability to pass, got {:?}",
+            validation.targets[0].capability_checks
+        );
     }
 
     #[test]
@@ -8155,9 +8325,8 @@ mod tests {
 
         assert!(!validation.passed);
         assert!(
-            validation
-                .gate_failures
-                .contains(&"unsupported artifact kind notes at target-a/notes.json".to_owned()),
+            validation.gate_failures.iter().any(|failure| failure
+                .contains("unsupported artifact kind notes at target-a/notes.json")),
             "expected unsupported artifact kind failure, got {:?}",
             validation.gate_failures
         );
@@ -8416,6 +8585,45 @@ mod tests {
                 )
             }),
             "expected missing schema replay probes key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_candidate_evidence_missing_tx_hash_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["opcodeCandidates"][0]["evidence"][0]
+            .as_object_mut()
+            .expect("schema candidate evidence should be an object")
+            .remove("txHash");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] evidence[0] missing tx hash evidence key",
+                )
+            }),
+            "expected missing schema candidate evidence tx hash key failure, got {:?}",
             validation.gate_failures
         );
     }

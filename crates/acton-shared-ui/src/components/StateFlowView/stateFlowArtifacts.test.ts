@@ -276,6 +276,27 @@ const artifactValidation = {
       replayCount: 2,
       passed: true,
       gateFailures: [],
+      capabilityChecks: [
+        {
+          id: "stateFlowTx",
+          label: "StateFlowTx evidence JSON",
+          passed: true,
+          evidence: [
+            "transaction:out/target-a/transaction-0.json",
+            "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
+          ],
+        },
+        {
+          id: "replayDiff",
+          label: "Replay diff",
+          passed: true,
+          evidence: [
+            "replay:out/target-a/replay.json",
+            "replay:out/target-a/replay-probe-query-id-32-64.json",
+            "mutations, replay observations, and observable diffs validated",
+          ],
+        },
+      ],
     },
   ],
 }
@@ -483,6 +504,23 @@ assert(
 assert(
   validationView.metrics.some(metric => metric.label === "Passed" && metric.value === "yes"),
   "expected artifact validation pass metric",
+)
+assert(
+  validationView.metrics.some(
+    metric => metric.label === "Capability Checks" && metric.value === "2",
+  ),
+  "expected artifact validation capability check metric",
+)
+assert(
+  validationView.sections
+    .find(section => section.title === "Capability Checks")
+    ?.rows.some(
+      row =>
+        row.label === "target-a StateFlowTx evidence JSON" &&
+        row.value === "passed" &&
+        row.detail?.includes("transaction:out/target-a/transaction-0.json") === true,
+    ) === true,
+  "expected artifact validation capability check rows",
 )
 assert(
   validationView.sections

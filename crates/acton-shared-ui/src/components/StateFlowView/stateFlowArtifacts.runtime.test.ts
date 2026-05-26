@@ -384,6 +384,27 @@ const artifactValidation = {
       replayCount: 2,
       passed: true,
       gateFailures: [],
+      capabilityChecks: [
+        {
+          id: "stateFlowTx",
+          label: "StateFlowTx evidence JSON",
+          passed: true,
+          evidence: [
+            "transaction:out/target-a/transaction-0.json",
+            "pre/post state, inbound body/op, VM trace, executor logs, c5/actions validated",
+          ],
+        },
+        {
+          id: "replayDiff",
+          label: "Replay diff",
+          passed: true,
+          evidence: [
+            "replay:out/target-a/replay.json",
+            "replay:out/target-a/replay-probe-query-id-32-64.json",
+            "mutations, replay observations, and observable diffs validated",
+          ],
+        },
+      ],
     },
     {
       id: "target-b",
@@ -713,9 +734,25 @@ assert(
   validationSummary.metrics.some(metric => metric.label === "Passed" && metric.value === "yes"),
   "expected artifact validation pass metric",
 )
+assert(
+  validationSummary.metrics.some(
+    metric => metric.label === "Capability Checks" && metric.value === "2",
+  ),
+  "expected artifact validation capability metric",
+)
 const validationTargetRows = sectionRows(validationSummary, "Targets")
 assert(validationTargetRows[0]?.label === "target-a", "expected first validation target")
 assert(validationTargetRows[1]?.value === "failed", "expected failed validation target")
+const validationCapabilityRows = sectionRows(validationSummary, "Capability Checks")
+assert(
+  validationCapabilityRows.some(
+    row =>
+      row.label === "target-a Replay diff" &&
+      row.value === "passed" &&
+      row.detail?.includes("replay:out/target-a/replay.json") === true,
+  ),
+  "expected validation capability rows",
+)
 const validationTargetGateRows = sectionRows(validationSummary, "Target Gate Failures")
 assert(validationTargetGateRows[0]?.label === "target-b", "expected failed validation target id")
 assert(
