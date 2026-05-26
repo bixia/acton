@@ -1426,6 +1426,13 @@ fn manifest_relative_path(path: &Path, artifact_dir: &Path) -> String {
     if path.is_absolute() != artifact_dir.is_absolute() {
         return path.display().to_string();
     }
+    if path.is_relative() && artifact_dir.is_relative() {
+        return path
+            .strip_prefix(artifact_dir)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+    }
     pathdiff::diff_paths(path, artifact_dir)
         .unwrap_or_else(|| path.to_path_buf())
         .display()
@@ -7697,6 +7704,14 @@ mod tests {
     }
 
     #[test]
+    fn manifest_relative_path_strips_relative_artifact_dir_prefix() {
+        let path =
+            super::manifest_relative_path(Path::new("out/target-a/corpus.json"), Path::new("out"));
+
+        assert_eq!(path, "target-a/corpus.json");
+    }
+
+    #[test]
     fn smoke_artifact_manifest_indexes_target_outputs() {
         let mut summary = sample_smoke_summary();
         summary.targets[0].replay_count = 2;
@@ -7738,10 +7753,7 @@ mod tests {
 
         assert_eq!(json["artifacts"][1]["path"], "target-a/corpus.json");
         assert_eq!(json["artifacts"][2]["path"], "target-a/schema.json");
-        assert_eq!(
-            json["artifacts"][3]["path"],
-            "target-a/transaction-0.json"
-        );
+        assert_eq!(json["artifacts"][3]["path"], "target-a/transaction-0.json");
         assert_eq!(json["artifacts"][4]["path"], "target-a/replay.json");
         assert_eq!(json["artifacts"][5]["path"], "target-a/report.md");
     }
