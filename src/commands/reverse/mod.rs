@@ -2355,6 +2355,7 @@ fn validate_schema_opcode_candidate_evidence_keys(
     validate_schema_replay_probe_evidence_keys(value, &prefix, gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outboundEffects", gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outActions", gate_failures);
+    validate_schema_unknown_field_evidence_keys(value, &prefix, gate_failures);
 }
 
 fn validate_schema_candidate_evidence_entry_keys(
@@ -2632,6 +2633,37 @@ fn validate_schema_effect_evidence_keys(
         if !seen_kinds.insert(kind.to_owned()) {
             gate_failures.push(format!(
                 "{effect_prefix} duplicates {effect_key} kind {kind}"
+            ));
+        }
+    }
+}
+
+fn validate_schema_unknown_field_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(fields) = value
+        .get("unknownFields")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    let mut seen_fields = HashSet::<String>::new();
+    for (index, field) in fields.iter().enumerate() {
+        let field_prefix = format!("{prefix} unknownFields[{index}]");
+        let Some(marker) = field.as_str() else {
+            gate_failures.push(format!("{field_prefix} must be a string"));
+            continue;
+        };
+        let marker = marker.trim();
+        if marker.is_empty() {
+            gate_failures.push(format!("{field_prefix} must be a non-empty string"));
+            continue;
+        }
+        if !seen_fields.insert(marker.to_owned()) {
+            gate_failures.push(format!(
+                "{field_prefix} duplicates unknownFields marker {marker}"
             ));
         }
     }
@@ -9435,6 +9467,52 @@ mod tests {
                 )
             }),
             "expected duplicate schema out-action kind failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_invalid_unknown_fields() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["unknownFields"] = serde_json::json!([
+            "message body field names require TL-B recovery",
+            "",
+            "message body field names require TL-B recovery"
+        ]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| failure.contains(
+                "schema artifact target-a/schema.json opcodeCandidates[0] unknownFields[1] must be a non-empty string",
+            )),
+            "expected blank schema unknown field marker failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] unknownFields[2] duplicates unknownFields marker message body field names require TL-B recovery",
+                )
+            }),
+            "expected duplicate schema unknown field marker failure, got {:?}",
             validation.gate_failures
         );
     }
