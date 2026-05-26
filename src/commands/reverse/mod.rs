@@ -2297,6 +2297,9 @@ fn validate_schema_replay_probe_evidence_keys(
                 gate_failures.push(format!("{probe_prefix} missing {label} evidence key"));
             }
         }
+        if let Some(mutation) = probe.get("mutation") {
+            validate_replay_mutation_value_evidence_keys(mutation, &probe_prefix, gate_failures);
+        }
     }
 }
 
@@ -2851,11 +2854,17 @@ fn validate_replay_mutation_evidence_keys(
     let Some(mutation) = value.get("mutation") else {
         return;
     };
+    let prefix = format!("replay artifact {}", artifact.path);
+    validate_replay_mutation_value_evidence_keys(mutation, &prefix, gate_failures);
+}
+
+fn validate_replay_mutation_value_evidence_keys(
+    mutation: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
     if !json_path_exists(mutation, &["type"]) {
-        gate_failures.push(format!(
-            "replay artifact {} mutation missing type evidence key",
-            artifact.path
-        ));
+        gate_failures.push(format!("{prefix} mutation missing type evidence key"));
         return;
     }
     let Some(mutation_type) = mutation.get("type").and_then(|value| value.as_str()) else {
@@ -2874,8 +2883,7 @@ fn validate_replay_mutation_evidence_keys(
     } {
         if !json_path_exists(mutation, path) {
             gate_failures.push(format!(
-                "replay artifact {} mutation {mutation_type} missing {label} evidence key",
-                artifact.path
+                "{prefix} mutation {mutation_type} missing {label} evidence key"
             ));
         }
     }
@@ -8328,6 +8336,54 @@ mod tests {
                 )
             }),
             "expected missing schema replay probes key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_replay_probe_mutation_missing_value_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["replayProbes"] = serde_json::json!([{
+            "fieldName": "query_id",
+            "bitOffset": 32,
+            "bits": 64,
+            "value": "42",
+            "mutation": {
+                "type": "setBodyUint",
+                "bitOffset": 32,
+                "bits": 64
+            },
+            "cliArg": "--set-body-uint 32:64:42",
+            "confidence": "high",
+            "evidence": ["tx-a"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] replayProbes[0] mutation setBodyUint missing value evidence key",
+                )
+            }),
+            "expected missing schema replay probe mutation value key failure, got {:?}",
             validation.gate_failures
         );
     }
