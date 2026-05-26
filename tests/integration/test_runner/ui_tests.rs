@@ -1,6 +1,7 @@
 use crate::common::{acton_exe, acton_path_env, assertion};
 use crate::support::TestOutputExt;
 use crate::support::project::{Project, ProjectBuilder};
+use crate::support::toncenter::append_custom_network;
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -104,6 +105,14 @@ impl Drop for UiTestProcess {
 }
 
 fn spawn_test_ui(project: &Project, port: u16) -> UiTestProcess {
+    spawn_test_ui_with_args(project, port, std::iter::empty::<&str>())
+}
+
+fn spawn_test_ui_with_args<I, S>(project: &Project, port: u16, args: I) -> UiTestProcess
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let mut command = Command::new(acton_exe());
     command
         .current_dir(project.path())
@@ -114,6 +123,7 @@ fn spawn_test_ui(project: &Project, port: u16) -> UiTestProcess {
         .env("NO_COLOR", "1")
         .env("ACTON_INTERNAL_SKIP_BROWSER", "1")
         .args(["test", "--ui", "--ui-port", &port.to_string()])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -423,6 +433,83 @@ fn ui_api_serves_default_state_flow_artifact_bundles() {
             .as_str()
             .unwrap_or("")
             .contains("stateFlowArtifactManifest")
+    );
+}
+
+#[test]
+fn fork_test_ui_api_serves_default_state_flow_artifact_bundles() {
+    let project = ProjectBuilder::new("f-ui-fork-state-flow-artifacts")
+        .contract("simple", SIMPLE_CONTRACT)
+        .test_file(
+            "ui",
+            r#"
+            import "../../lib/io"
+
+            get fun `test fork ui state-flow artifacts`() {
+                println(address("EQBvDB_H7FFBs0nF4ap_DBdcOrwY_rMIpNVVOR6SWYFHByMJ"));
+            }
+        "#,
+        )
+        .build();
+    append_custom_network(project.path(), "ui-fork", "http://127.0.0.1:9/api/v2");
+
+    let bundle_dir = project.path().join("target/stateflow-smoke/target-a");
+    fs::create_dir_all(&bundle_dir).expect("should create state-flow bundle directory");
+    fs::write(
+        project.path().join("target/stateflow-smoke/artifacts.json"),
+        r#"{"kind":"stateFlowArtifactManifest","summary":"summary.json","targetCount":1,"targets":[],"artifacts":[]}"#,
+    )
+    .expect("should write state-flow manifest");
+    fs::write(
+        project.path().join("target/stateflow-smoke/summary.json"),
+        r#"{"targetCount":1,"passed":true,"gateFailures":[],"targets":[]}"#,
+    )
+    .expect("should write state-flow summary");
+    fs::write(
+        bundle_dir.join("replay.json"),
+        r#"{"kind":"stateFlowReplayDiff"}"#,
+    )
+    .expect("should write state-flow replay artifact");
+
+    let port = unused_ui_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut process = spawn_test_ui_with_args(
+        &project,
+        port,
+        [
+            "--fork-net",
+            "custom:ui-fork",
+            "--fork-block-number",
+            "123456",
+        ],
+    );
+    wait_for_test_ui(&mut process, &base_url);
+
+    let response = reqwest::blocking::Client::new()
+        .get(format!("{base_url}/api/state-flow-artifacts"))
+        .send()
+        .expect("should fetch fork test state-flow artifacts response");
+    let status = response.status();
+    let payload: Value = response
+        .json()
+        .expect("fork test state-flow artifacts response should be JSON");
+    let sources = payload["sources"]
+        .as_array()
+        .expect("fork test state-flow artifacts response should include sources");
+    let source_names = sources
+        .iter()
+        .map(|source| source["name"].as_str().unwrap_or("<missing>"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["kind"], "stateFlowArtifactBundle");
+    assert_eq!(
+        source_names,
+        vec![
+            "target/stateflow-smoke/artifacts.json",
+            "target/stateflow-smoke/summary.json",
+            "target/stateflow-smoke/target-a/replay.json",
+        ]
     );
 }
 
