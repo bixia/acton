@@ -2121,6 +2121,7 @@ fn validate_schema_opcode_candidate_evidence_keys(
     }
     validate_schema_inbound_body_evidence_keys(value, &prefix, gate_failures);
     validate_schema_storage_evidence_keys(value, &prefix, gate_failures);
+    validate_schema_state_transition_evidence_keys(value, &prefix, gate_failures);
     validate_schema_replay_probe_evidence_keys(value, &prefix, gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outboundEffects", gate_failures);
     validate_schema_effect_evidence_keys(value, &prefix, "outActions", gate_failures);
@@ -2145,6 +2146,24 @@ fn validate_schema_inbound_body_evidence_keys(
         if !json_path_exists(inbound_body, path) {
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
         }
+    }
+    validate_schema_body_field_candidate_evidence_keys(inbound_body, prefix, gate_failures);
+}
+
+fn validate_schema_body_field_candidate_evidence_keys(
+    inbound_body: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(fields) = inbound_body
+        .get("fieldCandidates")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for (index, field) in fields.iter().enumerate() {
+        let field_prefix = format!("{prefix} inboundBody.fieldCandidates[{index}]");
+        validate_schema_field_candidate_evidence_keys(field, &field_prefix, gate_failures);
     }
 }
 
@@ -2175,6 +2194,74 @@ fn validate_schema_storage_evidence_keys(
     ] {
         if !json_path_exists(storage, path) {
             gate_failures.push(format!("{prefix} missing {label} evidence key"));
+        }
+    }
+    validate_schema_storage_field_candidate_evidence_keys(storage, prefix, gate_failures);
+}
+
+fn validate_schema_storage_field_candidate_evidence_keys(
+    storage: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(fields) = storage.get("fields").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, field) in fields.iter().enumerate() {
+        let field_prefix = format!("{prefix} storage.fields[{index}]");
+        for (label, path) in [("cell path", &["cellPath"][..])] {
+            if !json_path_exists(field, path) {
+                gate_failures.push(format!("{field_prefix} missing {label} evidence key"));
+            }
+        }
+        validate_schema_field_candidate_evidence_keys(field, &field_prefix, gate_failures);
+    }
+}
+
+fn validate_schema_field_candidate_evidence_keys(
+    field: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    for (label, path) in [
+        ("name", &["name"][..]),
+        ("bit offset", &["bitOffset"][..]),
+        ("min bits", &["minBits"][..]),
+        ("max bits", &["maxBits"][..]),
+        ("min refs", &["minRefs"][..]),
+        ("max refs", &["maxRefs"][..]),
+        ("kind", &["kind"][..]),
+        ("present count", &["presentCount"][..]),
+        ("value samples", &["valueSamples"][..]),
+        ("confidence", &["confidence"][..]),
+    ] {
+        if !json_path_exists(field, path) {
+            gate_failures.push(format!("{prefix} missing {label} evidence key"));
+        }
+    }
+}
+
+fn validate_schema_state_transition_evidence_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(transitions) = value
+        .get("stateTransitions")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for (index, transition) in transitions.iter().enumerate() {
+        let transition_prefix = format!("{prefix} stateTransitions[{index}]");
+        for (label, path) in [
+            ("from status", &["fromStatus"][..]),
+            ("to status", &["toStatus"][..]),
+            ("count", &["count"][..]),
+        ] {
+            if !json_path_exists(transition, path) {
+                gate_failures.push(format!("{transition_prefix} missing {label} evidence key"));
+            }
         }
     }
 }
@@ -7643,6 +7730,23 @@ mod tests {
     }
 
     #[test]
+    fn smoke_artifact_manifest_keeps_preportable_relative_paths() {
+        let summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+
+        let manifest = super::SmokeArtifactManifest::from_summary(&summary, Path::new("out"));
+        let json = serde_json::to_value(&manifest).expect("manifest should serialize");
+
+        assert_eq!(json["artifacts"][1]["path"], "target-a/corpus.json");
+        assert_eq!(json["artifacts"][2]["path"], "target-a/schema.json");
+        assert_eq!(
+            json["artifacts"][3]["path"],
+            "target-a/transaction-0.json"
+        );
+        assert_eq!(json["artifacts"][4]["path"], "target-a/replay.json");
+        assert_eq!(json["artifacts"][5]["path"], "target-a/report.md");
+    }
+
+    #[test]
     fn smoke_artifact_manifest_is_written_before_gate_error() {
         let mut summary = sample_smoke_summary();
         summary.targets[0].replay_count = 0;
@@ -8212,6 +8316,135 @@ mod tests {
                 )
             }),
             "expected missing schema replay probes key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_body_field_missing_confidence_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"] = serde_json::json!([{
+            "name": "query_id",
+            "bitOffset": 32,
+            "minBits": 64,
+            "maxBits": 64,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint64",
+            "presentCount": 2,
+            "valueSamples": ["0x7"]
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] inboundBody.fieldCandidates[0] missing confidence evidence key",
+                )
+            }),
+            "expected missing schema body field confidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_storage_field_missing_value_samples_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["storage"]["fields"] = serde_json::json!([{
+            "name": "data_word_0",
+            "cellPath": "data",
+            "bitOffset": 0,
+            "minBits": 32,
+            "maxBits": 32,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint32",
+            "presentCount": 2,
+            "confidence": "medium"
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] storage.fields[0] missing value samples evidence key",
+                )
+            }),
+            "expected missing schema storage field value samples key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_state_transition_missing_count_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema should exist"))
+                .expect("schema should parse");
+        schema["opcodeCandidates"][0]["stateTransitions"] = serde_json::json!([{
+            "fromStatus": "none",
+            "toStatus": "active"
+        }]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json opcodeCandidates[0] stateTransitions[0] missing count evidence key",
+                )
+            }),
+            "expected missing schema state transition count key failure, got {:?}",
             validation.gate_failures
         );
     }
