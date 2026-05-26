@@ -15,6 +15,7 @@ use axum::{
 use include_dir::{Dir, include_dir};
 use log::warn;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 #[cfg(debug_assertions)]
@@ -29,6 +30,10 @@ static OPEN_CHROME_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/open_chrome.applescript"
 ));
+
+const STATE_FLOW_ARTIFACT_BUNDLE_DIRS: &[&str] =
+    &["target/stateflow-smoke", "target/stateflow-analysis"];
+const STATE_FLOW_ARTIFACT_SOURCE_KIND: &str = "stateFlowArtifactBundle";
 
 pub(crate) struct UiServerState {
     pub reports: Arc<Vec<TestReport>>,
@@ -78,6 +83,18 @@ struct UiTestReport {
 #[derive(Serialize)]
 struct UiApiError {
     error: String,
+}
+
+#[derive(Serialize)]
+struct UiStateFlowArtifactBundleResponse {
+    kind: &'static str,
+    sources: Vec<UiStateFlowArtifactSource>,
+}
+
+#[derive(Serialize)]
+struct UiStateFlowArtifactSource {
+    name: String,
+    raw: String,
 }
 
 impl From<&TestReport> for UiTestReport {
@@ -197,6 +214,10 @@ fn build_ui_api_router(state: Arc<UiServerState>) -> Router {
         .route("/api/trace/{name}", get(handle_api_trace))
         .route("/api/contract/{name}", get(handle_api_contract))
         .route("/api/file", get(handle_api_file))
+        .route(
+            "/api/state-flow-artifacts",
+            get(handle_api_state_flow_artifacts),
+        )
         .route("/api/coverage.lcov", get(handle_api_coverage_lcov))
         .route("/api/config", get(handle_api_config))
         .route("/api/health", get(handle_api_health))
@@ -376,6 +397,26 @@ async fn handle_api_file(
     }
 }
 
+async fn handle_api_state_flow_artifacts(
+    State(state): State<Arc<UiServerState>>,
+) -> impl IntoResponse {
+    match collect_state_flow_artifact_sources(&state.project_root_path) {
+        Ok(sources) if sources.is_empty() => StatusCode::NO_CONTENT.into_response(),
+        Ok(sources) => Json(UiStateFlowArtifactBundleResponse {
+            kind: STATE_FLOW_ARTIFACT_SOURCE_KIND,
+            sources,
+        })
+        .into_response(),
+        Err(err) => {
+            warn!("Test UI failed to collect state-flow artifacts: {err}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("State-flow artifacts could not be read: {err}"),
+            )
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ConfigResponse {
     project_root: String,
@@ -492,6 +533,68 @@ fn resolve_path_within_root(root: &Path, requested: &Path) -> Option<PathBuf> {
     };
     let candidate = dunce::canonicalize(candidate).ok()?;
     candidate.starts_with(root).then_some(candidate)
+}
+
+fn collect_state_flow_artifact_sources(
+    project_root: &Path,
+) -> anyhow::Result<Vec<UiStateFlowArtifactSource>> {
+    let mut sources = Vec::new();
+    for relative_dir in STATE_FLOW_ARTIFACT_BUNDLE_DIRS {
+        let relative_path = Path::new(relative_dir);
+        let Some(bundle_dir) = resolve_path_within_root(project_root, relative_path) else {
+            continue;
+        };
+        if !bundle_dir.join("artifacts.json").is_file() {
+            continue;
+        }
+        collect_state_flow_artifact_sources_from_dir(project_root, &bundle_dir, &mut sources)?;
+    }
+    sources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(sources)
+}
+
+fn collect_state_flow_artifact_sources_from_dir(
+    project_root: &Path,
+    dir: &Path,
+    sources: &mut Vec<UiStateFlowArtifactSource>,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to list {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_state_flow_artifact_sources_from_dir(project_root, &path, sources)?;
+            continue;
+        }
+        if !file_type.is_file() || !is_state_flow_artifact_source_file(&path) {
+            continue;
+        }
+
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let name = path
+            .strip_prefix(project_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        sources.push(UiStateFlowArtifactSource { name, raw });
+    }
+
+    Ok(())
+}
+
+fn is_state_flow_artifact_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("json" | "md" | "txt")
+    )
 }
 
 fn api_error(status: StatusCode, error: impl Into<String>) -> Response {

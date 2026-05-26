@@ -74,6 +74,7 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true)
   const [coverageLcov, setCoverageLcov] = useState<string | undefined>()
   const [coverageLoaded, setCoverageLoaded] = useState(false)
+  const [stateFlowInitialRaw, setStateFlowInitialRaw] = useState<string | undefined>()
   const [connectionLost, setConnectionLost] = useState(false)
   const [activeView, setActiveView] = useState<MainView>(() => {
     const saved = localStorage.getItem("activeMainView")
@@ -195,6 +196,7 @@ export const App: React.FC = () => {
     const coverageController = new AbortController()
     const reportsController = new AbortController()
     const configController = new AbortController()
+    const stateFlowController = new AbortController()
 
     void fetch("/api/config", {signal: configController.signal})
       .then(async res => (await res.json()) as {project_root: string})
@@ -254,10 +256,36 @@ export const App: React.FC = () => {
         setCoverageLoaded(true)
       })
 
+    void fetch("/api/state-flow-artifacts", {signal: stateFlowController.signal})
+      .then(async response => {
+        if (response.status === 204) {
+          markRunnerConnected()
+          setStateFlowInitialRaw(undefined)
+          return
+        }
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch state-flow artifacts: ${response.status}`)
+        }
+
+        const raw = await response.text()
+        markRunnerConnected()
+        setStateFlowInitialRaw(raw)
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") {
+          return
+        }
+
+        console.error("Failed to fetch state-flow artifacts", error)
+        setStateFlowInitialRaw(undefined)
+      })
+
     return () => {
       coverageController.abort()
       reportsController.abort()
       configController.abort()
+      stateFlowController.abort()
     }
   }, [markRunnerConnected])
 
@@ -421,7 +449,10 @@ export const App: React.FC = () => {
         <div className={styles.mainPanel}>
           {activeView === "stateFlow" ? (
             <div className={styles.stateFlowPanel}>
-              <StateFlowArtifactWorkbench storageKey="acton-test-ui-state-flow-artifact" />
+              <StateFlowArtifactWorkbench
+                initialRaw={stateFlowInitialRaw}
+                storageKey="acton-test-ui-state-flow-artifact"
+              />
             </div>
           ) : activeView === "coverage" && coverageLcov !== undefined ? (
             <Coverage lcov={coverageLcov} projectRoot={projectRoot} />

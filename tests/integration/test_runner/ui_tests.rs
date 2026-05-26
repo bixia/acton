@@ -363,6 +363,70 @@ fn ui_api_returns_no_content_for_missing_or_empty_trace_file() {
 }
 
 #[test]
+fn ui_api_serves_default_state_flow_artifact_bundles() {
+    let project = ProjectBuilder::new("f-ui-state-flow-artifacts")
+        .contract("simple", SIMPLE_CONTRACT)
+        .test_file("ui", &ui_deploy_test_source("test-ui-state-flow-artifacts"))
+        .build();
+
+    let bundle_dir = project.path().join("target/stateflow-smoke/target-a");
+    fs::create_dir_all(&bundle_dir).expect("should create state-flow bundle directory");
+    fs::write(
+        project.path().join("target/stateflow-smoke/artifacts.json"),
+        r#"{"kind":"stateFlowArtifactManifest","summary":"summary.json","targetCount":1,"targets":[],"artifacts":[]}"#,
+    )
+    .expect("should write state-flow manifest");
+    fs::write(
+        project.path().join("target/stateflow-smoke/summary.json"),
+        r#"{"targetCount":1,"passed":true,"gateFailures":[],"targets":[]}"#,
+    )
+    .expect("should write state-flow summary");
+    fs::write(
+        bundle_dir.join("report.md"),
+        "# TON State Flow Reverse Report\n",
+    )
+    .expect("should write state-flow report");
+
+    let port = unused_ui_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut process = spawn_test_ui(&project, port);
+    wait_for_test_ui(&mut process, &base_url);
+
+    let response = reqwest::blocking::Client::new()
+        .get(format!("{base_url}/api/state-flow-artifacts"))
+        .send()
+        .expect("should fetch state-flow artifacts response");
+    let status = response.status();
+    let payload: Value = response
+        .json()
+        .expect("state-flow artifacts response should be JSON");
+    let sources = payload["sources"]
+        .as_array()
+        .expect("state-flow artifacts response should include sources");
+    let source_names = sources
+        .iter()
+        .map(|source| source["name"].as_str().unwrap_or("<missing>"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["kind"], "stateFlowArtifactBundle");
+    assert_eq!(
+        source_names,
+        vec![
+            "target/stateflow-smoke/artifacts.json",
+            "target/stateflow-smoke/summary.json",
+            "target/stateflow-smoke/target-a/report.md",
+        ]
+    );
+    assert!(
+        sources[0]["raw"]
+            .as_str()
+            .unwrap_or("")
+            .contains("stateFlowArtifactManifest")
+    );
+}
+
+#[test]
 fn ui_port_config_is_used_when_cli_port_is_absent() {
     let project = ProjectBuilder::new("f-ui-config-port")
         .contract("simple", SIMPLE_CONTRACT)

@@ -27,6 +27,7 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const directoryInputRef = React.useRef<HTMLInputElement>(null)
+  const loadedInitialRawRef = React.useRef(initialRaw)
   const [raw, setRaw] = React.useState(() => initialRaw ?? readStoredArtifact(storageKey))
   const [artifact, setArtifact] = React.useState<StateFlowArtifact | undefined>(() =>
     parseInitialArtifact(initialRaw ?? readStoredArtifact(storageKey)),
@@ -49,6 +50,15 @@ export const StateFlowArtifactWorkbench: React.FC<StateFlowArtifactWorkbenchProp
     },
     [storageKey],
   )
+
+  React.useEffect(() => {
+    if (initialRaw === undefined || loadedInitialRawRef.current === initialRaw) {
+      return
+    }
+    loadedInitialRawRef.current = initialRaw
+    setRaw(initialRaw)
+    loadArtifact(initialRaw)
+  }, [initialRaw, loadArtifact])
 
   const handleSubmit = React.useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
