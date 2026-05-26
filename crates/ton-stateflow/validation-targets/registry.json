@@ -726,6 +726,30 @@
       "id": "tonco-symbol-u-dollar-dt-not-canonical",
       "address": "0:817d82fa2d52dad480b3ccd0b73f45e8a73019b1f241d99b6e3489b5e0e0c90e",
       "reason": "Confusable symbol resembles USDt but token master differs from canonical USDt."
+    },
+    {
+      "id": "dedust-fake-usdt-pool",
+      "address": "EQDgu9-CMXkFsEFa7Le0iuJjvXjJ2SutorPv79z46KbkDfax",
+      "fakeMaster": "EQDmic8hHAp0rxnMwINdwCwAv3tIY0mMwDA9GDkgdcUEco8Z",
+      "reason": "Lookalike token reports symbol USDt/name Tether USD but master differs from canonical USDt."
+    },
+    {
+      "id": "stonfi-fake-usdt-pool",
+      "address": "EQA2LnU_KVNn6_qj6voXGzQXvHYqtrbUvLkKHV8t3TZMYETC",
+      "fakeMaster": "EQAve1yYF2joVZlaqta9Q1uMM0jK-LyzoA6ISTXgKnKM64Bq",
+      "reason": "Lookalike token reports symbol USDT/name Tether USD but master differs from canonical USDt."
+    },
+    {
+      "id": "swapcoffee-fake-usdtc-pool",
+      "address": "EQAPmwmYtvKQNFJA33nGLd7eZhZLIEBRWA-XZc_W-qFHoXUC",
+      "fakeMaster": "EQCgSc4ueKHWidjkTbYNKUbtaM0ptu_UAjnOQ7FObsFGtZYW",
+      "reason": "Lookalike token reports symbol USDT.c/name TetherUSD but master differs from canonical USDt."
+    },
+    {
+      "id": "tonco-fake-usdt-pool-dune",
+      "address": "EQDHYUzj66ynpkvjqXT_TPJ_ep2H5MiBaVg4bfZftA-8HiHR",
+      "fakeMaster": "EQD5J9kxNPZNsB8JOxLfQrpUtOGWhXbkpT3bq86SII5lEm2F",
+      "reason": "Lookalike token reports symbol USDT/name Tether USD but master differs from canonical USDt."
     }
   ]
 }

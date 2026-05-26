@@ -11650,6 +11650,7 @@ fn select_corpus_transaction_ref<'a>(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashSet,
         fs,
         path::{Path, PathBuf},
     };
@@ -11736,6 +11737,71 @@ mod tests {
             incomplete_targets.is_empty(),
             "high-confidence validation targets should be source-linked, annotated, and replayable: {:?}",
             incomplete_targets
+        );
+    }
+
+    #[test]
+    fn validation_registry_covers_smoke_targets_and_structured_fake_usdt_cases() {
+        let registry: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../crates/ton-stateflow/validation-targets/registry.json"
+        ))
+        .expect("validation registry should parse");
+        let smoke = super::SmokeManifest::from_json(include_str!(
+            "../../../crates/ton-stateflow/validation-targets/smoke-targets.high-confidence.json"
+        ))
+        .expect("high-confidence validation targets should deserialize");
+        let candidate_ids = registry["candidates"]
+            .as_array()
+            .expect("registry candidates should be an array")
+            .iter()
+            .filter_map(|candidate| candidate["id"].as_str())
+            .collect::<HashSet<_>>();
+
+        let missing_smoke_targets = smoke
+            .targets
+            .iter()
+            .filter(|target| !candidate_ids.contains(target.id.as_str()))
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing_smoke_targets.is_empty(),
+            "high-confidence smoke targets should be present in validation registry: {:?}",
+            missing_smoke_targets
+        );
+
+        let canonical_usdt = registry["canonicalAssets"]["usdtMaster"]
+            .as_str()
+            .expect("registry should record canonical USDt master");
+        let fake_usdt_cases = registry["negativeCases"]
+            .as_array()
+            .expect("registry negative cases should be an array")
+            .iter()
+            .filter(|case| {
+                case["id"]
+                    .as_str()
+                    .is_some_and(|id| id.contains("fake-usdt"))
+            })
+            .collect::<Vec<_>>();
+        let unstructured_fake_usdt_cases = fake_usdt_cases
+            .iter()
+            .copied()
+            .filter(|case| {
+                case["fakeMaster"]
+                    .as_str()
+                    .is_none_or(|master| master.is_empty() || master == canonical_usdt)
+            })
+            .filter_map(|case| case["id"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            fake_usdt_cases.len() >= 4,
+            "registry should include cross-protocol fake USDt negative cases"
+        );
+        assert!(
+            unstructured_fake_usdt_cases.is_empty(),
+            "fake USDt negative cases should record a non-canonical fakeMaster: {:?}",
+            unstructured_fake_usdt_cases
         );
     }
 

@@ -77,6 +77,13 @@ liquid-staking accounting, EVAA for lending and liquidation paths, Storm Trade
 for derivatives/perps, Torch/tgUSD for yield-bearing stablecoin flows, and FIVA
 for yield-tokenization/composability stress cases.
 
+## Address form
+
+Acton accepts raw and friendly TON addresses through the retrace address parser,
+but checked-in smoke targets should use mainnet bounceable URL-safe `EQ...`
+addresses. Keep raw `0:<hash>` forms in the registry when protocol indexers
+return raw addresses, especially for TONCO.
+
 ## Source policy
 
 Prefer official docs and protocol APIs first, then protocol indexers, then
