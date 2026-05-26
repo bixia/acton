@@ -5258,6 +5258,17 @@ fn validate_replay_error_evidence_keys(
     if observation
         .get("accepted")
         .and_then(|value| value.as_bool())
+        == Some(true)
+        && !error.is_null()
+    {
+        gate_failures.push(format!(
+            "{observation_prefix} accepted observation must not include error evidence"
+        ));
+        return;
+    }
+    if observation
+        .get("accepted")
+        .and_then(|value| value.as_bool())
         == Some(false)
         && !matches!(error, serde_json::Value::Object(_))
     {
@@ -16834,6 +16845,46 @@ mod tests {
                 )
             }),
             "expected empty replay executor trace failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_accepted_replay_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let replay_path = temp_dir.path().join("target-a/replay.json");
+        let mut replay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&replay_path).expect("replay artifact should be readable"),
+        )
+        .expect("replay artifact should parse");
+        replay["replay"]["error"] = serde_json::json!({
+            "message": "unexpected success error",
+            "externalNotAccepted": false,
+            "vmExitCode": null
+        });
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/replay.json",
+            &replay.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "replay artifact target-a/replay.json replay accepted observation must not include error evidence",
+                )
+            }),
+            "expected accepted replay error failure, got {:?}",
             validation.gate_failures
         );
     }
