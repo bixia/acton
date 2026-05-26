@@ -19,6 +19,7 @@
       "address": "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
       "sourceUrl": "https://tonviewer.com/EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr",
       "collectLimit": 2,
+      "retraceTxHash": "bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566",
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,

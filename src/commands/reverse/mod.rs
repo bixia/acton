@@ -755,7 +755,7 @@ fn run_state_flow_targets(
             .with_context(|| format!("failed to create {}", target_dir.display()))?;
 
         let corpus = rt.block_on(ton_stateflow::collect_state_flow_corpus(
-            network,
+            network.clone(),
             &target.address,
             target.collect_limit,
             HashMap::new(),
@@ -825,6 +825,24 @@ fn run_state_flow_targets(
             }
         }
 
+        let retrace_path = if let Some(hash) = &target.retrace_tx_hash {
+            let retrace = rt.block_on(ton_stateflow::retrace_with_state_flow(
+                network.clone(),
+                hash,
+                HashMap::new(),
+            ))?;
+            let path = target_dir.join("retrace.json");
+            write_json(
+                &retrace,
+                Some(path.clone()),
+                pretty,
+                "State-flow smoke retrace JSON",
+            )?;
+            Some(path)
+        } else {
+            None
+        };
+
         let report = ton_stateflow::render_state_flow_report(&corpus, &schema, &replays);
         let report_path = target_dir.join("report.md");
         write_text(
@@ -852,6 +870,7 @@ fn run_state_flow_targets(
             corpus: corpus_path.display().to_string(),
             schema: schema_path.display().to_string(),
             transaction: transaction_path.map(|path| path.display().to_string()),
+            retrace: retrace_path.map(|path| path.display().to_string()),
             replay: replay_path.map(|path| path.display().to_string()),
             replays: replay_paths
                 .iter()
@@ -1074,6 +1093,8 @@ struct SmokeTarget {
     replay_tx_index: Option<usize>,
     #[serde(default)]
     replay_tx_hash: Option<String>,
+    #[serde(default)]
+    retrace_tx_hash: Option<String>,
     replay_mutation: Option<SmokeReplayMutation>,
 }
 
@@ -1100,6 +1121,7 @@ fn analysis_target_from_args(
         collect_limit: limit,
         replay_tx_index,
         replay_tx_hash,
+        retrace_tx_hash: None,
         replay_mutation: Some(SmokeReplayMutation::from_args(
             flip_body_bit,
             body_boc64,
@@ -1338,6 +1360,7 @@ struct SmokeTargetRunSummary {
     corpus: String,
     schema: String,
     transaction: Option<String>,
+    retrace: Option<String>,
     replay: Option<String>,
     replays: Vec<String>,
     report: String,
@@ -1382,6 +1405,13 @@ impl SmokeArtifactManifest {
                     Some(target.id.clone()),
                 ));
             }
+            if let Some(retrace) = &target.retrace {
+                artifacts.push(SmokeArtifactManifestEntry::new(
+                    "retrace",
+                    manifest_relative_path(Path::new(retrace), artifact_dir),
+                    Some(target.id.clone()),
+                ));
+            }
             for replay in replay_artifact_paths(target) {
                 artifacts.push(SmokeArtifactManifestEntry::new(
                     "replay",
@@ -1423,6 +1453,7 @@ fn smoke_target_absolute_path_count(target: &SmokeTargetRunSummary) -> usize {
         Some(target.corpus.as_str()),
         Some(target.schema.as_str()),
         target.transaction.as_deref(),
+        target.retrace.as_deref(),
         target.replay.as_deref(),
         Some(target.report.as_str()),
     ]
@@ -1926,6 +1957,7 @@ fn validate_manifest_artifact_content(
         "corpus" => validate_state_flow_corpus_artifact(path, artifact, gate_failures),
         "schema" => validate_state_flow_schema_artifact(path, artifact, gate_failures),
         "transaction" => validate_state_flow_tx_artifact(path, artifact, gate_failures),
+        "retrace" => validate_state_flow_tx_artifact(path, artifact, gate_failures),
         "replay" => validate_state_flow_replay_artifact(path, artifact, gate_failures),
         "validation" => {
             validate_json_artifact::<ArtifactManifestValidation>(path, artifact, gate_failures)
@@ -2801,7 +2833,7 @@ fn validate_state_flow_tx_evidence_keys(
 ) {
     validate_state_flow_tx_evidence_keys_with_prefix(
         value,
-        &format!("transaction artifact {}", artifact.path),
+        &format!("{} artifact {}", artifact.kind, artifact.path),
         gate_failures,
     );
 }
@@ -3743,6 +3775,13 @@ fn validate_manifest_target_matches_summary(
         artifacts,
         "transaction",
         target.transaction.as_deref(),
+        gate_failures,
+    );
+    validate_summary_optional_artifact_path(
+        manifest_path,
+        artifacts,
+        "retrace",
+        target.retrace.as_deref(),
         gate_failures,
     );
     validate_summary_replay_artifact_paths(manifest_path, artifacts, target, gate_failures);
@@ -7968,6 +8007,10 @@ impl SmokeTargetRunSummary {
             .transaction
             .as_deref()
             .map(|path| manifest_relative_path(Path::new(path), artifact_dir));
+        self.retrace = self
+            .retrace
+            .as_deref()
+            .map(|path| manifest_relative_path(Path::new(path), artifact_dir));
         self.replay = self
             .replay
             .as_deref()
@@ -8081,6 +8124,8 @@ mod tests {
             target.id == "tonviewer-requested-target"
                 && target.network == "mainnet"
                 && target.address == "EQAgvOlWk7C0Pz3YgSaX-MA7UDDhE9n6eQgQRwJahOBm4VKr"
+                && target.retrace_tx_hash.as_deref()
+                    == Some("bd4352bc4c89b3a5ea8af3667baf67b6a73d3b4873b1ef604c746831b3a14566")
                 && target
                     .replay_mutation
                     .as_ref()
@@ -8276,6 +8321,30 @@ mod tests {
                 {"kind": "report", "path": "target-a/report.md", "targetId": "target-a"},
                 {"kind": "validation", "path": "validation.json", "targetId": null}
             ])
+        );
+    }
+
+    #[test]
+    fn smoke_artifact_manifest_indexes_retrace_output() {
+        let mut summary = sample_smoke_summary();
+        summary.targets[0].retrace = Some("out/target-a/retrace.json".to_owned());
+
+        let manifest = super::SmokeArtifactManifest::from_summary(&summary, Path::new("out"));
+        let json = serde_json::to_value(&manifest).expect("manifest should serialize");
+
+        assert!(
+            json["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|artifact| {
+                    artifact
+                        == &serde_json::json!({
+                            "kind": "retrace",
+                            "path": "target-a/retrace.json",
+                            "targetId": "target-a"
+                        })
+                })
         );
     }
 
@@ -13659,6 +13728,7 @@ mod tests {
             corpus: "out/target-a/corpus.json".to_owned(),
             schema: "out/target-a/schema.json".to_owned(),
             transaction: Some("out/target-a/transaction-0.json".to_owned()),
+            retrace: None,
             replay: Some("out/target-a/replay.json".to_owned()),
             replays: vec!["out/target-a/replay.json".to_owned()],
             report: "out/target-a/report.md".to_owned(),
@@ -13672,6 +13742,10 @@ mod tests {
         summary.targets[0].schema = target_dir.join("schema.json").display().to_string();
         summary.targets[0].transaction =
             Some(target_dir.join("transaction-0.json").display().to_string());
+        summary.targets[0].retrace = summary.targets[0]
+            .retrace
+            .as_ref()
+            .map(|_| target_dir.join("retrace.json").display().to_string());
         summary.targets[0].replay = Some(target_dir.join("replay.json").display().to_string());
         summary.targets[0].replays = vec![target_dir.join("replay.json").display().to_string()];
         summary.targets[0].report = target_dir.join("report.md").display().to_string();
