@@ -5278,6 +5278,7 @@ dependencies = [
  "ton-executor",
  "ton-indexer",
  "ton-networks",
+ "ton-stateflow",
  "tower-http",
  "tower_governor",
  "tracing",
@@ -5370,6 +5371,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tempfile",
  "ton-retrace",
  "tycho-types",
 ]

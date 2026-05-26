@@ -2,6 +2,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
 use ton_retrace::{
     AccountTxRef, ComputeInfo, Network, ReplayTransactionArgs, ReplayTransactionResult,
     ReplayTransactionSuccess, TraceResult,
@@ -13,6 +15,36 @@ use tycho_types::models::{
 };
 
 pub const STATE_FLOW_SCHEMA_VERSION: u32 = 1;
+pub const STATE_FLOW_ARTIFACT_SOURCE_KIND: &str = "stateFlowArtifactBundle";
+pub const DEFAULT_STATE_FLOW_ARTIFACT_BUNDLE_DIRS: &[&str] =
+    &["target/stateflow-smoke", "target/stateflow-analysis"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateFlowArtifactBundle {
+    pub kind: String,
+    pub sources: Vec<StateFlowArtifactSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateFlowArtifactSource {
+    pub name: String,
+    pub raw: String,
+}
+
+impl StateFlowArtifactBundle {
+    pub fn new(sources: Vec<StateFlowArtifactSource>) -> Self {
+        Self {
+            kind: STATE_FLOW_ARTIFACT_SOURCE_KIND.to_owned(),
+            sources,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -755,6 +787,35 @@ pub async fn collect_state_flow_corpus(
         transactions,
         failures,
     })
+}
+
+pub fn collect_state_flow_artifact_bundle(
+    project_root: impl AsRef<Path>,
+) -> anyhow::Result<StateFlowArtifactBundle> {
+    Ok(StateFlowArtifactBundle::new(
+        collect_state_flow_artifact_sources(project_root)?,
+    ))
+}
+
+pub fn collect_state_flow_artifact_sources(
+    project_root: impl AsRef<Path>,
+) -> anyhow::Result<Vec<StateFlowArtifactSource>> {
+    let project_root = fs::canonicalize(project_root.as_ref())
+        .with_context(|| format!("failed to resolve {}", project_root.as_ref().display()))?;
+    let mut sources = Vec::new();
+    for relative_dir in DEFAULT_STATE_FLOW_ARTIFACT_BUNDLE_DIRS {
+        let Some(bundle_dir) =
+            resolve_existing_path_within_root(&project_root, Path::new(relative_dir))
+        else {
+            continue;
+        };
+        if !bundle_dir.join("artifacts.json").is_file() {
+            continue;
+        }
+        collect_state_flow_artifact_sources_from_dir(&project_root, &bundle_dir, &mut sources)?;
+    }
+    sources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(sources)
 }
 
 pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaReport {
@@ -4316,6 +4377,60 @@ fn format_int_addr(addr: &IntAddr) -> String {
     }
 }
 
+fn resolve_existing_path_within_root(root: &Path, requested: &Path) -> Option<PathBuf> {
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let candidate = fs::canonicalize(candidate).ok()?;
+    candidate.starts_with(root).then_some(candidate)
+}
+
+fn collect_state_flow_artifact_sources_from_dir(
+    project_root: &Path,
+    dir: &Path,
+    sources: &mut Vec<StateFlowArtifactSource>,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to list {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_state_flow_artifact_sources_from_dir(project_root, &path, sources)?;
+            continue;
+        }
+        if !file_type.is_file() || !is_state_flow_artifact_source_file(&path) {
+            continue;
+        }
+
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let name = path
+            .strip_prefix(project_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        sources.push(StateFlowArtifactSource { name, raw });
+    }
+
+    Ok(())
+}
+
+fn is_state_flow_artifact_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("json" | "md" | "txt")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4323,9 +4438,59 @@ mod tests {
         ReplayObservation, ReplaySummary, StateFlowCompute, StateFlowCorpus, StateFlowReplayDiff,
         StateFlowTx, StateTransition, TransactionIdentity,
     };
+    use std::fs;
     use tycho_types::boc::Boc;
     use tycho_types::cell::CellBuilder;
     use tycho_types::models::{IntMsgInfo, MsgInfo, OwnedMessage};
+
+    #[test]
+    fn collect_state_flow_artifact_bundle_reads_default_source_files() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let project_root = temp.path();
+        let smoke_dir = project_root.join("target/stateflow-smoke/target-a");
+        let analysis_dir = project_root.join("target/stateflow-analysis");
+        fs::create_dir_all(&smoke_dir).expect("smoke dir should be created");
+        fs::create_dir_all(&analysis_dir).expect("analysis dir should be created");
+        fs::write(
+            project_root.join("target/stateflow-smoke/artifacts.json"),
+            r#"{"kind":"stateFlowArtifactManifest","targetCount":1}"#,
+        )
+        .expect("smoke manifest should be written");
+        fs::write(
+            project_root.join("target/stateflow-smoke/summary.json"),
+            r#"{"passed":true}"#,
+        )
+        .expect("smoke summary should be written");
+        fs::write(smoke_dir.join("report.md"), "# report\n").expect("report should be written");
+        fs::write(
+            project_root.join("target/stateflow-smoke/ignored.bin"),
+            "ignored",
+        )
+        .expect("ignored source should be written");
+        fs::write(analysis_dir.join("summary.json"), r#"{"ignored":true}"#)
+            .expect("analysis summary should be written");
+
+        let bundle = super::collect_state_flow_artifact_bundle(project_root)
+            .expect("state-flow artifact bundle should be collected");
+
+        assert_eq!(bundle.kind, "stateFlowArtifactBundle");
+        assert_eq!(
+            bundle
+                .sources
+                .iter()
+                .map(|source| source.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "target/stateflow-smoke/artifacts.json",
+                "target/stateflow-smoke/summary.json",
+                "target/stateflow-smoke/target-a/report.md",
+            ]
+        );
+        assert_eq!(
+            bundle.sources[0].raw,
+            r#"{"kind":"stateFlowArtifactManifest","targetCount":1}"#
+        );
+    }
 
     #[test]
     fn state_flow_tx_serializes_camel_case_schema_version() {

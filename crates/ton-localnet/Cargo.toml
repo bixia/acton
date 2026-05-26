@@ -12,6 +12,7 @@ license = { workspace = true }
 
 [dependencies]
 ton-executor = { workspace = true }
+ton-stateflow = { workspace = true }
 ton-networks = { workspace = true }
 ton-api = { workspace = true }
 acton-config = { workspace = true }
