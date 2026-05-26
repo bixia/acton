@@ -959,6 +959,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const storageFieldRows = reportStorageFieldRows(report)
   const outboundEffectRows = reportOutboundEffectRows(report)
   const stateMachineRows = reportStateMachineRows(report)
+  const stateMachineEvidenceRows = reportStateMachineEvidenceRows(report)
   const replayDiffRows = reportReplayDiffRows(report)
   const unknownFieldRows = reportUnknownFieldRows(report)
   const riskPointRows = reportRiskPointRows(report)
@@ -1038,6 +1039,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "State Machine",
               rows: stateMachineRows,
+            },
+          ]
+        : []),
+      ...(stateMachineEvidenceRows.length > 0
+        ? [
+            {
+              title: "State Machine Evidence",
+              rows: stateMachineEvidenceRows,
             },
           ]
         : []),
@@ -1364,6 +1373,23 @@ function reportStateMachineRows(report: StateFlowReport): readonly SummaryRow[] 
       label: `${stripMarkdownInline(match[1] ?? "")} -> ${stripMarkdownInline(match[2] ?? "")}`,
       value: stripMarkdownInline(match[3] ?? ""),
     }))
+}
+
+function reportStateMachineEvidenceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "State Machine Evidence").map(row => ({
+    label:
+      [rowValue(row, "From"), rowValue(row, "To")]
+        .filter(value => value.length > 0)
+        .join(" -> ") || "n/a",
+    value: rowValue(row, "Opcode") || "<none>",
+    detail: [
+      tableCountLabel(rowValue(row, "Count"), "transition"),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
 }
 
 function reportReplayDiffRows(report: StateFlowReport): readonly SummaryRow[] {

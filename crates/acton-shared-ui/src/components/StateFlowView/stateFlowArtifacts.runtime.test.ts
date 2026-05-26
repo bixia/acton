@@ -482,6 +482,11 @@ stateDiagram-v2
     active --> frozen: 0x00000001 (2)
 \`\`\`
 
+## State Machine Evidence
+| From | To | Opcode | Count | Confidence | Evidence |
+| --- | --- | --- | ---: | --- | --- |
+| active | frozen | \`0x00000001\` | 2 | medium | \`tx-a\`, \`tx-b\` |
+
 ## Replay Diffs
 | Source tx | Mutation | Accepted | Input changed | State changed | Code changed | Data changed | Balance delta | Exit changed | Outbound delta | Action delta | C5 changed |
 | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |
@@ -831,7 +836,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "12"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "13"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -913,6 +918,20 @@ assert(
   "expected report state transition row",
 )
 assert(reportStateMachineRows[0]?.value === "0x00000001 (2)", "expected report state transition")
+const reportStateMachineEvidenceRows = sectionRows(reportSummary, "State Machine Evidence")
+assert(
+  reportStateMachineEvidenceRows[0]?.label === "active -> frozen",
+  "expected report state machine evidence transition",
+)
+assert(
+  reportStateMachineEvidenceRows[0]?.value === "0x00000001",
+  "expected report state machine evidence opcode",
+)
+assert(
+  reportStateMachineEvidenceRows[0]?.detail ===
+    "2 transitions · confidence medium · evidence tx-a, tx-b",
+  "expected report state machine evidence detail",
+)
 const reportReplayDiffRows = sectionRows(reportSummary, "Replay Diffs")
 assert(reportReplayDiffRows[0]?.label === "tx-a", "expected report replay tx row")
 assert(reportReplayDiffRows[0]?.value === "flip body bit 32", "expected report replay mutation")
