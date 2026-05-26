@@ -3188,6 +3188,7 @@ fn validate_cell_shape_decodable_consistency(
         return;
     };
     let Ok(cell) = Boc::decode_base64(boc64) else {
+        gate_failures.push(format!("{label} for {tx_hash} is not a decodable cell"));
         return;
     };
     let slice = cell.as_slice_allow_exotic();
@@ -17093,6 +17094,38 @@ mod tests {
     }
 
     #[test]
+    fn state_flow_tx_validation_rejects_malformed_state_cell_shape() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let tx_path = temp_dir.path().join("transaction.json");
+        let mut tx = sample_state_flow_json("tx-a");
+        tx["state"]["post"]["codeHash"] = serde_json::json!("hash");
+        tx["state"]["post"]["codeCell"] = serde_json::json!({
+            "boc64": "not-a-boc",
+            "hash": "hash",
+            "bits": 0,
+            "refs": 0
+        });
+        fs::write(&tx_path, tx.to_string()).expect("transaction artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "transaction",
+            "transaction.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_tx_artifact(&tx_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("transaction artifact transaction.json post codeCell")
+                    && failure.contains("is not a decodable cell")
+            }),
+            "expected malformed state cell shape failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
     fn state_flow_tx_validation_rejects_state_hash_mismatch_with_cell_shape() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let tx_path = temp_dir.path().join("transaction.json");
@@ -21210,6 +21243,64 @@ mod tests {
                     && failure.contains("wrong-hash for tx-a does not match decoded cell hash")
             }),
             "expected replay state cell shape hash mismatch failure, got {:?}",
+            gate_failures
+        );
+    }
+
+    #[test]
+    fn state_flow_replay_validation_rejects_malformed_state_cell_shape() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let replay_path = temp_dir.path().join("replay.json");
+        let mut baseline_observation = sample_replay_observation_json(true);
+        baseline_observation["state"]["codeHash"] = serde_json::json!("hash");
+        baseline_observation["state"]["codeCell"] = serde_json::json!({
+            "boc64": "not-a-boc",
+            "hash": "hash",
+            "bits": 0,
+            "refs": 0
+        });
+        fs::write(
+            &replay_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "sourceQueryHash": "tx-a",
+                "mutation": {"type": "flipBodyBit", "bit": 0},
+                "ignoreChksig": false,
+                "baseline": baseline_observation,
+                "replay": sample_mutated_replay_observation_json(true),
+                "diff": {
+                    "replayAccepted": true,
+                    "inputChanged": true,
+                    "stateChanged": false,
+                    "codeHashChanged": false,
+                    "dataHashChanged": false,
+                    "balanceDeltaDiff": 0,
+                    "exitCodeChanged": false,
+                    "outboundCountDelta": 0,
+                    "actionCountDelta": 0,
+                    "c5Changed": true
+                },
+                "diffSurface": {"changes": []},
+                "riskSignals": []
+            })
+            .to_string(),
+        )
+        .expect("replay artifact should be written");
+        let artifact = super::SmokeArtifactManifestEntry::new(
+            "replay",
+            "replay.json",
+            Some("target-a".to_owned()),
+        );
+        let mut gate_failures = Vec::new();
+
+        super::validate_state_flow_replay_artifact(&replay_path, &artifact, &mut gate_failures);
+
+        assert!(
+            gate_failures.iter().any(|failure| {
+                failure.contains("replay artifact replay.json baseline state codeCell")
+                    && failure.contains("is not a decodable cell")
+            }),
+            "expected replay malformed state cell shape failure, got {:?}",
             gate_failures
         );
     }
