@@ -121,6 +121,7 @@ const schema = {
         toStatus: "active",
         opcode: "0x00000001",
         count: 1,
+        confidence: "low",
         examples: ["tx-hash"],
       },
     ],
@@ -489,6 +490,12 @@ assert(
 assert(
   schemaSummary.metrics.some(metric => metric.label === "State Edges" && metric.value === "1"),
   "expected schema summary to include state machine edge count",
+)
+assert(
+  schemaSummary.sections
+    .find(section => section.title === "State Machine")
+    ?.rows[0]?.detail?.includes("confidence low") === true,
+  "expected schema state machine row to include persisted confidence",
 )
 assert(
   schemaSummary.sections

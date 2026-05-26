@@ -2306,12 +2306,14 @@ fn validate_schema_state_machine_evidence_keys(
             ("to status", &["toStatus"][..]),
             ("opcode", &["opcode"][..]),
             ("count", &["count"][..]),
+            ("confidence", &["confidence"][..]),
             ("examples", &["examples"][..]),
         ] {
             if !json_path_exists(edge, path) {
                 gate_failures.push(format!("{prefix} missing {label} evidence key"));
             }
         }
+        validate_schema_confidence_label(edge, &prefix, gate_failures);
     }
 }
 
@@ -5608,6 +5610,14 @@ fn validate_schema_state_machine_edge_matches_corpus(
         &report_state_machine_evidence_label(edge),
         gate_failures,
     );
+    validate_evidence_text_field(
+        "schema state-machine edge confidence",
+        &edge.confidence,
+        "count-derived confidence",
+        report_state_machine_edge_confidence(edge.count),
+        &report_state_machine_evidence_label(edge),
+        gate_failures,
+    );
 
     for tx_hash in &edge.examples {
         let Some(corpus_flow) = corpus
@@ -6892,7 +6902,7 @@ fn validate_report_state_machine_evidence_values(
     );
     validate_report_state_machine_evidence_cell(
         "confidence",
-        report_state_machine_edge_confidence(edge.count).to_owned(),
+        edge.confidence.clone(),
         edge,
         row.get(4),
         gate_failures,
@@ -9758,6 +9768,81 @@ mod tests {
                 )
             }),
             "expected missing schema state machine examples key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_state_machine_edge_missing_confidence_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["stateMachine"]["edges"][0]
+            .as_object_mut()
+            .expect("schema state machine edge should be an object")
+            .remove("confidence");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json stateMachine.edges[0] missing confidence evidence key",
+                )
+            }),
+            "expected missing schema state machine confidence key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_schema_state_machine_edge_confidence_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["stateMachine"]["edges"][0]["confidence"] = serde_json::json!("high");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema state-machine edge confidence high for none -> active 0x00000001 does not match count-derived confidence medium",
+                )
+            }),
+            "expected schema state machine confidence mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -13046,6 +13131,7 @@ mod tests {
                         "toStatus": "active",
                         "opcode": "0x00000001",
                         "count": 2,
+                        "confidence": "medium",
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
@@ -13253,6 +13339,7 @@ mod tests {
                         "toStatus": "active",
                         "opcode": "0x00000001",
                         "count": 2,
+                        "confidence": "medium",
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
@@ -13352,6 +13439,7 @@ mod tests {
                         "toStatus": "active",
                         "opcode": "0x00000001",
                         "count": 2,
+                        "confidence": "medium",
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },
@@ -15043,6 +15131,7 @@ mod tests {
                         "toStatus": "active",
                         "opcode": "0x00000001",
                         "count": 2,
+                        "confidence": "medium",
                         "examples": ["tx-a", "tx-b"]
                     }]
                 },

@@ -102,6 +102,18 @@ const schema = {
   network: "mainnet",
   address: "account",
   transactionCount: 2,
+  stateMachine: {
+    edges: [
+      {
+        fromStatus: "active",
+        toStatus: "frozen",
+        opcode: "0x00000001",
+        count: 2,
+        confidence: "medium",
+        examples: ["tx-a", "tx-b"],
+      },
+    ],
+  },
   opcodeCandidates: [
     {
       opcode: "0x00000001",
@@ -651,8 +663,9 @@ const stateMachineRows = sectionRows(schemaSummary, "State Machine")
 assert(stateMachineRows[0]?.label === "0x00000001", "expected opcode on state machine row")
 assert(stateMachineRows[0]?.value === "active -> frozen", "expected state transition row")
 assert(
-  stateMachineRows[0]?.detail === "2 observed transitions · examples tx-a, tx-b",
-  "expected transition evidence count and examples",
+  stateMachineRows[0]?.detail ===
+    "2 observed transitions · confidence medium · examples tx-a, tx-b",
+  "expected transition evidence count, confidence, and examples",
 )
 const bodyFieldRows = sectionRows(schemaSummary, "Message Body Fields")
 assert(bodyFieldRows[1]?.label === "0x00000001 query_id", "expected query_id body field row")

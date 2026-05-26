@@ -91,6 +91,8 @@ pub struct StateMachineEdge {
     pub to_status: String,
     pub opcode: Option<String>,
     pub count: usize,
+    #[serde(default = "default_state_machine_edge_confidence")]
+    pub confidence: String,
     pub examples: Vec<String>,
 }
 
@@ -962,7 +964,7 @@ pub fn render_state_flow_report(
                 markdown_escape(&edge.to_status),
                 markdown_code_opt(edge.opcode.as_deref()),
                 edge.count,
-                state_machine_edge_confidence(edge.count),
+                markdown_escape(&edge.confidence),
                 markdown_code_list(&edge.examples),
             )
             .ok();
@@ -1161,11 +1163,16 @@ fn state_machine_graph(transactions: &[StateFlowTx]) -> StateMachineGraph {
                     to_status,
                     opcode,
                     count,
+                    confidence: state_machine_edge_confidence(count).to_owned(),
                     examples,
                 },
             )
             .collect(),
     }
+}
+
+fn default_state_machine_edge_confidence() -> String {
+    "low".to_owned()
 }
 
 fn infer_schema_audit_signals(
@@ -3144,6 +3151,7 @@ mod tests {
         assert_eq!(json["stateMachine"]["edges"][0]["toStatus"], "active");
         assert_eq!(json["stateMachine"]["edges"][0]["opcode"], "0x00000001");
         assert_eq!(json["stateMachine"]["edges"][0]["count"], 2);
+        assert_eq!(json["stateMachine"]["edges"][0]["confidence"], "medium");
         assert_eq!(
             json["stateMachine"]["edges"][0]["examples"],
             serde_json::json!(["tx-a", "tx-b"])
@@ -3562,13 +3570,14 @@ mod tests {
             ],
             failures: Vec::new(),
         };
-        let schema = super::infer_schema_candidates(&corpus);
+        let mut schema = super::infer_schema_candidates(&corpus);
+        schema.state_machine.edges[0].confidence = "low".to_owned();
 
         let report = super::render_state_flow_report(&corpus, &schema, &[]);
 
         assert!(report.contains("## State Machine Evidence"));
         assert!(report.contains("| From | To | Opcode | Count | Confidence | Evidence |"));
-        assert!(report.contains("| none | active | `0x00000001` | 2 | medium | `tx-a`, `tx-b` |"));
+        assert!(report.contains("| none | active | `0x00000001` | 2 | low | `tx-a`, `tx-b` |"));
     }
 
     #[test]

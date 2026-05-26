@@ -103,6 +103,7 @@ export interface StateMachineEdge {
   readonly toStatus: string
   readonly opcode?: string | null
   readonly count: number
+  readonly confidence?: string | null
   readonly examples: readonly string[]
 }
 
@@ -2069,6 +2070,7 @@ function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachine
       toStatus: transition.toStatus,
       opcode: candidate.opcode,
       count: transition.count,
+      confidence: stateMachineConfidence(transition.count),
       examples: candidate.examples,
     })),
   )
@@ -2077,12 +2079,23 @@ function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachine
 function stateMachineEdgeDetail(edge: StateMachineEdge): string {
   return [
     `${edge.count} ${plural(edge.count, "observed transition")}`,
+    `confidence ${edge.confidence ?? stateMachineConfidence(edge.count)}`,
     edge.examples.length > 0
       ? `examples ${edge.examples.map(hash => shortHash(hash)).join(", ")}`
       : undefined,
   ]
     .filter((value): value is string => value !== undefined)
     .join(" · ")
+}
+
+function stateMachineConfidence(count: number): string {
+  if (count >= 3) {
+    return "high"
+  }
+  if (count === 2) {
+    return "medium"
+  }
+  return "low"
 }
 
 function schemaAuditSignals(schema: StateFlowSchemaReport): readonly AuditSignal[] {
