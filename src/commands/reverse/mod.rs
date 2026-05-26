@@ -123,6 +123,20 @@ pub enum ReverseCommand {
         tx_hash: Option<String>,
         #[arg(
             long,
+            requires = "artifact_manifest",
+            conflicts_with_all = [
+                "tx_index",
+                "tx_hash",
+                "flip_body_bit",
+                "body_boc64",
+                "set_body_uint"
+            ],
+            value_name = "FIELD|OPCODE:FIELD",
+            help = "Replay the inferred schema probe for this message body field"
+        )]
+        replay_probe: Option<String>,
+        #[arg(
+            long,
             conflicts_with_all = ["body_boc64", "set_body_uint"],
             value_name = "FLIP_BODY_BIT",
             help = "Flip one inbound message body bit before replay"
@@ -342,6 +356,7 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             target_id,
             tx_index,
             tx_hash,
+            replay_probe,
             flip_body_bit,
             body_boc64,
             set_body_uint,
@@ -354,6 +369,7 @@ pub fn reverse_cmd(command: ReverseCommand) -> anyhow::Result<()> {
             target_id,
             tx_index,
             tx_hash,
+            replay_probe,
             flip_body_bit,
             body_boc64,
             set_body_uint,
@@ -510,6 +526,7 @@ fn reverse_replay_cmd(
     target_id: Option<String>,
     tx_index: Option<usize>,
     tx_hash: Option<String>,
+    replay_probe: Option<String>,
     flip_body_bit: Option<u16>,
     body_boc64: Option<String>,
     set_body_uint: Option<String>,
@@ -517,6 +534,20 @@ fn reverse_replay_cmd(
     output: Option<PathBuf>,
     pretty: bool,
 ) -> anyhow::Result<()> {
+    if let Some(replay_probe) = replay_probe {
+        let manifest_path =
+            artifact_manifest.context("--replay-probe requires --artifact-manifest")?;
+        let manifest = load_artifact_manifest(&manifest_path)?;
+        let plan = replay_probe_from_manifest(
+            &manifest,
+            &manifest_path,
+            target_id.as_deref(),
+            &replay_probe,
+        )?;
+        let diff = ton_stateflow::replay_state_flow_tx(&plan.flow, plan.mutation, ignore_chksig)?;
+        return write_json(&diff, output, pretty, "State-flow replay diff JSON");
+    }
+
     let prefer_manifest_transaction = tx_index.is_none() && tx_hash.is_none();
     let state_flow = replay_state_flow_input_path(
         state_flow,
@@ -642,6 +673,83 @@ fn parse_replay_input(
         .with_context(|| format!("failed to parse StateFlowTx {}", path.display()))
 }
 
+fn replay_probe_from_manifest(
+    manifest: &SmokeArtifactManifest,
+    manifest_path: &Path,
+    target_id: Option<&str>,
+    probe_selector: &str,
+) -> anyhow::Result<ReplayProbePlan> {
+    ensure_supported_artifact_manifest(manifest, manifest_path)?;
+    let selected_target_id = select_manifest_target_id(manifest, manifest_path, target_id)?;
+    let schema_path =
+        required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "schema")?;
+    let schema_json = fs::read_to_string(&schema_path)
+        .with_context(|| format!("failed to read {}", schema_path.display()))?;
+    let schema: StateFlowSchemaReport = serde_json::from_str(&schema_json)
+        .with_context(|| format!("failed to parse {}", schema_path.display()))?;
+    let probe = select_schema_replay_probe(&schema, probe_selector)?;
+    let source_query_hash = probe.evidence.first().with_context(|| {
+        format!(
+            "schema replay probe {} has no evidence source transaction",
+            probe.cli_arg
+        )
+    })?;
+    let corpus_path =
+        required_manifest_artifact_path(manifest, manifest_path, &selected_target_id, "corpus")?;
+    let corpus_json = fs::read_to_string(&corpus_path)
+        .with_context(|| format!("failed to read {}", corpus_path.display()))?;
+    let flow = parse_replay_input(
+        &corpus_json,
+        &corpus_path,
+        None,
+        Some(source_query_hash.as_str()),
+    )?;
+
+    Ok(ReplayProbePlan {
+        flow,
+        mutation: probe.mutation.clone(),
+    })
+}
+
+fn select_schema_replay_probe<'a>(
+    schema: &'a StateFlowSchemaReport,
+    selector: &str,
+) -> anyhow::Result<&'a ton_stateflow::ReplayProbeCandidate> {
+    let selector = selector.trim();
+    anyhow::ensure!(!selector.is_empty(), "replay probe selector is empty");
+    let (opcode_selector, field_selector) = parse_replay_probe_selector(selector);
+    let matches = schema
+        .opcode_candidates
+        .iter()
+        .flat_map(|candidate| {
+            candidate
+                .replay_probes
+                .iter()
+                .map(move |probe| (candidate.opcode.as_deref(), probe))
+        })
+        .filter(|(opcode, probe)| {
+            probe.field_name == field_selector
+                && opcode_selector.is_none_or(|selector| *opcode == Some(selector))
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [(_, probe)] => Ok(*probe),
+        [] => anyhow::bail!("schema replay probe {selector:?} was not found"),
+        _ => anyhow::bail!(
+            "schema replay probe {selector:?} matched {} probes; use OPCODE:FIELD",
+            matches.len()
+        ),
+    }
+}
+
+fn parse_replay_probe_selector(selector: &str) -> (Option<&str>, &str) {
+    selector
+        .split_once(':')
+        .map(|(opcode, field)| (Some(opcode), field))
+        .unwrap_or((None, selector))
+}
+
 fn is_corpus_json(value: &serde_json::Value) -> bool {
     value
         .get("transactions")
@@ -729,6 +837,12 @@ struct ReportArtifactInputs {
     replays: Vec<PathBuf>,
     source_url: Option<String>,
     notes: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReplayProbePlan {
+    flow: StateFlowTx,
+    mutation: ReplayMutation,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -18765,6 +18879,72 @@ mod tests {
 
         assert!(err.contains("corpus transaction index 9 out of range"));
         assert!(err.contains("2 transaction(s)"));
+    }
+
+    #[test]
+    fn replay_probe_from_manifest_selects_schema_probe_source_and_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema["opcodeCandidates"][0]["inboundBody"]["fieldCandidates"] = serde_json::json!([{
+            "name": "query_id",
+            "bitOffset": 32,
+            "minBits": 64,
+            "maxBits": 64,
+            "minRefs": 0,
+            "maxRefs": 0,
+            "kind": "uint64",
+            "presentCount": 2,
+            "valueSamples": ["0x0000000000000007"],
+            "confidence": "high",
+            "valueEvidence": [{
+                "txHash": "tx-b",
+                "value": "0x0000000000000007"
+            }]
+        }]);
+        schema["opcodeCandidates"][0]["replayProbes"] = serde_json::json!([{
+            "fieldName": "query_id",
+            "bitOffset": 32,
+            "bits": 64,
+            "value": "0x0000000000000006",
+            "mutation": {
+                "type": "setBodyUint",
+                "bitOffset": 32,
+                "bits": 64,
+                "value": "0x0000000000000006"
+            },
+            "cliArg": "--set-body-uint 32:64:0x0000000000000006",
+            "confidence": "high",
+            "evidence": ["tx-b"]
+        }]);
+        fs::write(
+            &schema_path,
+            serde_json::to_string(&schema).expect("schema should serialize"),
+        )
+        .expect("schema artifact should be written");
+        let manifest = sample_validation_manifest();
+
+        let plan = super::replay_probe_from_manifest(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            Some("target-a"),
+            "query_id",
+        )
+        .expect("schema replay probe should resolve");
+
+        assert_eq!(plan.flow.query_hash, "tx-b");
+        assert!(matches!(
+            plan.mutation,
+            ReplayMutation::SetBodyUint {
+                bit_offset: 32,
+                bits: 64,
+                ref value,
+            } if value == "0x0000000000000006"
+        ));
     }
 
     fn sample_smoke_summary() -> super::SmokeRunSummary {

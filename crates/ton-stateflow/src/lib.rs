@@ -1772,6 +1772,32 @@ fn infer_schema_audit_signals(
                 evidence: candidate.examples.clone(),
             });
         }
+        for field in &candidate.inbound_body.field_candidates {
+            if field.confidence == "low" {
+                signals.push(AuditSignal {
+                    kind: "low-confidence-message-field".to_owned(),
+                    severity: "medium".to_owned(),
+                    description: format!(
+                        "Low-confidence message body field `{}` for opcode {opcode}; TL-B recovery is required before relying on inferred {} at body:{}.",
+                        field.name, field.kind, field.bit_offset
+                    ),
+                    evidence: body_field_audit_evidence(field, &candidate.examples),
+                });
+            }
+        }
+        for field in &candidate.storage.fields {
+            if field.confidence == "low" {
+                signals.push(AuditSignal {
+                    kind: "low-confidence-storage-field".to_owned(),
+                    severity: "medium".to_owned(),
+                    description: format!(
+                        "Low-confidence storage field `{}` at {}:{} for opcode {opcode}; typed storage decoding is required before relying on inferred {}.",
+                        field.name, field.cell_path, field.bit_offset, field.kind
+                    ),
+                    evidence: candidate.examples.clone(),
+                });
+            }
+        }
         if candidate.storage.data_hash_changed_count > 0 {
             signals.push(AuditSignal {
                 kind: "storage-data-hash-change".to_owned(),
@@ -1825,6 +1851,19 @@ fn infer_schema_audit_signals(
             && left.evidence == right.evidence
     });
     signals
+}
+
+fn body_field_audit_evidence(field: &BodyFieldCandidate, examples: &[String]) -> Vec<String> {
+    let evidence = field
+        .value_evidence
+        .iter()
+        .map(|item| item.tx_hash.clone())
+        .collect::<BTreeSet<_>>();
+    if evidence.is_empty() {
+        examples.to_vec()
+    } else {
+        evidence.into_iter().collect()
+    }
 }
 
 pub fn replay_audit_signals(replay: &StateFlowReplayDiff) -> Vec<AuditSignal> {
@@ -4727,6 +4766,53 @@ mod tests {
     }
 
     #[test]
+    fn schema_audit_signals_flag_low_confidence_message_body_fields() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_body_fields("tx-a", 0x0000_0001, 7, 0xaa),
+                sample_flow_with_body_fields("tx-b", 0x0000_0001, 8, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+        let signal = json["auditSignals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|signal| signal["kind"] == "low-confidence-message-field")
+            .expect("raw body tails should be surfaced as field-level audit signals");
+
+        assert_eq!(signal["severity"], "medium");
+        assert_eq!(signal["evidence"], serde_json::json!(["tx-a", "tx-b"]));
+        assert!(
+            signal["description"]
+                .as_str()
+                .unwrap()
+                .contains("payload_tail")
+        );
+        assert!(
+            signal["description"]
+                .as_str()
+                .unwrap()
+                .contains("opcode 0x00000001")
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("Low-confidence message body field `payload_tail`"));
+        assert!(report.contains("Evidence: `tx-a`, `tx-b`."));
+    }
+
+    #[test]
     fn infer_schema_candidates_persists_replay_surface() {
         let corpus = StateFlowCorpus {
             schema_version: 1,
@@ -4827,6 +4913,48 @@ mod tests {
             json["opcodeCandidates"][0]["storage"]["fields"][0]["valueSamples"],
             serde_json::json!(["0xcafebabe", "0xdeadbeef"])
         );
+    }
+
+    #[test]
+    fn schema_audit_signals_flag_low_confidence_storage_fields() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_storage_data("tx-a", 0xdead_beef, 0xaa),
+                sample_flow_with_storage_data("tx-b", 0xcafe_babe, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+        let signal = json["auditSignals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|signal| signal["kind"] == "low-confidence-storage-field")
+            .expect("raw storage tails should be surfaced as field-level audit signals");
+
+        assert_eq!(signal["severity"], "medium");
+        assert_eq!(signal["evidence"], serde_json::json!(["tx-a", "tx-b"]));
+        assert!(
+            signal["description"]
+                .as_str()
+                .unwrap()
+                .contains("data_tail")
+        );
+        assert!(signal["description"].as_str().unwrap().contains("data:32"));
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("Low-confidence storage field `data_tail`"));
+        assert!(report.contains("Evidence: `tx-a`, `tx-b`."));
     }
 
     #[test]
