@@ -362,6 +362,10 @@ export interface StateFlowArtifactValidation {
 
 export interface StateFlowArtifactValidationTarget {
   readonly id: string
+  readonly network?: string | null
+  readonly address?: string | null
+  readonly sourceUrl?: string | null
+  readonly notes?: string | null
   readonly artifactCount: number
   readonly replayCount: number
   readonly passed: boolean
@@ -1218,10 +1222,13 @@ function summarizeArtifactValidation(validation: StateFlowArtifactValidation): A
           label: target.id,
           value: target.passed ? "passed" : "failed",
           detail: [
+            validationTargetSourceDetail(target),
             `${target.artifactCount} ${plural(target.artifactCount, "artifact")}`,
             `${target.replayCount} ${plural(target.replayCount, "replay")}`,
             targetCapabilityDetail(target),
-          ].join(" · "),
+          ]
+            .filter((value): value is string => value !== undefined && value.length > 0)
+            .join(" · "),
         })),
       },
       ...(capabilityRows.length > 0
@@ -1527,6 +1534,17 @@ function targetCapabilityDetail(target: StateFlowArtifactValidationTarget): stri
     return "capabilities n/a"
   }
   return `capabilities ${passed}/${total}`
+}
+
+function validationTargetSourceDetail(
+  target: StateFlowArtifactValidationTarget,
+): string | undefined {
+  const location = [target.network ?? undefined, target.address ?? undefined]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .join(" ")
+  return [location || undefined, target.sourceUrl ?? undefined, target.notes ?? undefined]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .join(" · ")
 }
 
 function validationCapabilityRows(validation: StateFlowArtifactValidation): readonly SummaryRow[] {

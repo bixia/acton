@@ -725,6 +725,11 @@ const artifactValidation = {
   targets: [
     {
       id: "target-a",
+      network: "mainnet",
+      address: "addr-a",
+      sourceUrl: "https://tonviewer.com/addr-a",
+      notes:
+        "Known full-chain smoke target used to validate collect, infer, replay, and report artifacts.",
       artifactCount: 6,
       replayCount: 2,
       passed: true,
@@ -756,6 +761,10 @@ const artifactValidation = {
     },
     {
       id: "target-b",
+      network: "mainnet",
+      address: "addr-b",
+      sourceUrl: "https://tonviewer.com/addr-b",
+      notes: "User-requested Tonviewer account that must remain in live state-flow smoke coverage.",
       artifactCount: 3,
       replayCount: 0,
       passed: false,
@@ -1298,6 +1307,12 @@ assert(
 )
 const validationTargetRows = sectionRows(validationSummary, "Targets")
 assert(validationTargetRows[0]?.label === "target-a", "expected first validation target")
+assert(
+  validationTargetRows[0]?.detail?.includes(
+    "mainnet addr-a · https://tonviewer.com/addr-a · Known full-chain smoke target used to validate collect, infer, replay, and report artifacts.",
+  ) === true,
+  "expected validation target row to include source context",
+)
 assert(validationTargetRows[1]?.value === "failed", "expected failed validation target")
 const validationCapabilityRows = sectionRows(validationSummary, "Capability Checks")
 assert(

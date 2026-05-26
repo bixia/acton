@@ -1599,6 +1599,14 @@ struct ArtifactManifestValidation {
 #[serde(rename_all = "camelCase")]
 struct ArtifactManifestTargetValidation {
     id: String,
+    #[serde(default)]
+    network: Option<String>,
+    #[serde(default)]
+    address: Option<String>,
+    #[serde(default)]
+    source_url: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
     artifact_count: usize,
     replay_count: usize,
     passed: bool,
@@ -2102,6 +2110,10 @@ fn validation_targets_match_expected(
     actual.len() == expected.len()
         && actual.iter().zip(expected).all(|(actual, expected)| {
             actual.id == expected.id
+                && actual.network == expected.network
+                && actual.address == expected.address
+                && actual.source_url == expected.source_url
+                && actual.notes == expected.notes
                 && actual.artifact_count == expected.artifact_count
                 && actual.replay_count == expected.replay_count
                 && actual.passed == expected.passed
@@ -4117,6 +4129,8 @@ fn validate_artifact_manifest_target(
         .filter(|artifact| artifact.target_id.as_deref() == Some(target_id))
         .collect::<Vec<_>>();
     let mut gate_failures = artifact_content_gate_failures;
+    let summary_target =
+        summary.and_then(|summary| summary.targets.iter().find(|target| target.id == target_id));
     for kind in ["corpus", "schema", "replay", "report"] {
         if !artifacts.iter().any(|artifact| artifact.kind == kind) {
             gate_failures.push(format!("missing {kind} artifact"));
@@ -4142,6 +4156,10 @@ fn validate_artifact_manifest_target(
 
     ArtifactManifestTargetValidation {
         id: target_id.to_owned(),
+        network: summary_target.map(|target| target.network.clone()),
+        address: summary_target.map(|target| target.address.clone()),
+        source_url: summary_target.and_then(|target| target.source_url.clone()),
+        notes: summary_target.and_then(|target| target.notes.clone()),
         artifact_count: artifacts.len(),
         replay_count: artifacts
             .iter()
@@ -18350,6 +18368,39 @@ mod tests {
             "expected missing summary notes key failure, got {:?}",
             validation.gate_failures
         );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_targets_include_summary_source_context() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut summary = sample_smoke_summary().with_paths_relative_to(Path::new("out"));
+        summary.targets[0].source_url = Some("https://tonviewer.com/addr".to_owned());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "summary.json",
+            &serde_json::to_string(&summary).expect("summary should serialize"),
+        );
+        let mut report = sample_report_markdown("addr");
+        super::insert_report_source_url(&mut report, "https://tonviewer.com/addr");
+        write_sample_validation_artifact(temp_dir.path(), "target-a/report.md", &report);
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+        let json = serde_json::to_value(&validation).expect("validation should serialize");
+
+        assert_eq!(json["targets"][0]["network"], "mainnet");
+        assert_eq!(json["targets"][0]["address"], "addr");
+        assert_eq!(
+            json["targets"][0]["sourceUrl"],
+            "https://tonviewer.com/addr"
+        );
+        assert_eq!(json["targets"][0]["notes"], "sample target note");
     }
 
     #[test]
