@@ -3750,6 +3750,7 @@ fn validate_smoke_target_summary_evidence_keys(
         ("corpus", &["corpus"][..]),
         ("schema", &["schema"][..]),
         ("transaction", &["transaction"][..]),
+        ("retrace", &["retrace"][..]),
         ("replay", &["replay"][..]),
         ("replays", &["replays"][..]),
         ("report", &["report"][..]),
@@ -13689,6 +13690,41 @@ mod tests {
                 )
             }),
             "expected missing summary transaction key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_summary_missing_retrace_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let summary_path = temp_dir.path().join("summary.json");
+        let mut summary: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("summary artifact should be readable"),
+        )
+        .expect("summary artifact should parse");
+        summary["targets"][0]
+            .as_object_mut()
+            .expect("summary target should be an object")
+            .remove("retrace");
+        write_sample_validation_artifact(temp_dir.path(), "summary.json", &summary.to_string());
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "run summary artifact summary.json target[0] missing retrace evidence key",
+                )
+            }),
+            "expected missing summary retrace key failure, got {:?}",
             validation.gate_failures
         );
     }
