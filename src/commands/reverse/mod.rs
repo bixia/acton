@@ -2184,6 +2184,28 @@ fn validate_state_flow_corpus_evidence_keys(
     artifact: &SmokeArtifactManifestEntry,
     gate_failures: &mut Vec<String>,
 ) {
+    for (label, path) in [
+        ("schema version", &["schemaVersion"][..]),
+        ("network", &["network"][..]),
+        ("address", &["address"][..]),
+        ("requested limit", &["requestedLimit"][..]),
+        ("source transaction count", &["sourceTxCount"][..]),
+        ("retraced count", &["retracedCount"][..]),
+        ("failure count", &["failureCount"][..]),
+        ("opcode summary", &["opcodeSummary"][..]),
+        ("transactions", &["transactions"][..]),
+        ("failures", &["failures"][..]),
+    ] {
+        if !json_path_exists(value, path) {
+            gate_failures.push(format!(
+                "corpus artifact {} missing {label} evidence key",
+                artifact.path
+            ));
+        }
+    }
+    validate_state_flow_opcode_summary_evidence_keys(value, artifact, gate_failures);
+    validate_state_flow_failure_evidence_keys(value, artifact, gate_failures);
+
     let Some(transactions) = value.get("transactions").and_then(|value| value.as_array()) else {
         return;
     };
@@ -2193,6 +2215,53 @@ fn validate_state_flow_corpus_evidence_keys(
             &format!("corpus artifact {} transaction[{index}]", artifact.path),
             gate_failures,
         );
+    }
+}
+
+fn validate_state_flow_opcode_summary_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(opcode_summary) = value
+        .get("opcodeSummary")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for (index, entry) in opcode_summary.iter().enumerate() {
+        let prefix = format!("corpus artifact {} opcodeSummary[{index}]", artifact.path);
+        for (label, path) in [
+            ("opcode", &["opcode"][..]),
+            ("count", &["count"][..]),
+            ("tx hashes", &["txHashes"][..]),
+        ] {
+            if !json_path_exists(entry, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
+    }
+}
+
+fn validate_state_flow_failure_evidence_keys(
+    value: &serde_json::Value,
+    artifact: &SmokeArtifactManifestEntry,
+    gate_failures: &mut Vec<String>,
+) {
+    let Some(failures) = value.get("failures").and_then(|value| value.as_array()) else {
+        return;
+    };
+    for (index, failure) in failures.iter().enumerate() {
+        let prefix = format!("corpus artifact {} failures[{index}]", artifact.path);
+        for (label, path) in [
+            ("hash", &["hash"][..]),
+            ("LT", &["lt"][..]),
+            ("error", &["error"][..]),
+        ] {
+            if !json_path_exists(failure, path) {
+                gate_failures.push(format!("{prefix} missing {label} evidence key"));
+            }
+        }
     }
 }
 
@@ -10842,6 +10911,112 @@ mod tests {
                 )
             }),
             "expected corpus count mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_missing_address_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus
+            .as_object_mut()
+            .expect("corpus should be an object")
+            .remove("address");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure
+                    .contains("corpus artifact target-a/corpus.json missing address evidence key")
+            }),
+            "expected missing corpus address key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_opcode_summary_missing_tx_hashes_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["opcodeSummary"][0]
+            .as_object_mut()
+            .expect("opcode summary should be an object")
+            .remove("txHashes");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "corpus artifact target-a/corpus.json opcodeSummary[0] missing tx hashes evidence key",
+                )
+            }),
+            "expected missing corpus opcode tx hashes key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_corpus_failure_missing_error_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let mut corpus: serde_json::Value =
+            serde_json::from_str(&sample_replay_corpus_json()).expect("sample corpus parses");
+        corpus["sourceTxCount"] = serde_json::json!(3);
+        corpus["failureCount"] = serde_json::json!(1);
+        corpus["failures"] = serde_json::json!([{"hash": "failed-tx", "lt": 100}]);
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/corpus.json",
+            &corpus.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "corpus artifact target-a/corpus.json failures[0] missing error evidence key",
+                )
+            }),
+            "expected missing corpus failure error key failure, got {:?}",
             validation.gate_failures
         );
     }
