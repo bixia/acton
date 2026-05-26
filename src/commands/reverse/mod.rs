@@ -11513,6 +11513,7 @@ mod tests {
             serde_json::json!(["target-a/replay.json"])
         );
         assert_eq!(json["targets"][0]["report"], "target-a/report.md");
+        assert_eq!(json["targets"][0]["notes"], "sample target note");
         assert_eq!(json["artifactManifest"], "artifacts.json");
         assert_eq!(json["validation"], "validation.json");
         assert_eq!(json["absolutePathCount"], 0);
