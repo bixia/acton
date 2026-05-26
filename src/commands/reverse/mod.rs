@@ -1023,6 +1023,7 @@ fn run_state_flow_targets(
             source_url: target.source_url.clone(),
             notes: target.notes.clone(),
             collect_limit: target.collect_limit,
+            retrace_tx_hash: target.retrace_tx_hash.clone(),
             source_tx_count: corpus.source_tx_count,
             retraced_count: corpus.retraced_count,
             failure_count: corpus.failure_count,
@@ -1554,6 +1555,8 @@ struct SmokeTargetRunSummary {
     #[serde(default)]
     notes: Option<String>,
     collect_limit: u32,
+    #[serde(default)]
+    retrace_tx_hash: Option<String>,
     source_tx_count: usize,
     retraced_count: usize,
     failure_count: usize,
@@ -1607,6 +1610,8 @@ struct SmokeArtifactManifestTarget {
     contract_type: Option<String>,
     source_url: Option<String>,
     notes: Option<String>,
+    #[serde(default)]
+    retrace_tx_hash: Option<String>,
 }
 
 impl SmokeArtifactManifestTarget {
@@ -1620,6 +1625,7 @@ impl SmokeArtifactManifestTarget {
             contract_type: target.contract_type.clone(),
             source_url: target.source_url.clone(),
             notes: target.notes.clone(),
+            retrace_tx_hash: target.retrace_tx_hash.clone(),
         }
     }
 }
@@ -1858,6 +1864,8 @@ struct ArtifactManifestTargetValidation {
     source_url: Option<String>,
     #[serde(default)]
     notes: Option<String>,
+    #[serde(default)]
+    retrace_tx_hash: Option<String>,
     artifact_count: usize,
     replay_count: usize,
     passed: bool,
@@ -2231,6 +2239,13 @@ fn validate_manifest_target_context(
             target.notes.as_deref(),
             gate_failures,
         );
+        validate_target_optional_text_field(
+            "manifest target retrace tx hash",
+            manifest_target.retrace_tx_hash.as_deref(),
+            "summary retrace tx hash",
+            target.retrace_tx_hash.as_deref(),
+            gate_failures,
+        );
     }
     for manifest_target in &manifest.targets {
         if !summary
@@ -2454,6 +2469,7 @@ fn validation_targets_match_expected(
                 && actual.contract_type == expected.contract_type
                 && actual.source_url == expected.source_url
                 && actual.notes == expected.notes
+                && actual.retrace_tx_hash == expected.retrace_tx_hash
                 && actual.artifact_count == expected.artifact_count
                 && actual.replay_count == expected.replay_count
                 && actual.passed == expected.passed
@@ -5396,6 +5412,7 @@ fn validate_artifact_manifest_target(
         contract_type: summary_target.and_then(|target| target.contract_type.clone()),
         source_url: summary_target.and_then(|target| target.source_url.clone()),
         notes: summary_target.and_then(|target| target.notes.clone()),
+        retrace_tx_hash: summary_target.and_then(|target| target.retrace_tx_hash.clone()),
         artifact_count: artifacts.len(),
         replay_count: artifacts
             .iter()
@@ -11634,6 +11651,14 @@ fn validate_manifest_retrace_target_context(
 ) {
     for flow in read_target_json_artifacts::<StateFlowTx>(manifest_path, artifacts, "retrace") {
         validate_state_flow_target_context("retrace", &flow, target, gate_failures);
+        if let Some(expected_hash) = target.retrace_tx_hash.as_deref() {
+            if flow.query_hash != expected_hash {
+                gate_failures.push(format!(
+                    "retrace query hash {} does not match summary retraceTxHash {}",
+                    flow.query_hash, expected_hash
+                ));
+            }
+        }
     }
 }
 
@@ -13713,7 +13738,8 @@ mod tests {
                 "category": "sample-category",
                 "contractType": "sample contract",
                 "sourceUrl": "https://tonviewer.com/addr",
-                "notes": "sample target note"
+                "notes": "sample target note",
+                "retraceTxHash": null
             }])
         );
         assert_eq!(json["absolutePathCount"], 0);
@@ -14271,6 +14297,7 @@ mod tests {
             contract_type: Some("sample contract".to_owned()),
             source_url: None,
             notes: Some("sample target note".to_owned()),
+            retrace_tx_hash: None,
         });
         manifest.artifacts.extend([
             super::SmokeArtifactManifestEntry::new(
@@ -16613,6 +16640,52 @@ mod tests {
                 )
             }),
             "expected transaction corpus membership failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_retrace_hash_mismatch_with_summary() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/retrace.json",
+            &sample_state_flow_json("wrong-tx").to_string(),
+        );
+        let summary_path = temp_dir.path().join("summary.json");
+        let mut summary: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("summary artifact should be readable"),
+        )
+        .expect("summary artifact should parse");
+        summary["targets"][0]["retrace"] = serde_json::json!("target-a/retrace.json");
+        summary["targets"][0]["retraceTxHash"] = serde_json::json!("expected-tx");
+        write_sample_validation_artifact(temp_dir.path(), "summary.json", &summary.to_string());
+        let mut manifest = sample_validation_manifest();
+        manifest.targets[0].retrace_tx_hash = Some("expected-tx".to_owned());
+        manifest
+            .artifacts
+            .push(super::SmokeArtifactManifestEntry::new(
+                "retrace",
+                "target-a/retrace.json",
+                Some("target-a".to_owned()),
+            ));
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: retrace query hash wrong-tx does not match summary retraceTxHash expected-tx",
+                )
+            }),
+            "expected retrace summary hash mismatch failure, got {:?}",
             validation.gate_failures
         );
     }
@@ -23223,6 +23296,7 @@ mod tests {
             source_url: None,
             notes: Some("sample target note".to_owned()),
             collect_limit: 2,
+            retrace_tx_hash: None,
             source_tx_count: 2,
             retraced_count: 2,
             failure_count: 0,
