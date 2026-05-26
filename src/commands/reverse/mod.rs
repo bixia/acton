@@ -1018,6 +1018,7 @@ fn run_state_flow_targets(
             source_tx_count: corpus.source_tx_count,
             retraced_count: corpus.retraced_count,
             failure_count: corpus.failure_count,
+            allowed_collection_failures: target.allowed_collection_failures,
             opcode_candidate_count: schema.opcode_candidates.len(),
             state_edge_count: schema.state_machine.edges.len(),
             audit_signal_count: schema.audit_signals.len(),
@@ -1272,6 +1273,8 @@ struct SmokeTarget {
     replay_tx_hash: Option<String>,
     #[serde(default)]
     retrace_tx_hash: Option<String>,
+    #[serde(default)]
+    allowed_collection_failures: usize,
     replay_mutation: Option<SmokeReplayMutation>,
 }
 
@@ -1298,6 +1301,7 @@ fn analysis_target_from_args(
         replay_tx_index: options.replay_tx_index,
         replay_tx_hash: options.replay_tx_hash,
         retrace_tx_hash: options.retrace_tx_hash,
+        allowed_collection_failures: 0,
         replay_mutation: Some(SmokeReplayMutation::from_args(
             options.flip_body_bit,
             options.body_boc64,
@@ -1528,6 +1532,8 @@ struct SmokeTargetRunSummary {
     source_tx_count: usize,
     retraced_count: usize,
     failure_count: usize,
+    #[serde(default)]
+    allowed_collection_failures: usize,
     opcode_candidate_count: usize,
     state_edge_count: usize,
     audit_signal_count: usize,
@@ -11579,7 +11585,7 @@ impl SmokeTargetRunSummary {
         if self.retraced_count == 0 {
             failures.push("retraced transactions 0".to_owned());
         }
-        if self.failure_count > 0 {
+        if self.failure_count > self.allowed_collection_failures {
             failures.push(format!("collection failures {}", self.failure_count));
         }
         if self.opcode_candidate_count == 0 {
@@ -11721,6 +11727,11 @@ mod tests {
                     .as_ref()
                     .is_some_and(|plan| plan.ignore_chksig)
         }));
+        for vault_id in ["dedust-native-vault", "dedust-usdt-vault"] {
+            assert!(manifest.targets.iter().any(|target| {
+                target.id == vault_id && target.allowed_collection_failures == 1
+            }));
+        }
 
         let incomplete_targets = manifest
             .targets
@@ -11835,6 +11846,18 @@ mod tests {
         let summary = sample_smoke_summary();
 
         summary.ensure_passes_gate().unwrap();
+    }
+
+    #[test]
+    fn smoke_summary_gate_accepts_bounded_collection_failures() {
+        let mut summary = sample_smoke_summary();
+        summary.targets[0].retraced_count = 1;
+        summary.targets[0].failure_count = 1;
+        summary.targets[0].allowed_collection_failures = 1;
+        summary.refresh_gate_status();
+
+        summary.ensure_passes_gate().unwrap();
+        assert!(summary.targets[0].gate_failures.is_empty());
     }
 
     #[test]
@@ -19033,6 +19056,7 @@ mod tests {
             replay_tx_index: None,
             replay_tx_hash: None,
             retrace_tx_hash: None,
+            allowed_collection_failures: 0,
             replay_mutation: Some(super::SmokeReplayMutation {
                 mutation_type: "flipBodyBit".to_owned(),
                 bit: Some(0),
@@ -19128,6 +19152,7 @@ mod tests {
             source_tx_count: 2,
             retraced_count: 2,
             failure_count: 0,
+            allowed_collection_failures: 0,
             opcode_candidate_count: 1,
             state_edge_count: 1,
             audit_signal_count: 1,

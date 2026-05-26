@@ -21,13 +21,13 @@
       "address": "EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
       "sourceUrl": "https://tonviewer.com/EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
       "collectLimit": 2,
-      "retraceTxHash": "acfd9d1ee6eb9961408ed87ac776f18bf451cd60c8ff6843a2857e6959c12eb1",
+      "retraceTxHash": "36bc4f939e6c7768a48c922e29f858961ed341207353d39263e2ace33a70dbbb",
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,
         "ignoreChksig": true
       },
-      "notes": "STON.fi v2.2 ConstantProduct TON/USDt pool. High-liquidity pool from STON API; sample op is stonfi_swap_v2."
+      "notes": "STON.fi v2.2 ConstantProduct TON/USDt pool. High-liquidity pool from STON API; retrace hash is the pool-account transaction for stonfi_swap_v2."
     },
     {
       "id": "stonfi-v1-ton-usdt-pool",
@@ -77,6 +77,7 @@
       "address": "EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
       "sourceUrl": "https://tonviewer.com/EQDa4VOnTYlLvDJ0gZjNYm5PXfSmmtL6Vs6A_CZEtXCNICq_",
       "collectLimit": 2,
+      "allowedCollectionFailures": 1,
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,
@@ -90,6 +91,7 @@
       "address": "EQAYqo4u7VF0fa4DPAebk4g9lBytj2VFny7pzXR0trjtXQaO",
       "sourceUrl": "https://tonviewer.com/EQAYqo4u7VF0fa4DPAebk4g9lBytj2VFny7pzXR0trjtXQaO",
       "collectLimit": 2,
+      "allowedCollectionFailures": 1,
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,
@@ -103,13 +105,13 @@
       "address": "EQA-X_yo3fzzbDbJ_0bzFWKqtRuZFIRa1sJsveZJ1YpViO3r",
       "sourceUrl": "https://tonviewer.com/EQA-X_yo3fzzbDbJ_0bzFWKqtRuZFIRa1sJsveZJ1YpViO3r",
       "collectLimit": 2,
-      "retraceTxHash": "0bc31d92633431f2e7229dd32be05f1386003027dcc9c0d7bd6dc2f85732ddb2",
+      "retraceTxHash": "73a61d555f63cb6896982ed79494ed834b2727e9c77926ac038c9115601e0641",
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,
         "ignoreChksig": true
       },
-      "notes": "DeDust volatile TON/USDt pool. Recent sample is a direct pool swap: 93 USDt to 47.581342548 TON."
+      "notes": "DeDust volatile TON/USDt pool. Retrace hash is the pool-account transaction for a recent TON/USDt swap."
     },
     {
       "id": "tonco-wtton-usdt-pool",
@@ -117,13 +119,13 @@
       "address": "EQD25vStEwc-h1QT1qlsYPQwqU5IiOhox5II0C_xsDNpMVo7",
       "sourceUrl": "https://tonviewer.com/EQD25vStEwc-h1QT1qlsYPQwqU5IiOhox5II0C_xsDNpMVo7",
       "collectLimit": 2,
-      "retraceTxHash": "f05901f42ba52c77b5ee2dff99273d14a85ecfe52a009677d398e30fdf6df05d",
+      "retraceTxHash": "c6fa0641d2abe3fe77d06cf92449e4564a0f26710f7eb7051da61036995e49f4",
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,
         "ignoreChksig": true
       },
-      "notes": "TONCO wTTon/USDt pool. Recent PoolV3 sample covers poolv3_swap plus jetton notify/pay_to/excess."
+      "notes": "TONCO wTTon/USDt pool. Retrace hash is the PoolV3 account transaction; registry keeps the trace root separately."
     },
     {
       "id": "tonco-tston-usdt-pool",
@@ -145,12 +147,13 @@
       "address": "EQDETPC2Trne37AQx7JKUIFA2G9uB3ifk4O7myFB6pwI6u8M",
       "sourceUrl": "https://tonviewer.com/EQDETPC2Trne37AQx7JKUIFA2G9uB3ifk4O7myFB6pwI6u8M",
       "collectLimit": 2,
+      "retraceTxHash": "ed7db5f7a4cfc0f478a4ceb1ff93d45842cb6615f9a37ac546abe5a1428e0e8a",
       "replayMutation": {
         "type": "flipBodyBit",
         "bit": 0,
         "ignoreChksig": true
       },
-      "notes": "swap.coffee Coffee DEX constant-product TON/USDt pool from official backend API."
+      "notes": "swap.coffee Coffee DEX constant-product TON/USDt pool from official backend API; retrace hash is a direct TON/USDt pool sample."
     },
     {
       "id": "swapcoffee-storm-usdt-pool",

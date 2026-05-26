@@ -94,9 +94,10 @@ alone; use the canonical master address:
 EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs
 ```
 
-For TONCO samples, the registry records both the pool transaction hash and the
-root trace hash when available. Use the pool transaction hash for the pool-local
-transaction and the root hash when the retrace backend expects a full trace root.
+For trace samples, `retraceTxHash` means the exact transaction executed by the
+target account, not necessarily the root transaction of the whole trace. The
+registry records `rootHash` separately when available; use it for trace context,
+not as a replacement for the target-account retrace hash.
 
 Native TON is protocol-specific. STON.fi and TONCO use protocol-specific
 pTON/wtPTon wrappers, while DeDust and Coffee DEX use native vault contracts.

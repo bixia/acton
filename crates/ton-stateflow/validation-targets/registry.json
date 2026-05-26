@@ -83,8 +83,8 @@
       ],
       "sampleTransactions": [
         {
-          "hash": "acfd9d1ee6eb9961408ed87ac776f18bf451cd60c8ff6843a2857e6959c12eb1",
-          "url": "https://tonviewer.com/transaction/acfd9d1ee6eb9961408ed87ac776f18bf451cd60c8ff6843a2857e6959c12eb1",
+          "hash": "36bc4f939e6c7768a48c922e29f858961ed341207353d39263e2ace33a70dbbb",
+          "url": "https://tonviewer.com/transaction/36bc4f939e6c7768a48c922e29f858961ed341207353d39263e2ace33a70dbbb",
           "op": "0x6664de2a stonfi_swap_v2"
         }
       ],
@@ -291,8 +291,9 @@
       ],
       "sampleTransactions": [
         {
-          "hash": "0bc31d92633431f2e7229dd32be05f1386003027dcc9c0d7bd6dc2f85732ddb2",
-          "url": "https://tonviewer.com/transaction/0bc31d92633431f2e7229dd32be05f1386003027dcc9c0d7bd6dc2f85732ddb2",
+          "hash": "73a61d555f63cb6896982ed79494ed834b2727e9c77926ac038c9115601e0641",
+          "rootHash": "ef3ff1886a2d51573979317881072f35008d7519b157e4b56651e1502b2f22aa",
+          "url": "https://tonviewer.com/transaction/73a61d555f63cb6896982ed79494ed834b2727e9c77926ac038c9115601e0641",
           "op": "dedust_swap_external"
         },
         {
@@ -441,9 +442,9 @@
       ],
       "sampleTransactions": [
         {
-          "hash": "f05901f42ba52c77b5ee2dff99273d14a85ecfe52a009677d398e30fdf6df05d",
-          "rootHash": "4f534b155cae6c97d118d87406b61d4015376bb1c73fc20f29293206534d06fc",
-          "url": "https://tonviewer.com/transaction/f05901f42ba52c77b5ee2dff99273d14a85ecfe52a009677d398e30fdf6df05d",
+          "hash": "c6fa0641d2abe3fe77d06cf92449e4564a0f26710f7eb7051da61036995e49f4",
+          "rootHash": "3168d21152112b04bd5c73838a9ff7993bf1d9254b5da915564b1fe98f0b5031",
+          "url": "https://tonviewer.com/transaction/c6fa0641d2abe3fe77d06cf92449e4564a0f26710f7eb7051da61036995e49f4",
           "op": "poolv3_swap"
         }
       ],
