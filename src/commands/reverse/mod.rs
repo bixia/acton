@@ -967,18 +967,18 @@ fn run_state_flow_targets(
                 replay_paths.push(path);
                 replays.push(replay);
             }
+        }
 
-            let probe_replays = run_schema_replay_probes(
-                &corpus,
-                &schema,
-                &target_dir,
-                pretty,
-                plan.ignore_chksig,
-            )?;
-            for (path, replay) in probe_replays {
-                replay_paths.push(path);
-                replays.push(replay);
-            }
+        let probe_replays = run_schema_replay_probes(
+            &corpus,
+            &schema,
+            &target_dir,
+            pretty,
+            schema_probe_ignore_chksig(target),
+        )?;
+        for (path, replay) in probe_replays {
+            replay_paths.push(path);
+            replays.push(replay);
         }
 
         let retrace_path = if let Some(hash) = &target.retrace_tx_hash {
@@ -1292,6 +1292,8 @@ struct SmokeTarget {
     retrace_tx_hash: Option<String>,
     #[serde(default)]
     allowed_collection_failures: usize,
+    #[serde(default)]
+    ignore_chksig: bool,
     replay_mutation: Option<SmokeReplayMutation>,
 }
 
@@ -1304,6 +1306,17 @@ fn analysis_target_from_args(
     if options.replay_tx_index.is_some() && options.replay_tx_hash.is_some() {
         anyhow::bail!("only one replay transaction selector can be provided");
     }
+
+    let replay_mutation = if analysis_has_explicit_replay_mutation(&options) {
+        Some(SmokeReplayMutation::from_args(
+            options.flip_body_bit,
+            options.body_boc64,
+            options.set_body_uint,
+            options.ignore_chksig,
+        )?)
+    } else {
+        None
+    };
 
     Ok(SmokeTarget {
         id: options
@@ -1322,13 +1335,22 @@ fn analysis_target_from_args(
         replay_tx_hash: options.replay_tx_hash,
         retrace_tx_hash: options.retrace_tx_hash,
         allowed_collection_failures: 0,
-        replay_mutation: Some(SmokeReplayMutation::from_args(
-            options.flip_body_bit,
-            options.body_boc64,
-            options.set_body_uint,
-            options.ignore_chksig,
-        )?),
+        ignore_chksig: options.ignore_chksig,
+        replay_mutation,
     })
+}
+
+fn analysis_has_explicit_replay_mutation(options: &AnalysisTargetOptions) -> bool {
+    options.flip_body_bit.is_some()
+        || options.body_boc64.is_some()
+        || options.set_body_uint.is_some()
+}
+
+fn schema_probe_ignore_chksig(target: &SmokeTarget) -> bool {
+    target
+        .replay_mutation
+        .as_ref()
+        .map_or(target.ignore_chksig, |mutation| mutation.ignore_chksig)
 }
 
 fn load_artifact_manifest_input(
@@ -23381,7 +23403,7 @@ mod tests {
     }
 
     #[test]
-    fn analysis_target_defaults_to_baseline_replay() {
+    fn analysis_target_defaults_to_schema_probe_replay() {
         let target = super::analysis_target_from_args(
             "addr",
             "mainnet",
@@ -23396,11 +23418,10 @@ mod tests {
         assert_eq!(target.collect_limit, 2);
         assert_eq!(target.replay_tx_index, None);
         assert_eq!(target.replay_tx_hash, None);
-        let replay = target
-            .replay_mutation
-            .expect("analysis should replay by default");
-        assert_eq!(replay.mutation_type, "none");
-        assert!(!replay.ignore_chksig);
+        assert!(
+            target.replay_mutation.is_none(),
+            "analysis without an explicit mutation should use inferred schema probes"
+        );
     }
 
     #[test]
@@ -23432,6 +23453,23 @@ mod tests {
     }
 
     #[test]
+    fn analysis_target_propagates_ignore_chksig_to_schema_probes_without_manual_mutation() {
+        let target = super::analysis_target_from_args(
+            "addr",
+            "mainnet",
+            2,
+            super::AnalysisTargetOptions {
+                ignore_chksig: true,
+                ..Default::default()
+            },
+        )
+        .expect("analysis target should build");
+
+        assert!(target.replay_mutation.is_none());
+        assert!(super::schema_probe_ignore_chksig(&target));
+    }
+
+    #[test]
     fn set_body_uint_replay_mutation_parses_for_analysis() {
         let target = super::analysis_target_from_args(
             "addr",
@@ -23447,12 +23485,14 @@ mod tests {
 
         let replay = target
             .replay_mutation
+            .as_ref()
             .expect("analysis should replay by default");
         assert_eq!(replay.mutation_type, "setBodyUint");
         assert_eq!(replay.bit_offset, Some(32));
         assert_eq!(replay.bits, Some(64));
         assert_eq!(replay.value.as_deref(), Some("42"));
         assert!(replay.ignore_chksig);
+        assert!(super::schema_probe_ignore_chksig(&target));
         assert!(matches!(
             replay.to_replay_mutation().unwrap(),
             ReplayMutation::SetBodyUint {
@@ -23528,6 +23568,7 @@ mod tests {
             replay_tx_hash: None,
             retrace_tx_hash: None,
             allowed_collection_failures: 0,
+            ignore_chksig: false,
             replay_mutation: Some(super::SmokeReplayMutation {
                 mutation_type: "flipBodyBit".to_owned(),
                 bit: Some(0),
