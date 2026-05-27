@@ -148,6 +148,7 @@ export interface StateFlowSchemaReport {
   readonly network: string
   readonly address: string
   readonly transactionCount: number
+  readonly abiRecovery?: AbiRecoveryReport | null
   readonly stateMachine?: StateMachineGraph | null
   readonly opTable?: OpTableCandidate | null
   readonly messageSurface?: MessageSurfaceCandidate | null
@@ -156,6 +157,23 @@ export interface StateFlowSchemaReport {
   readonly storageLayout?: StorageLayoutCandidate | null
   readonly auditSignals?: readonly AuditSignal[] | null
   readonly opcodeCandidates: readonly OpcodeSchemaCandidate[]
+}
+
+export interface AbiRecoveryReport {
+  readonly mode: string
+  readonly source: string
+  readonly knownAbiRequired: boolean
+  readonly sourceFunction: string
+  readonly opcodeCount: number
+  readonly messageCount: number
+  readonly bodyFieldCount: number
+  readonly storageFieldCount: number
+  readonly effectCount: number
+  readonly replayProbeCount: number
+  readonly unknownFieldCount: number
+  readonly confidence: string
+  readonly evidence: readonly string[]
+  readonly notes: readonly string[]
 }
 
 export interface StateMachineGraph {
@@ -1230,12 +1248,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
   const replayProbeRows = schemaReplayProbeRows(schema)
   const replaySurfaceRows = schemaReplaySurfaceRows(schema)
   const unknownFieldRows = schemaUnknownFieldRows(schema)
+  const abiRecoveryRows = schemaAbiRecoveryRows(schema)
   return {
     title: "State Flow Schema",
     subtitle: schema.address,
     metrics: [
       {label: "Network", value: schema.network},
       {label: "Transactions", value: schema.transactionCount.toString()},
+      ...(schema.abiRecovery ? [{label: "ABI Recovery", value: schema.abiRecovery.mode}] : []),
       {label: "Ops", value: opTableRows.length.toString()},
       {label: "Message Surface", value: messageSurfaceRows.length.toString()},
       {label: "Candidates", value: schema.opcodeCandidates.length.toString()},
@@ -1269,6 +1289,14 @@ function summarizeSchema(schema: StateFlowSchemaReport): ArtifactSummary {
           ].join(" · "),
         })),
       },
+      ...(abiRecoveryRows.length > 0
+        ? [
+            {
+              title: "ABI Recovery",
+              rows: abiRecoveryRows,
+            },
+          ]
+        : []),
       ...(opTableRows.length > 0
         ? [
             {
@@ -1933,6 +1961,7 @@ function schemaUnknownFieldCount(schema: StateFlowSchemaReport): number {
 
 function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const targetSection = report.sections.find(section => section.title === "Target")
+  const abiRecoveryRows = reportAbiRecoveryRows(report)
   const opTableRows = reportOpTableRows(report)
   const messageSurfaceRows = reportMessageSurfaceRows(report)
   const opcodeCandidateRows = reportOpcodeCandidateRows(report)
@@ -1964,6 +1993,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Target",
               rows: reportTargetRows(targetSection),
+            },
+          ]
+        : []),
+      ...(abiRecoveryRows.length > 0
+        ? [
+            {
+              title: "ABI Recovery",
+              rows: abiRecoveryRows,
             },
           ]
         : []),
@@ -2363,6 +2400,29 @@ function reportTargetRows(section: StateFlowReportSection): readonly SummaryRow[
       label: stripMarkdownInline(match[1] ?? ""),
       value: stripMarkdownInline(match[2] ?? ""),
     }))
+}
+
+function reportAbiRecoveryRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "ABI Recovery").map(row => ({
+    label: rowValue(row, "Mode") || "n/a",
+    value: rowValue(row, "Source") || "n/a",
+    detail: [
+      tableValueLabel("known ABI", rowValue(row, "Known ABI required")),
+      tableValueLabel("source", rowValue(row, "Source function")),
+      tableValueLabel("opcodes", rowValue(row, "Opcodes")),
+      tableValueLabel("messages", rowValue(row, "Messages")),
+      tableValueLabel("body fields", rowValue(row, "Body fields")),
+      tableValueLabel("storage fields", rowValue(row, "Storage fields")),
+      tableValueLabel("effects", rowValue(row, "Effects")),
+      tableValueLabel("replay probes", rowValue(row, "Replay probes")),
+      tableValueLabel("unknowns", rowValue(row, "Unknowns")),
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+      tableValueLabel("notes", decodeMarkdownEntities(rowValue(row, "Notes"))),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
 }
 
 function reportOpcodeCandidateRows(report: StateFlowReport): readonly SummaryRow[] {
@@ -2863,6 +2923,10 @@ function stripMarkdownInline(value: string): string {
   return value.replaceAll("`", "").trim()
 }
 
+function decodeMarkdownEntities(value: string): string {
+  return value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&")
+}
+
 function nonEmptyLineCount(lines: readonly string[]): number {
   return lines.filter(line => line.trim().length > 0).length
 }
@@ -3071,6 +3135,39 @@ function candidateEffectCount(candidate: OpcodeSchemaCandidate): number {
 
 function candidateReplayProbeCount(candidate: OpcodeSchemaCandidate): number {
   return candidate.replayProbes?.length ?? 0
+}
+
+function schemaAbiRecoveryRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
+  const abi = schema.abiRecovery
+  if (!abi) {
+    return []
+  }
+  return [
+    {
+      label: abi.mode,
+      value: abi.source,
+      detail: abiRecoveryDetail(abi),
+    },
+  ]
+}
+
+function abiRecoveryDetail(abi: AbiRecoveryReport): string {
+  return [
+    `known ABI ${String(abi.knownAbiRequired)}`,
+    `source ${abi.sourceFunction}`,
+    `opcodes ${abi.opcodeCount}`,
+    `messages ${abi.messageCount}`,
+    `body fields ${abi.bodyFieldCount}`,
+    `storage fields ${abi.storageFieldCount}`,
+    `effects ${abi.effectCount}`,
+    `replay probes ${abi.replayProbeCount}`,
+    `unknowns ${abi.unknownFieldCount}`,
+    `confidence ${abi.confidence}`,
+    listLabel("evidence", abi.evidence),
+    textListLabel("notes", abi.notes),
+  ]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .join(" · ")
 }
 
 function schemaBodyFieldRows(schema: StateFlowSchemaReport): readonly SummaryRow[] {
@@ -3647,6 +3744,16 @@ function listLabel(
     return undefined
   }
   return `${label} ${values.join(", ")}`
+}
+
+function textListLabel(
+  label: string,
+  values: readonly string[] | null | undefined,
+): string | undefined {
+  if (!values || values.length === 0) {
+    return undefined
+  }
+  return `${label} ${values.join("; ")}`
 }
 
 function stateMachineEdges(schema: StateFlowSchemaReport): readonly StateMachineEdge[] {

@@ -102,6 +102,25 @@ const schema = {
   network: "mainnet",
   address: "account",
   transactionCount: 2,
+  abiRecovery: {
+    mode: "unknown-abi",
+    source: "state-flow-observation",
+    knownAbiRequired: false,
+    sourceFunction: "recv_internal",
+    opcodeCount: 1,
+    messageCount: 1,
+    bodyFieldCount: 2,
+    storageFieldCount: 1,
+    effectCount: 2,
+    replayProbeCount: 1,
+    unknownFieldCount: 1,
+    confidence: "medium",
+    evidence: ["tx-a", "tx-b"],
+    notes: [
+      "method names are synthetic op::<opcode> labels",
+      "message body field names require TL-B recovery",
+    ],
+  },
   opTable: {
     entries: [
       {
@@ -804,6 +823,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 - Retraced transactions: 2
 - Replay failures while collecting: 0
 
+## ABI Recovery
+| Mode | Source | Known ABI required | Source function | Opcodes | Messages | Body fields | Storage fields | Effects | Replay probes | Unknowns | Confidence | Evidence | Notes |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 2 | 1 | 2 | 1 | 1 | medium | \`tx-a\`, \`tx-b\` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery |
+
 ## Opcode Candidates
 | Opcode | Count | Confidence |
 | --- | ---: | --- |
@@ -980,6 +1004,20 @@ assert(
 assert(
   schemaSummary.sections[0]?.rows[0]?.detail?.includes("code 8/0") === true,
   "expected candidate summary to include storage code shape",
+)
+assert(
+  schemaSummary.metrics.some(
+    metric => metric.label === "ABI Recovery" && metric.value === "unknown-abi",
+  ),
+  "expected schema ABI recovery metric",
+)
+const abiRecoveryRows = sectionRows(schemaSummary, "ABI Recovery")
+assert(abiRecoveryRows[0]?.label === "unknown-abi", "expected ABI recovery row")
+assert(abiRecoveryRows[0]?.value === "state-flow-observation", "expected ABI recovery source")
+assert(
+  abiRecoveryRows[0]?.detail ===
+    "known ABI false · source recv_internal · opcodes 1 · messages 1 · body fields 2 · storage fields 1 · effects 2 · replay probes 1 · unknowns 1 · confidence medium · evidence tx-a, tx-b · notes method names are synthetic op::<opcode> labels; message body field names require TL-B recovery",
+  "expected ABI recovery evidence detail",
 )
 const opTableRows = sectionRows(schemaSummary, "Op Table")
 assert(opTableRows[0]?.label === "0x00000001", "expected op table row")
@@ -1374,12 +1412,23 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "20"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "21"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
 assert(reportTargetRows[0]?.label === "Network", "expected report target network row")
 assert(reportTargetRows[0]?.value === "mainnet", "expected report target network")
+const reportAbiRecoveryRows = sectionRows(reportSummary, "ABI Recovery")
+assert(reportAbiRecoveryRows[0]?.label === "unknown-abi", "expected report ABI recovery mode")
+assert(
+  reportAbiRecoveryRows[0]?.value === "state-flow-observation",
+  "expected report ABI recovery source",
+)
+assert(
+  reportAbiRecoveryRows[0]?.detail ===
+    "known ABI false · source recv_internal · opcodes 1 · messages 1 · body fields 2 · storage fields 1 · effects 2 · replay probes 1 · unknowns 1 · confidence medium · evidence tx-a, tx-b · notes method names are synthetic op::<opcode> labels; message body field names require TL-B recovery",
+  "expected report ABI recovery detail",
+)
 const reportOpcodeRows = sectionRows(reportSummary, "Opcode Candidates")
 assert(reportOpcodeRows[0]?.label === "0x00000001", "expected report opcode candidate row")
 assert(reportOpcodeRows[0]?.value === "low confidence", "expected report opcode confidence")

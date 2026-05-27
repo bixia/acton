@@ -3450,6 +3450,7 @@ fn validate_state_flow_schema_evidence_keys(
         ("network", &["network"][..]),
         ("address", &["address"][..]),
         ("transaction count", &["transactionCount"][..]),
+        ("ABI recovery", &["abiRecovery"][..]),
         ("state machine", &["stateMachine"][..]),
         ("op table", &["opTable"][..]),
         ("message surface", &["messageSurface"][..]),
@@ -14990,6 +14991,45 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_schema_missing_abi_recovery_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let schema_path = temp_dir.path().join("target-a/schema.json");
+        let mut schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema artifact should be readable"),
+        )
+        .expect("schema artifact should parse");
+        schema
+            .as_object_mut()
+            .expect("schema should be an object")
+            .remove("abiRecovery");
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/schema.json",
+            &schema.to_string(),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "schema artifact target-a/schema.json missing ABI recovery evidence key",
+                )
+            }),
+            "expected missing schema ABI recovery key failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_schema_missing_message_surface_key() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -19917,6 +19957,7 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "abiRecovery": sample_abi_recovery_json(),
                 "opTable": {
                     "entries": [{
                         "opcode": "0x00000001",
@@ -20188,6 +20229,7 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "abiRecovery": sample_abi_recovery_json(),
                 "opTable": {
                     "entries": [{
                         "opcode": "0x00000001",
@@ -23462,6 +23504,28 @@ mod tests {
         })
     }
 
+    fn sample_abi_recovery_json() -> serde_json::Value {
+        serde_json::json!({
+            "mode": "unknown-abi",
+            "source": "state-flow-observation",
+            "knownAbiRequired": false,
+            "sourceFunction": "recv_internal",
+            "opcodeCount": 1,
+            "messageCount": 1,
+            "bodyFieldCount": 0,
+            "storageFieldCount": 0,
+            "effectCount": 0,
+            "replayProbeCount": 0,
+            "unknownFieldCount": 1,
+            "confidence": "medium",
+            "evidence": ["tx-a", "tx-b"],
+            "notes": [
+                "method names are synthetic op::<opcode> labels",
+                "message body field names require TL-B recovery"
+            ]
+        })
+    }
+
     fn sample_query_id_method_surface_json(
         evidence: &[&str],
         unknowns: &[&str],
@@ -23508,6 +23572,7 @@ mod tests {
                 "network": "mainnet",
                 "address": "addr",
                 "transactionCount": 2,
+                "abiRecovery": sample_abi_recovery_json(),
                 "opTable": {
                     "entries": [{
                         "opcode": "0x00000001",

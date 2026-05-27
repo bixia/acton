@@ -104,6 +104,8 @@ pub struct StateFlowSchemaReport {
     pub address: String,
     pub transaction_count: usize,
     #[serde(default)]
+    pub abi_recovery: AbiRecoveryReport,
+    #[serde(default)]
     pub state_machine: StateMachineGraph,
     #[serde(default)]
     pub op_table: OpTableCandidate,
@@ -118,6 +120,25 @@ pub struct StateFlowSchemaReport {
     #[serde(default)]
     pub audit_signals: Vec<AuditSignal>,
     pub opcode_candidates: Vec<OpcodeSchemaCandidate>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiRecoveryReport {
+    pub mode: String,
+    pub source: String,
+    pub known_abi_required: bool,
+    pub source_function: String,
+    pub opcode_count: usize,
+    pub message_count: usize,
+    pub body_field_count: usize,
+    pub storage_field_count: usize,
+    pub effect_count: usize,
+    pub replay_probe_count: usize,
+    pub unknown_field_count: usize,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -849,6 +870,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         .into_iter()
         .map(|(opcode, transactions)| opcode_candidate(opcode, &transactions))
         .collect();
+    let abi_recovery = abi_recovery_from_candidates(&opcode_candidates);
     let op_table = op_table_from_candidates(&opcode_candidates);
     let message_surface = message_surface_from_candidates(&opcode_candidates);
     let replay_surface = replay_surface_from_candidates(&opcode_candidates);
@@ -860,6 +882,7 @@ pub fn infer_schema_candidates(corpus: &StateFlowCorpus) -> StateFlowSchemaRepor
         network: corpus.network.clone(),
         address: corpus.address.clone(),
         transaction_count: corpus.transactions.len(),
+        abi_recovery,
         state_machine: state_machine_graph(&corpus.transactions),
         op_table,
         message_surface,
@@ -993,6 +1016,35 @@ pub fn render_state_flow_report(
         report,
         "- Unknown fields: {}",
         schema_unknown_field_count(schema)
+    )
+    .ok();
+    writeln!(report).ok();
+
+    writeln!(report, "## ABI Recovery").ok();
+    writeln!(report, "| Mode | Source | Known ABI required | Source function | Opcodes | Messages | Body fields | Storage fields | Effects | Replay probes | Unknowns | Confidence | Evidence | Notes |").ok();
+    writeln!(
+        report,
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |"
+    )
+    .ok();
+    let abi = &schema.abi_recovery;
+    writeln!(
+        report,
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+        markdown_escape(&abi.mode),
+        markdown_escape(&abi.source),
+        abi.known_abi_required,
+        markdown_escape(&abi.source_function),
+        abi.opcode_count,
+        abi.message_count,
+        abi.body_field_count,
+        abi.storage_field_count,
+        abi.effect_count,
+        abi.replay_probe_count,
+        abi.unknown_field_count,
+        markdown_escape(&abi.confidence),
+        markdown_code_list(&abi.evidence),
+        markdown_text_list(&abi.notes),
     )
     .ok();
     writeln!(report).ok();
@@ -2573,6 +2625,21 @@ fn markdown_code_list_or_none(values: &[String]) -> String {
     markdown_code_list(values)
 }
 
+fn markdown_text_list(values: &[String]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+    values
+        .iter()
+        .map(|value| {
+            markdown_escape(value)
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn format_op_effect_counts(entry: &OpTableEntry) -> String {
     format!(
         "outbound {}; actions {}",
@@ -2889,6 +2956,54 @@ fn candidate_unknown_field_evidence(
             evidence: candidate.examples.clone(),
         })
         .collect()
+}
+
+pub fn abi_recovery_from_candidates(candidates: &[OpcodeSchemaCandidate]) -> AbiRecoveryReport {
+    let mut evidence = BTreeSet::new();
+    let mut unknown_notes = BTreeSet::new();
+
+    let mut confidence = "high".to_owned();
+    if candidates.is_empty() {
+        confidence = "low".to_owned();
+    }
+
+    let mut body_field_count = 0;
+    let mut storage_field_count = 0;
+    let mut effect_count = 0;
+    let mut replay_probe_count = 0;
+    let mut unknown_field_count = 0;
+
+    for candidate in candidates {
+        confidence = weaker_confidence(&confidence, &candidate.confidence);
+        body_field_count += candidate.inbound_body.field_candidates.len();
+        storage_field_count += candidate.storage.fields.len();
+        effect_count += candidate.outbound_effects.len() + candidate.out_actions.len();
+        replay_probe_count += candidate.replay_probes.len();
+        evidence.extend(candidate.examples.iter().cloned());
+        for unknown in candidate_unknown_field_evidence(candidate) {
+            unknown_field_count += 1;
+            unknown_notes.insert(unknown.marker);
+        }
+    }
+    let mut notes = vec!["method names are synthetic op::<opcode> labels".to_owned()];
+    notes.extend(unknown_notes);
+
+    AbiRecoveryReport {
+        mode: "unknown-abi".to_owned(),
+        source: "state-flow-observation".to_owned(),
+        known_abi_required: false,
+        source_function: "recv_internal".to_owned(),
+        opcode_count: candidates.len(),
+        message_count: candidates.len(),
+        body_field_count,
+        storage_field_count,
+        effect_count,
+        replay_probe_count,
+        unknown_field_count,
+        confidence,
+        evidence: evidence.into_iter().collect(),
+        notes,
+    }
 }
 
 pub fn schema_unknown_field_count(schema: &StateFlowSchemaReport) -> usize {
@@ -5006,6 +5121,57 @@ mod tests {
         assert!(report.contains("| `0x00000001` | `op::0x00000001` | recv_internal | 2 | 104..104 | 0..0 | `opcode:uint32@body:0`, `query_id:uint64@body:32`, `payload_tail:raw@body:96` | `message body field names require TL-B recovery`, `storage field names require typed storage decoding` | medium | `tx-a`, `tx-b` |"));
         assert!(report.contains("| Opcode | Field | Offset | Bits | Refs | Kind | Samples | Value evidence | Confidence |"));
         assert!(report.contains("| `0x00000001` | `query_id` | 32 | 64..64 | 0..0 | uint64 | `0x0000000000000007`, `0x0000000000000008` | tx-a: 0x0000000000000007; tx-b: 0x0000000000000008 | high |"));
+    }
+
+    #[test]
+    fn infer_schema_candidates_persists_unknown_abi_recovery_summary() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_body_fields("tx-a", 0x0000_0001, 7, 0xaa),
+                sample_flow_with_body_fields("tx-b", 0x0000_0001, 8, 0xbb),
+            ],
+            failures: Vec::new(),
+        };
+
+        let schema = super::infer_schema_candidates(&corpus);
+        let json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            json["abiRecovery"],
+            serde_json::json!({
+                "mode": "unknown-abi",
+                "source": "state-flow-observation",
+                "knownAbiRequired": false,
+                "sourceFunction": "recv_internal",
+                "opcodeCount": 1,
+                "messageCount": 1,
+                "bodyFieldCount": 3,
+                "storageFieldCount": 0,
+                "effectCount": 0,
+                "replayProbeCount": 2,
+                "unknownFieldCount": 2,
+                "confidence": "medium",
+                "evidence": ["tx-a", "tx-b"],
+                "notes": [
+                    "method names are synthetic op::<opcode> labels",
+                    "message body field names require TL-B recovery",
+                    "storage field names require typed storage decoding"
+                ]
+            })
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[]);
+        assert!(report.contains("## ABI Recovery"));
+        assert!(report.contains("| Mode | Source | Known ABI required | Source function | Opcodes | Messages | Body fields | Storage fields | Effects | Replay probes | Unknowns | Confidence | Evidence | Notes |"));
+        assert!(report.contains("| unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 3 | 0 | 0 | 2 | 2 | medium | `tx-a`, `tx-b` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery; storage field names require typed storage decoding |"));
     }
 
     #[test]
