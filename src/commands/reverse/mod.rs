@@ -8624,6 +8624,7 @@ fn validate_manifest_report_content_matches_summary(
     for section in [
         "# TON State Flow Reverse Report",
         "## Target",
+        "## ABI Recovery",
         "## Op Table",
         "## Opcode Candidates",
         "## Method Surface",
@@ -8655,6 +8656,19 @@ fn validate_manifest_report_content_matches_summary(
         artifacts,
         "schema",
     ) {
+        if let Some(section) = markdown_section(&markdown, "## ABI Recovery") {
+            validate_report_abi_recovery_header(section, gate_failures);
+            let row = report_abi_recovery_row(section, &schema.abi_recovery);
+            if row.is_none() {
+                gate_failures.push(format!(
+                    "report ABI recovery mode {} is missing",
+                    schema.abi_recovery.mode
+                ));
+            }
+            if let Some(row) = row {
+                validate_report_abi_recovery_values(&schema.abi_recovery, &row, gate_failures);
+            }
+        }
         validate_report_schema_deliverables(&markdown, &schema, gate_failures);
         let schema_evidence_section = markdown_section(&markdown, "## Schema Evidence");
         let evidence_rows = schema_evidence_rows(&schema);
@@ -9478,6 +9492,143 @@ fn insert_report_target_notes(report: &mut String, notes: &str) {
 
 fn report_target_notes_line(notes: &str) -> String {
     format!("- Notes: {}", notes.replace(['\r', '\n'], " "))
+}
+
+fn validate_report_abi_recovery_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = abi_recovery_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report ABI recovery header {expected:?} is missing"
+        ));
+    }
+}
+
+fn abi_recovery_report_header() -> Vec<String> {
+    [
+        "Mode",
+        "Source",
+        "Known ABI required",
+        "Source function",
+        "Opcodes",
+        "Messages",
+        "Body fields",
+        "Storage fields",
+        "Effects",
+        "Replay probes",
+        "Unknowns",
+        "Confidence",
+        "Evidence",
+        "Notes",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
+fn report_abi_recovery_row(
+    section: &str,
+    abi: &ton_stateflow::AbiRecoveryReport,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells.first().is_some_and(|cell| cell == &abi.mode)
+            && cells.get(1).is_some_and(|cell| cell == &abi.source))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_abi_recovery_values(
+    abi: &ton_stateflow::AbiRecoveryReport,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_abi_recovery_cell(
+        "known ABI required",
+        abi.known_abi_required.to_string(),
+        row.get(2),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "source function",
+        abi.source_function.clone(),
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "opcode count",
+        abi.opcode_count.to_string(),
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "message count",
+        abi.message_count.to_string(),
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "body field count",
+        abi.body_field_count.to_string(),
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "storage field count",
+        abi.storage_field_count.to_string(),
+        row.get(7),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "effect count",
+        abi.effect_count.to_string(),
+        row.get(8),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "replay probe count",
+        abi.replay_probe_count.to_string(),
+        row.get(9),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "unknown field count",
+        abi.unknown_field_count.to_string(),
+        row.get(10),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "confidence",
+        abi.confidence.clone(),
+        row.get(11),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "evidence",
+        report_sample_list(&abi.evidence),
+        row.get(12),
+        gate_failures,
+    );
+    validate_report_abi_recovery_cell(
+        "notes",
+        report_text_list(&abi.notes),
+        row.get(13),
+        gate_failures,
+    );
+}
+
+fn validate_report_abi_recovery_cell(
+    label: &str,
+    expected: String,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!("report ABI recovery {label} {expected} is missing"));
+    }
 }
 
 fn validate_report_schema_deliverables(
@@ -11531,6 +11682,23 @@ fn report_sample_list(samples: &[String]) -> String {
         return "<none>".to_owned();
     }
     samples.join(", ")
+}
+
+fn report_text_list(values: &[String]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .replace('|', "\\|")
+                .replace('\n', " ")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn report_code_list_from_strings(samples: Vec<String>) -> String {
@@ -18384,6 +18552,62 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_abi_recovery() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_abi_recovery("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report section \"## ABI Recovery\" is missing")
+            }),
+            "expected report ABI recovery section failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_abi_recovery_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_abi_recovery("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report ABI recovery confidence medium is missing")
+            }),
+            "expected report ABI recovery confidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_opcode_candidate_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -23777,6 +24001,36 @@ mod tests {
         sample_report_markdown_inner(address, true, "flip body bit 0", true, true)
     }
 
+    fn sample_report_markdown_without_abi_recovery(address: &str) -> String {
+        remove_report_section(
+            &sample_report_markdown(address),
+            "## ABI Recovery",
+            "## Op Table",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_abi_recovery(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 0 | 0 | 0 | 0 | 1 | medium | `tx-a`, `tx-b` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery |",
+            "| unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 0 | 0 | 0 | 0 | 1 | low | `tx-a`, `tx-b` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery |",
+        )
+    }
+
+    fn remove_report_section(markdown: &str, start_heading: &str, next_heading: &str) -> String {
+        let section_start = markdown
+            .find(start_heading)
+            .expect("sample report should include section start");
+        let next_section_start = markdown[section_start..]
+            .find(next_heading)
+            .map(|offset| section_start + offset)
+            .expect("sample report should include next section");
+        format!(
+            "{}{}",
+            &markdown[..section_start],
+            &markdown[next_section_start..]
+        )
+    }
+
     fn sample_report_markdown_without_schema_evidence(address: &str) -> String {
         sample_report_markdown_inner(address, false, "flip body bit 0", true, true)
     }
@@ -24164,6 +24418,11 @@ mod tests {
              - State machine edges: 1\n\
              - Audit signals: 1\n\
              - Unknown fields: 1\n\
+             \n\
+             ## ABI Recovery\n\
+             | Mode | Source | Known ABI required | Source function | Opcodes | Messages | Body fields | Storage fields | Effects | Replay probes | Unknowns | Confidence | Evidence | Notes |\n\
+             | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n\
+             | unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 0 | 0 | 0 | 0 | 1 | medium | `tx-a`, `tx-b` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery |\n\
              \n\
              ## Op Table\n\
              | Opcode | Name | Source function | Transactions | Body bits | Body refs | Body fields | Storage fields | Effects | State transitions | Confidence | Evidence | Unknowns |\n\
