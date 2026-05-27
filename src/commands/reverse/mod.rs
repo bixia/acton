@@ -935,6 +935,7 @@ fn run_state_flow_targets(
 
         let mut replays = Vec::new();
         let mut replay_paths = Vec::new();
+        let mut replay_artifacts = Vec::new();
         let mut replay_path = None;
         let mut transaction_path = None;
         if let Some(plan) = &target.replay_mutation {
@@ -950,9 +951,10 @@ fn run_state_flow_targets(
                     pretty,
                     "State-flow smoke transaction JSON",
                 )?;
+                let mutation = plan.to_replay_mutation()?;
                 let replay = ton_stateflow::replay_state_flow_tx(
                     flow,
-                    plan.to_replay_mutation()?,
+                    mutation.clone(),
                     plan.ignore_chksig,
                 )?;
                 let path = target_dir.join("replay.json");
@@ -964,6 +966,7 @@ fn run_state_flow_targets(
                 )?;
                 transaction_path = Some(tx_path);
                 replay_path = Some(path.clone());
+                replay_artifacts.push(SmokeReplayArtifactSummary::manual(&path, flow, &mutation));
                 replay_paths.push(path);
                 replays.push(replay);
             }
@@ -976,9 +979,10 @@ fn run_state_flow_targets(
             pretty,
             schema_probe_ignore_chksig(target),
         )?;
-        for (path, replay) in probe_replays {
-            replay_paths.push(path);
-            replays.push(replay);
+        for replay_run in probe_replays {
+            replay_paths.push(replay_run.path);
+            replay_artifacts.push(replay_run.summary);
+            replays.push(replay_run.replay);
         }
 
         let retrace_path = if let Some(hash) = &target.retrace_tx_hash {
@@ -1046,6 +1050,7 @@ fn run_state_flow_targets(
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect(),
+            replay_artifacts,
             report: report_path.display().to_string(),
         });
     }
@@ -1060,7 +1065,7 @@ fn run_schema_replay_probes(
     target_dir: &Path,
     pretty: bool,
     ignore_chksig: bool,
-) -> anyhow::Result<Vec<(PathBuf, StateFlowReplayDiff)>> {
+) -> anyhow::Result<Vec<SmokeReplayArtifactRun>> {
     let mut replays = Vec::new();
     let mut used_paths = HashSet::new();
 
@@ -1080,11 +1085,24 @@ fn run_schema_replay_probes(
                 pretty,
                 "State-flow smoke replay probe diff JSON",
             )?;
-            replays.push((path, replay));
+            let summary =
+                SmokeReplayArtifactSummary::schema_probe(&path, &replay, candidate, probe);
+            replays.push(SmokeReplayArtifactRun {
+                path,
+                replay,
+                summary,
+            });
         }
     }
 
     Ok(replays)
+}
+
+#[derive(Debug)]
+struct SmokeReplayArtifactRun {
+    path: PathBuf,
+    replay: StateFlowReplayDiff,
+    summary: SmokeReplayArtifactSummary,
 }
 
 fn select_smoke_replay_transaction_ref<'a>(
@@ -1636,7 +1654,63 @@ struct SmokeTargetRunSummary {
     retrace: Option<String>,
     replay: Option<String>,
     replays: Vec<String>,
+    #[serde(default)]
+    replay_artifacts: Vec<SmokeReplayArtifactSummary>,
     report: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeReplayArtifactSummary {
+    path: String,
+    source: String,
+    source_query_hash: String,
+    mutation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    probe: Option<SmokeReplayProbeArtifactSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmokeReplayProbeArtifactSummary {
+    opcode: Option<String>,
+    field_name: String,
+    cli_arg: String,
+    confidence: String,
+    evidence: Vec<String>,
+}
+
+impl SmokeReplayArtifactSummary {
+    fn manual(path: &Path, flow: &StateFlowTx, mutation: &ReplayMutation) -> Self {
+        Self {
+            path: path.display().to_string(),
+            source: "manual".to_owned(),
+            source_query_hash: flow.query_hash.clone(),
+            mutation: report_replay_mutation_label(mutation),
+            probe: None,
+        }
+    }
+
+    fn schema_probe(
+        path: &Path,
+        replay: &StateFlowReplayDiff,
+        candidate: &ton_stateflow::OpcodeSchemaCandidate,
+        probe: &ton_stateflow::ReplayProbeCandidate,
+    ) -> Self {
+        Self {
+            path: path.display().to_string(),
+            source: "schema-probe".to_owned(),
+            source_query_hash: replay.source_query_hash.clone(),
+            mutation: report_replay_mutation_label(&replay.mutation),
+            probe: Some(SmokeReplayProbeArtifactSummary {
+                opcode: candidate.opcode.clone(),
+                field_name: probe.field_name.clone(),
+                cli_arg: probe.cli_arg.clone(),
+                confidence: probe.confidence.clone(),
+                evidence: probe.evidence.clone(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -5790,6 +5864,7 @@ fn validate_smoke_target_summary_evidence_keys(
         ("retrace", &["retrace"][..]),
         ("replay", &["replay"][..]),
         ("replays", &["replays"][..]),
+        ("replay artifacts", &["replayArtifacts"][..]),
         ("report", &["report"][..]),
     ] {
         if !json_path_exists(value, path) {
@@ -5926,6 +6001,13 @@ fn validate_summary_replay_artifact_paths(
     if manifest_replays.is_empty() {
         return;
     }
+    if target.replay_artifacts.len() != summary_replays.len() {
+        gate_failures.push(format!(
+            "replay artifact summary count mismatch: replay paths {}, replay artifacts {}",
+            summary_replays.len(),
+            target.replay_artifacts.len()
+        ));
+    }
     if manifest_replays.len() != summary_replays.len() {
         gate_failures.push(format!(
             "replay artifact count mismatch: manifest {}, summary {}",
@@ -5950,6 +6032,20 @@ fn validate_summary_replay_artifact_paths(
         }) {
             gate_failures.push(format!(
                 "summary replay path {summary_path} is missing from manifest"
+            ));
+        }
+    }
+    for replay_artifact in &target.replay_artifacts {
+        if !summary_replays.iter().any(|summary_path| {
+            manifest_artifact_path_matches_summary(
+                manifest_path,
+                &replay_artifact.path,
+                summary_path,
+            )
+        }) {
+            gate_failures.push(format!(
+                "replay artifact summary path {} is not listed in summary replays",
+                replay_artifact.path
             ));
         }
     }
@@ -13485,6 +13581,10 @@ impl SmokeTargetRunSummary {
             .iter()
             .map(|path| manifest_relative_path(Path::new(path), artifact_dir))
             .collect();
+        for replay_artifact in &mut self.replay_artifacts {
+            replay_artifact.path =
+                manifest_relative_path(Path::new(&replay_artifact.path), artifact_dir);
+        }
         self.report = manifest_relative_path(Path::new(&self.report), artifact_dir);
     }
 
@@ -13823,6 +13923,22 @@ mod tests {
         assert_eq!(
             json["targets"][0]["replays"],
             serde_json::json!(["out/target-a/replay.json"])
+        );
+    }
+
+    #[test]
+    fn smoke_summary_serializes_replay_artifact_sources() {
+        let summary = sample_smoke_summary();
+        let json = serde_json::to_value(&summary).expect("summary should serialize");
+
+        assert_eq!(
+            json["targets"][0]["replayArtifacts"],
+            serde_json::json!([{
+                "path": "out/target-a/replay.json",
+                "source": "manual",
+                "sourceQueryHash": "tx-a",
+                "mutation": "flip body bit 0"
+            }])
         );
     }
 
@@ -23684,6 +23800,13 @@ mod tests {
             retrace: None,
             replay: Some("out/target-a/replay.json".to_owned()),
             replays: vec!["out/target-a/replay.json".to_owned()],
+            replay_artifacts: vec![super::SmokeReplayArtifactSummary {
+                path: "out/target-a/replay.json".to_owned(),
+                source: "manual".to_owned(),
+                source_query_hash: "tx-a".to_owned(),
+                mutation: "flip body bit 0".to_owned(),
+                probe: None,
+            }],
             report: "out/target-a/report.md".to_owned(),
         }])
     }
@@ -23701,6 +23824,8 @@ mod tests {
             .map(|_| target_dir.join("retrace.json").display().to_string());
         summary.targets[0].replay = Some(target_dir.join("replay.json").display().to_string());
         summary.targets[0].replays = vec![target_dir.join("replay.json").display().to_string()];
+        summary.targets[0].replay_artifacts[0].path =
+            target_dir.join("replay.json").display().to_string();
         summary.targets[0].report = target_dir.join("report.md").display().to_string();
         summary.refresh_gate_status();
     }

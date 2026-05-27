@@ -680,6 +680,27 @@ const runSummary = {
       retrace: "out/target-a/retrace.json",
       replay: "out/target-a/replay.json",
       replays: ["out/target-a/replay.json", "out/target-a/replay-probe-query-id-32-64.json"],
+      replayArtifacts: [
+        {
+          path: "out/target-a/replay.json",
+          source: "manual",
+          sourceQueryHash: "tx-a",
+          mutation: "flip body bit 0",
+        },
+        {
+          path: "out/target-a/replay-probe-query-id-32-64.json",
+          source: "schema-probe",
+          sourceQueryHash: "tx-b",
+          mutation: "set body uint 0x7 at 32:64",
+          probe: {
+            opcode: "0x00000001",
+            fieldName: "query_id",
+            cliArg: "--set-body-uint 32:64:0x7",
+            confidence: "high",
+            evidence: ["tx-b"],
+          },
+        },
+      ],
       report: "out/target-a/report.md",
     },
     {
@@ -1301,6 +1322,17 @@ assert(
     row => row.label === "target-a retrace" && row.value === "out/target-a/retrace.json",
   ),
   "expected run summary to include retrace artifact path",
+)
+const replaySourceRows = sectionRows(runSummaryView, "Replay Sources")
+assert(
+  replaySourceRows.some(
+    row =>
+      row.label === "schema-probe" &&
+      row.value === "out/target-a/replay-probe-query-id-32-64.json" &&
+      row.detail ===
+        "target-a · tx tx-b · set body uint 0x7 at 32:64 · 0x00000001 query_id · --set-body-uint 32:64:0x7 · confidence high · evidence tx-b",
+  ),
+  "expected run summary to expose schema-probe replay source evidence",
 )
 assert(
   runArtifactRows.some(

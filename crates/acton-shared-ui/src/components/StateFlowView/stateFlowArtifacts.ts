@@ -410,7 +410,24 @@ export interface StateFlowRunTargetSummary {
   readonly retrace?: string | null
   readonly replay?: string | null
   readonly replays?: readonly string[] | null
+  readonly replayArtifacts?: readonly StateFlowRunReplayArtifact[] | null
   readonly report: string
+}
+
+export interface StateFlowRunReplayArtifact {
+  readonly path: string
+  readonly source: string
+  readonly sourceQueryHash: string
+  readonly mutation: string
+  readonly probe?: StateFlowRunReplayProbe | null
+}
+
+export interface StateFlowRunReplayProbe {
+  readonly opcode?: string | null
+  readonly fieldName: string
+  readonly cliArg: string
+  readonly confidence: string
+  readonly evidence: readonly string[]
 }
 
 export interface StateFlowArtifactManifest {
@@ -1478,6 +1495,7 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
   const artifactRows = runSummaryArtifactRows(summary)
   const bundleRows = runSummaryBundleRows(summary)
   const targetSourceRows = runSummaryTargetSourceRows(summary)
+  const replaySourceRows = runSummaryReplaySourceRows(summary)
   return {
     title: "State Flow Run Summary",
     metrics: [
@@ -1523,6 +1541,14 @@ function summarizeRunSummary(summary: StateFlowRunSummary): ArtifactSummary {
             {
               title: "Bundle Artifacts",
               rows: bundleRows,
+            },
+          ]
+        : []),
+      ...(replaySourceRows.length > 0
+        ? [
+            {
+              title: "Replay Sources",
+              rows: replaySourceRows,
             },
           ]
         : []),
@@ -3036,6 +3062,30 @@ function runSummaryTargetSourceRows(summary: StateFlowRunSummary): readonly Summ
   }))
 }
 
+function runSummaryReplaySourceRows(summary: StateFlowRunSummary): readonly SummaryRow[] {
+  return summary.targets.flatMap(target =>
+    (target.replayArtifacts ?? []).map(artifact => ({
+      label: artifact.source,
+      value: artifact.path,
+      detail: [
+        target.id,
+        `tx ${artifact.sourceQueryHash}`,
+        artifact.mutation,
+        artifact.probe
+          ? `${artifact.probe.opcode ?? "<none>"} ${artifact.probe.fieldName}`
+          : undefined,
+        artifact.probe?.cliArg,
+        artifact.probe ? `confidence ${artifact.probe.confidence}` : undefined,
+        artifact.probe?.evidence.length
+          ? `evidence ${artifact.probe.evidence.join(", ")}`
+          : undefined,
+      ]
+        .filter((value): value is string => value !== undefined && value.length > 0)
+        .join(" · "),
+    })),
+  )
+}
+
 function targetArtifactRows(target: StateFlowRunTargetSummary): readonly SummaryRow[] {
   const detail = `${target.network} ${target.address}`
   const replayPaths =
@@ -3061,6 +3111,9 @@ function replayPath(target: StateFlowRunTargetSummary): readonly string[] {
 }
 
 function targetReplayArtifactCount(target: StateFlowRunTargetSummary): number {
+  if (target.replayArtifacts && target.replayArtifacts.length > 0) {
+    return target.replayArtifacts.length
+  }
   return target.replays?.length ?? (target.replay ? 1 : 0)
 }
 
