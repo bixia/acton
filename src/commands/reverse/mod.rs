@@ -1667,6 +1667,8 @@ struct SmokeReplayArtifactSummary {
     source_query_hash: String,
     mutation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    opcode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     probe: Option<SmokeReplayProbeArtifactSummary>,
 }
 
@@ -1687,6 +1689,7 @@ impl SmokeReplayArtifactSummary {
             source: "manual".to_owned(),
             source_query_hash: flow.query_hash.clone(),
             mutation: report_replay_mutation_label(mutation),
+            opcode: flow.inbound.opcode.clone(),
             probe: None,
         }
     }
@@ -1702,6 +1705,7 @@ impl SmokeReplayArtifactSummary {
             source: "schema-probe".to_owned(),
             source_query_hash: replay.source_query_hash.clone(),
             mutation: report_replay_mutation_label(&replay.mutation),
+            opcode: candidate.opcode.clone(),
             probe: Some(SmokeReplayProbeArtifactSummary {
                 opcode: candidate.opcode.clone(),
                 field_name: probe.field_name.clone(),
@@ -6048,6 +6052,92 @@ fn validate_summary_replay_artifact_paths(
                 replay_artifact.path
             ));
         }
+        validate_summary_replay_artifact_content(manifest_path, replay_artifact, gate_failures);
+    }
+}
+
+fn validate_summary_replay_artifact_content(
+    manifest_path: &Path,
+    replay_artifact: &SmokeReplayArtifactSummary,
+    gate_failures: &mut Vec<String>,
+) {
+    let path = resolve_manifest_artifact_path(manifest_path, &replay_artifact.path);
+    let Ok(json) = fs::read_to_string(&path) else {
+        gate_failures.push(format!(
+            "replay artifact summary path {} is unreadable",
+            replay_artifact.path
+        ));
+        return;
+    };
+    let Ok(replay) = serde_json::from_str::<StateFlowReplayDiff>(&json) else {
+        gate_failures.push(format!(
+            "replay artifact summary path {} is not a valid replay artifact",
+            replay_artifact.path
+        ));
+        return;
+    };
+
+    if replay_artifact.source_query_hash != replay.source_query_hash {
+        gate_failures.push(format!(
+            "replay artifact summary source query hash {} does not match replay source query hash {}",
+            replay_artifact.source_query_hash, replay.source_query_hash
+        ));
+    }
+
+    let replay_mutation = report_replay_mutation_label(&replay.mutation);
+    if replay_artifact.mutation != replay_mutation {
+        gate_failures.push(format!(
+            "replay artifact summary mutation {} does not match replay mutation {} for {}",
+            replay_artifact.mutation, replay_mutation, replay.source_query_hash
+        ));
+    }
+
+    let summary_opcode = report_opcode_label(replay_artifact.opcode.as_deref());
+    let replay_opcode = report_opcode_label(replay.baseline.inbound.opcode.as_deref());
+    if summary_opcode != replay_opcode {
+        gate_failures.push(format!(
+            "replay artifact summary opcode {summary_opcode} does not match replay opcode {replay_opcode} for {}",
+            replay.source_query_hash
+        ));
+    }
+
+    match (
+        replay_artifact.source.as_str(),
+        replay_artifact.probe.as_ref(),
+    ) {
+        ("manual", Some(_)) => gate_failures.push(format!(
+            "manual replay artifact summary {} must not include schema probe metadata",
+            replay_artifact.path
+        )),
+        ("schema-probe", None) => gate_failures.push(format!(
+            "schema-probe replay artifact summary {} is missing probe metadata",
+            replay_artifact.path
+        )),
+        ("manual" | "schema-probe", _) => {}
+        (source, _) => gate_failures.push(format!(
+            "replay artifact summary source {source} is unsupported for {}",
+            replay_artifact.path
+        )),
+    }
+
+    if let Some(probe) = &replay_artifact.probe {
+        let probe_opcode = report_opcode_label(probe.opcode.as_deref());
+        if probe_opcode != summary_opcode {
+            gate_failures.push(format!(
+                "replay artifact probe opcode {probe_opcode} does not match summary opcode {summary_opcode} for {}",
+                replay_artifact.path
+            ));
+        }
+        if !probe
+            .evidence
+            .iter()
+            .any(|tx_hash| tx_hash == &replay_artifact.source_query_hash)
+        {
+            gate_failures.push(format!(
+                "replay artifact probe evidence {:?} does not include source query hash {}",
+                probe.evidence, replay_artifact.source_query_hash
+            ));
+        }
     }
 }
 
@@ -8751,6 +8841,7 @@ fn validate_manifest_report_content_matches_summary(
         "## Runtime Evidence",
         "## Message Body Fields",
         "## Replay Probes",
+        "## Replay Sources",
         "## Replay Surface",
         "## Storage Fields",
         "## Storage Layout",
@@ -8831,6 +8922,26 @@ fn validate_manifest_report_content_matches_summary(
             if let Some(row) = runtime_row {
                 validate_report_runtime_evidence_values(tx, &row, gate_failures);
             }
+        }
+    }
+
+    let replay_source_section = markdown_section(&markdown, "## Replay Sources");
+    if !target.replay_artifacts.is_empty() {
+        if let Some(section) = replay_source_section {
+            validate_report_replay_sources_header(section, gate_failures);
+        }
+    }
+    for replay_artifact in &target.replay_artifacts {
+        let replay_source_row = replay_source_section
+            .and_then(|section| report_replay_source_row(section, replay_artifact));
+        if replay_source_row.is_none() {
+            gate_failures.push(format!(
+                "report replay source {} {} for tx {} is missing",
+                replay_artifact.source, replay_artifact.mutation, replay_artifact.source_query_hash
+            ));
+        }
+        if let Some(row) = replay_source_row {
+            validate_report_replay_source_values(replay_artifact, &row, gate_failures);
         }
     }
 
@@ -10103,6 +10214,35 @@ fn replay_probes_report_header() -> Vec<String> {
         .collect()
 }
 
+fn validate_report_replay_sources_header(section: &str, gate_failures: &mut Vec<String>) {
+    let expected = replay_sources_report_header();
+    let header = section
+        .lines()
+        .find_map(markdown_table_cells)
+        .unwrap_or_default();
+    if header != expected {
+        gate_failures.push(format!(
+            "report replay sources header {expected:?} is missing"
+        ));
+    }
+}
+
+fn replay_sources_report_header() -> Vec<String> {
+    [
+        "Source tx",
+        "Source",
+        "Mutation",
+        "Opcode",
+        "Field",
+        "CLI mutation",
+        "Confidence",
+        "Evidence",
+    ]
+    .iter()
+    .map(|header| header.to_string())
+    .collect()
+}
+
 fn validate_report_replay_surface_header(section: &str, gate_failures: &mut Vec<String>) {
     let expected = replay_surface_report_header();
     let header = section
@@ -11089,6 +11229,96 @@ fn validate_report_replay_probe_cell(
         gate_failures.push(format!(
             "report replay probe {label} {expected} for {} is missing",
             probe.cli_arg
+        ));
+    }
+}
+
+fn report_replay_source_row(
+    section: &str,
+    artifact: &SmokeReplayArtifactSummary,
+) -> Option<Vec<String>> {
+    section.lines().find_map(|line| {
+        let cells = markdown_table_cells(line)?;
+        (cells
+            .first()
+            .is_some_and(|cell| cell == &artifact.source_query_hash)
+            && cells.get(1).is_some_and(|cell| cell == &artifact.source)
+            && cells.get(2).is_some_and(|cell| cell == &artifact.mutation))
+        .then_some(cells)
+    })
+}
+
+fn validate_report_replay_source_values(
+    artifact: &SmokeReplayArtifactSummary,
+    row: &[String],
+    gate_failures: &mut Vec<String>,
+) {
+    validate_report_replay_source_cell(
+        "opcode",
+        report_opcode_label(artifact.opcode.as_deref()),
+        artifact,
+        row.get(3),
+        gate_failures,
+    );
+    validate_report_replay_source_cell(
+        "field",
+        artifact
+            .probe
+            .as_ref()
+            .map(|probe| probe.field_name.clone())
+            .unwrap_or_else(|| "<none>".to_owned()),
+        artifact,
+        row.get(4),
+        gate_failures,
+    );
+    validate_report_replay_source_cell(
+        "CLI mutation",
+        artifact
+            .probe
+            .as_ref()
+            .map(|probe| probe.cli_arg.clone())
+            .unwrap_or_else(|| "<none>".to_owned()),
+        artifact,
+        row.get(5),
+        gate_failures,
+    );
+    validate_report_replay_source_cell(
+        "confidence",
+        artifact
+            .probe
+            .as_ref()
+            .map(|probe| probe.confidence.clone())
+            .unwrap_or_else(|| "manual".to_owned()),
+        artifact,
+        row.get(6),
+        gate_failures,
+    );
+    validate_report_replay_source_cell(
+        "evidence",
+        artifact
+            .probe
+            .as_ref()
+            .map(|probe| report_sample_list(&probe.evidence))
+            .unwrap_or_else(|| {
+                report_sample_list(std::slice::from_ref(&artifact.source_query_hash))
+            }),
+        artifact,
+        row.get(7),
+        gate_failures,
+    );
+}
+
+fn validate_report_replay_source_cell(
+    label: &str,
+    expected: String,
+    artifact: &SmokeReplayArtifactSummary,
+    actual: Option<&String>,
+    gate_failures: &mut Vec<String>,
+) {
+    if actual.is_none_or(|actual| actual != &expected) {
+        gate_failures.push(format!(
+            "report replay source {label} {expected} for {} {} tx {} is missing",
+            artifact.source, artifact.mutation, artifact.source_query_hash
         ));
     }
 }
@@ -13754,6 +13984,7 @@ mod tests {
                     .is_some_and(|plan| plan.ignore_chksig)
         }));
         for bounded_failure_target_id in [
+            "stonfi-v2-ton-usdt-pool",
             "stonfi-v1-ton-usdt-pool",
             "dedust-native-vault",
             "dedust-usdt-vault",
@@ -13937,7 +14168,8 @@ mod tests {
                 "path": "out/target-a/replay.json",
                 "source": "manual",
                 "sourceQueryHash": "tx-a",
-                "mutation": "flip body bit 0"
+                "mutation": "flip body bit 0",
+                "opcode": "0x00000001"
             }])
         );
     }
@@ -18746,6 +18978,64 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_report_missing_replay_sources() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_without_replay_sources("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains("target-a: report section \"## Replay Sources\" is missing")
+            }),
+            "expected report replay sources section failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_validation_rejects_report_replay_source_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        write_sample_validation_artifact(
+            temp_dir.path(),
+            "target-a/report.md",
+            &sample_report_markdown_with_wrong_replay_source("addr"),
+        );
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: report replay source confidence manual for manual flip body bit 0 tx tx-a is missing",
+                )
+            }),
+            "expected report replay source confidence failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_report_opcode_candidate_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -23287,6 +23577,49 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_validation_rejects_summary_replay_artifact_content_mismatch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        write_sample_validation_artifacts(temp_dir.path());
+        let summary_path = temp_dir.path().join("summary.json");
+        let mut summary: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&summary_path).expect("summary should be readable"),
+        )
+        .expect("summary should parse");
+        summary["targets"][0]["replayArtifacts"][0]["sourceQueryHash"] = serde_json::json!("tx-b");
+        summary["targets"][0]["replayArtifacts"][0]["mutation"] =
+            serde_json::json!("flip body bit 1");
+        write_sample_validation_artifact(temp_dir.path(), "summary.json", &summary.to_string());
+        let manifest = sample_validation_manifest();
+
+        let validation = super::validate_artifact_manifest_bundle(
+            &manifest,
+            &temp_dir.path().join("artifacts.json"),
+            None,
+        )
+        .expect("manifest validation should run");
+
+        assert!(!validation.passed);
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay artifact summary source query hash tx-b does not match replay source query hash tx-a",
+                )
+            }),
+            "expected summary replay artifact source mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+        assert!(
+            validation.gate_failures.iter().any(|failure| {
+                failure.contains(
+                    "target-a: replay artifact summary mutation flip body bit 1 does not match replay mutation flip body bit 0 for tx-a",
+                )
+            }),
+            "expected summary replay artifact mutation mismatch failure, got {:?}",
+            validation.gate_failures
+        );
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_run_summary_entry_mismatch() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         write_sample_validation_artifacts(temp_dir.path());
@@ -23805,6 +24138,7 @@ mod tests {
                 source: "manual".to_owned(),
                 source_query_hash: "tx-a".to_owned(),
                 mutation: "flip body bit 0".to_owned(),
+                opcode: Some("0x00000001".to_owned()),
                 probe: None,
             }],
             report: "out/target-a/report.md".to_owned(),
@@ -24179,6 +24513,21 @@ mod tests {
         sample_report_markdown(address).replace(
             "| unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 0 | 0 | 0 | 0 | 1 | medium | `tx-a`, `tx-b` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery |",
             "| unknown-abi | state-flow-observation | false | recv_internal | 1 | 1 | 0 | 0 | 0 | 0 | 1 | low | `tx-a`, `tx-b` | method names are synthetic op::&lt;opcode&gt; labels; message body field names require TL-B recovery |",
+        )
+    }
+
+    fn sample_report_markdown_without_replay_sources(address: &str) -> String {
+        remove_report_section(
+            &sample_report_markdown(address),
+            "## Replay Sources",
+            "## Replay Surface",
+        )
+    }
+
+    fn sample_report_markdown_with_wrong_replay_source(address: &str) -> String {
+        sample_report_markdown(address).replace(
+            "| `tx-a` | manual | flip body bit 0 | `0x00000001` | `<none>` | `<none>` | manual | `tx-a` |",
+            "| `tx-a` | manual | flip body bit 0 | `<none>` | `<none>` | `<none>` | stale | `tx-b` |",
         )
     }
 
@@ -24626,6 +24975,11 @@ mod tests {
              \n\
              ## Replay Probes\n\
              - No replay probe candidates were inferred.\n\
+             \n\
+             ## Replay Sources\n\
+             | Source tx | Source | Mutation | Opcode | Field | CLI mutation | Confidence | Evidence |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | `tx-a` | manual | {replay_mutation} | `0x00000001` | `<none>` | `<none>` | manual | `tx-a` |\n\
              \n\
              ## Replay Surface\n\
              - No replay surface probes were inferred.\n\

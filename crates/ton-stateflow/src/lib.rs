@@ -1311,6 +1311,35 @@ pub fn render_state_flow_report(
     }
     writeln!(report).ok();
 
+    writeln!(report, "## Replay Sources").ok();
+    let replay_sources = replay_source_report_rows(schema, replays);
+    if replay_sources.is_empty() {
+        writeln!(report, "- No replay source artifacts were provided.").ok();
+    } else {
+        writeln!(
+            report,
+            "| Source tx | Source | Mutation | Opcode | Field | CLI mutation | Confidence | Evidence |"
+        )
+        .ok();
+        writeln!(report, "| --- | --- | --- | --- | --- | --- | --- | --- |").ok();
+        for source in replay_sources {
+            writeln!(
+                report,
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} |",
+                markdown_escape(&source.source_query_hash),
+                markdown_escape(&source.source),
+                markdown_escape(&source.mutation),
+                markdown_code_opt(source.opcode.as_deref()),
+                markdown_code_opt(source.field_name.as_deref()),
+                markdown_code_opt(source.cli_arg.as_deref()),
+                markdown_escape(&source.confidence),
+                markdown_code_list(&source.evidence),
+            )
+            .ok();
+        }
+    }
+    writeln!(report).ok();
+
     writeln!(report, "## Replay Surface").ok();
     if schema.replay_surface.probes.is_empty() {
         writeln!(report, "- No replay surface probes were inferred.").ok();
@@ -1690,6 +1719,65 @@ pub fn render_state_flow_report(
     }
 
     report
+}
+
+struct ReplaySourceReportRow {
+    source_query_hash: String,
+    source: String,
+    mutation: String,
+    opcode: Option<String>,
+    field_name: Option<String>,
+    cli_arg: Option<String>,
+    confidence: String,
+    evidence: Vec<String>,
+}
+
+fn replay_source_report_rows(
+    schema: &StateFlowSchemaReport,
+    replays: &[StateFlowReplayDiff],
+) -> Vec<ReplaySourceReportRow> {
+    replays
+        .iter()
+        .map(|replay| {
+            if let Some(probe) = replay_source_schema_probe(schema, replay) {
+                ReplaySourceReportRow {
+                    source_query_hash: replay.source_query_hash.clone(),
+                    source: "schema-probe".to_owned(),
+                    mutation: mutation_label(&replay.mutation),
+                    opcode: probe.opcode.clone(),
+                    field_name: Some(probe.field_name.clone()),
+                    cli_arg: Some(probe.cli_arg.clone()),
+                    confidence: probe.confidence.clone(),
+                    evidence: probe.evidence.clone(),
+                }
+            } else {
+                ReplaySourceReportRow {
+                    source_query_hash: replay.source_query_hash.clone(),
+                    source: "manual".to_owned(),
+                    mutation: mutation_label(&replay.mutation),
+                    opcode: replay.baseline.inbound.opcode.clone(),
+                    field_name: None,
+                    cli_arg: None,
+                    confidence: "manual".to_owned(),
+                    evidence: vec![replay.source_query_hash.clone()],
+                }
+            }
+        })
+        .collect()
+}
+
+fn replay_source_schema_probe<'a>(
+    schema: &'a StateFlowSchemaReport,
+    replay: &StateFlowReplayDiff,
+) -> Option<&'a ReplaySurfaceProbe> {
+    let mutation = mutation_label(&replay.mutation);
+    schema.replay_surface.probes.iter().find(|probe| {
+        mutation_label(&probe.mutation) == mutation
+            && probe
+                .evidence
+                .iter()
+                .any(|tx_hash| tx_hash == &replay.source_query_hash)
+    })
 }
 
 fn render_state_machine(schema: &StateFlowSchemaReport) -> Vec<String> {
@@ -5930,6 +6018,55 @@ mod tests {
         assert!(
             report.contains("Mutation flip body bit 32 changed state for tx-a. Evidence: `tx-a`.")
         );
+    }
+
+    #[test]
+    fn report_renderer_includes_replay_source_provenance() {
+        let corpus = StateFlowCorpus {
+            schema_version: 1,
+            network: "mainnet".to_owned(),
+            address: "addr".to_owned(),
+            requested_limit: 2,
+            source_tx_count: 2,
+            retraced_count: 2,
+            failure_count: 0,
+            opcode_summary: Vec::new(),
+            transactions: vec![
+                sample_flow_with_body_fields("tx-a", 1, 7, 0),
+                sample_flow_with_body_fields("tx-b", 1, 8, 0),
+            ],
+            failures: Vec::new(),
+        };
+        let schema = super::infer_schema_candidates(&corpus);
+        let manual = sample_replay_diff(
+            "tx-a",
+            ReplayMutation::FlipBodyBit { bit: 0 },
+            true,
+            Some(false),
+        );
+        let probe = sample_replay_diff(
+            "tx-a",
+            ReplayMutation::SetBodyUint {
+                bit_offset: 32,
+                bits: 64,
+                value: "0x0000000000000006".to_owned(),
+            },
+            true,
+            Some(false),
+        );
+
+        let report = super::render_state_flow_report(&corpus, &schema, &[manual, probe]);
+
+        assert!(report.contains("## Replay Sources"));
+        assert!(report.contains(
+            "| Source tx | Source | Mutation | Opcode | Field | CLI mutation | Confidence | Evidence |"
+        ));
+        assert!(report.contains(
+            "| `tx-a` | manual | flip body bit 0 | `0x00000001` | `<none>` | `<none>` | manual | `tx-a` |"
+        ));
+        assert!(report.contains(
+            "| `tx-a` | schema-probe | set body uint 0x0000000000000006 at 32:64 | `0x00000001` | `query_id` | `--set-body-uint 32:64:0x0000000000000006` | high | `tx-a`, `tx-b` |"
+        ));
     }
 
     #[test]

@@ -686,6 +686,7 @@ const runSummary = {
           source: "manual",
           sourceQueryHash: "tx-a",
           mutation: "flip body bit 0",
+          opcode: "0x00000001",
         },
         {
           path: "out/target-a/replay-probe-query-id-32-64.json",
@@ -883,6 +884,11 @@ const reportMarkdown = `# TON State Flow Reverse Report
 | Opcode | Field | CLI mutation | Confidence | Evidence |
 | --- | --- | --- | --- | --- |
 | \`0x00000001\` | \`query_id\` | \`--set-body-uint 32:64:0x6\` | high | \`tx-a\` |
+
+## Replay Sources
+| Source tx | Source | Mutation | Opcode | Field | CLI mutation | Confidence | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| \`tx-a\` | schema-probe | set body uint 0x6 at 32:64 | \`0x00000001\` | \`query_id\` | \`--set-body-uint 32:64:0x6\` | high | \`tx-a\` |
 
 ## Replay Surface
 | Opcode | Name | Field | Source | Kind | Offset | Bits | Mutation | CLI mutation | Confidence | Evidence |
@@ -1327,6 +1333,15 @@ const replaySourceRows = sectionRows(runSummaryView, "Replay Sources")
 assert(
   replaySourceRows.some(
     row =>
+      row.label === "manual" &&
+      row.value === "out/target-a/replay.json" &&
+      row.detail === "target-a · tx tx-a · flip body bit 0 · op 0x00000001",
+  ),
+  "expected run summary to expose manual replay opcode evidence",
+)
+assert(
+  replaySourceRows.some(
+    row =>
       row.label === "schema-probe" &&
       row.value === "out/target-a/replay-probe-query-id-32-64.json" &&
       row.detail ===
@@ -1444,7 +1459,7 @@ assert(
   "expected artifact file picker to accept report markdown files",
 )
 assert(
-  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "21"),
+  reportSummary.metrics.some(metric => metric.label === "Sections" && metric.value === "22"),
   "expected report section count metric",
 )
 const reportTargetRows = sectionRows(reportSummary, "Target")
@@ -1544,6 +1559,14 @@ assert(reportReplayProbeRows[0]?.label === "0x00000001 query_id", "expected repl
 assert(
   reportReplayProbeRows[0]?.value === "--set-body-uint 32:64:0x6",
   "expected replay probe mutation",
+)
+const reportReplaySourceRows = sectionRows(reportSummary, "Replay Sources")
+assert(reportReplaySourceRows[0]?.label === "tx-a", "expected replay source tx")
+assert(reportReplaySourceRows[0]?.value === "schema-probe", "expected replay source type")
+assert(
+  reportReplaySourceRows[0]?.detail ===
+    "mutation set body uint 0x6 at 32:64 · opcode 0x00000001 · field query_id · cli --set-body-uint 32:64:0x6 · confidence high · evidence tx-a",
+  "expected replay source provenance detail",
 )
 const reportReplaySurfaceRows = sectionRows(reportSummary, "Replay Surface")
 assert(

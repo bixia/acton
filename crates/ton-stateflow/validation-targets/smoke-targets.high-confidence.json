@@ -27,6 +27,7 @@
       "contractType": "v2.2 constant-product pool",
       "sourceUrl": "https://tonviewer.com/EQCGScrZe1xbyWqWDvdI6mzP-GAcAWFv6ZXuaJOuSqemxku4",
       "collectLimit": 2,
+      "allowedCollectionFailures": 1,
       "retraceTxHash": "36bc4f939e6c7768a48c922e29f858961ed341207353d39263e2ace33a70dbbb",
       "replayMutation": {
         "type": "flipBodyBit",

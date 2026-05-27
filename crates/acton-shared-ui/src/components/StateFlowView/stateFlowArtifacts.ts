@@ -419,6 +419,7 @@ export interface StateFlowRunReplayArtifact {
   readonly source: string
   readonly sourceQueryHash: string
   readonly mutation: string
+  readonly opcode?: string | null
   readonly probe?: StateFlowRunReplayProbe | null
 }
 
@@ -1995,6 +1996,7 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
   const runtimeEvidenceRows = reportRuntimeEvidenceRows(report)
   const messageBodyFieldRows = reportMessageBodyFieldRows(report)
   const replayProbeRows = reportReplayProbeRows(report)
+  const replaySourceRows = reportReplaySourceRows(report)
   const replaySurfaceRows = reportReplaySurfaceRows(report)
   const storageFieldRows = reportStorageFieldRows(report)
   const storageLayoutRows = reportStorageLayoutRows(report)
@@ -2083,6 +2085,14 @@ function summarizeReport(report: StateFlowReport): ArtifactSummary {
             {
               title: "Replay Probes",
               rows: replayProbeRows,
+            },
+          ]
+        : []),
+      ...(replaySourceRows.length > 0
+        ? [
+            {
+              title: "Replay Sources",
+              rows: replaySourceRows,
             },
           ]
         : []),
@@ -2532,6 +2542,23 @@ function reportReplayProbeRows(report: StateFlowReport): readonly SummaryRow[] {
     label: tableRowLabel(row, ["Opcode", "Field"]),
     value: rowValue(row, "CLI mutation") || "n/a",
     detail: [
+      tableValueLabel("confidence", rowValue(row, "Confidence")),
+      tableValueLabel("evidence", rowValue(row, "Evidence")),
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(" · "),
+  }))
+}
+
+function reportReplaySourceRows(report: StateFlowReport): readonly SummaryRow[] {
+  return reportTableRows(report, "Replay Sources").map(row => ({
+    label: rowValue(row, "Source tx") || "n/a",
+    value: rowValue(row, "Source") || "n/a",
+    detail: [
+      tableValueLabel("mutation", rowValue(row, "Mutation")),
+      tableValueLabel("opcode", rowValue(row, "Opcode")),
+      tableValueLabel("field", rowValue(row, "Field")),
+      tableValueLabel("cli", rowValue(row, "CLI mutation")),
       tableValueLabel("confidence", rowValue(row, "Confidence")),
       tableValueLabel("evidence", rowValue(row, "Evidence")),
     ]
@@ -3073,7 +3100,9 @@ function runSummaryReplaySourceRows(summary: StateFlowRunSummary): readonly Summ
         artifact.mutation,
         artifact.probe
           ? `${artifact.probe.opcode ?? "<none>"} ${artifact.probe.fieldName}`
-          : undefined,
+          : artifact.opcode
+            ? `op ${artifact.opcode}`
+            : undefined,
         artifact.probe?.cliArg,
         artifact.probe ? `confidence ${artifact.probe.confidence}` : undefined,
         artifact.probe?.evidence.length
